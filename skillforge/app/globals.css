@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+:root {
+  --sf-black: #0d0d0d;
+  --sf-white: #fafaf5;
+  --sf-purple: #7a78ff;
+  --sf-lime: #c7ff69;
+  --sf-orange: #ff6d38;
+  --sf-yellow: #ffc412;
+  --sf-gray: #6b6b6b;
+  --sf-light-gray: #e8e8e0;
+
+  --background: var(--sf-white);
+  --foreground: var(--sf-black);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-sf-black: var(--sf-black);
+  --color-sf-white: var(--sf-white);
+  --color-sf-purple: var(--sf-purple);
+  --color-sf-lime: var(--sf-lime);
+  --color-sf-orange: var(--sf-orange);
+  --color-sf-yellow: var(--sf-yellow);
+  --color-sf-gray: var(--sf-gray);
+  --color-sf-light-gray: var(--sf-light-gray);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--sf-white);
+  color: var(--sf-black);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+/* Color block utility classes */
+.cb-black {
+  background-color: var(--sf-black);
+  color: var(--sf-white);
+}
+.cb-white {
+  background-color: var(--sf-white);
+  color: var(--sf-black);
+}
+.cb-purple {
+  background-color: var(--sf-purple);
+  color: var(--sf-black);
+}
+.cb-lime {
+  background-color: var(--sf-lime);
+  color: var(--sf-black);
+}
+.cb-orange {
+  background-color: var(--sf-orange);
+  color: var(--sf-black);
+}
+.cb-yellow {
+  background-color: var(--sf-yellow);
+  color: var(--sf-black);
+}
