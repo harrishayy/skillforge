@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:https": "next dev --hostname 0.0.0.0 --experimental-https",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
@@ -11,6 +12,7 @@
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.32",
     "clsx": "^2.1.1",
+    "qrcode.react": "^4.1.0",
     "fabric": "^6.6.2",
     "framer-motion": "^11.18.2",
     "next": "16.1.6",

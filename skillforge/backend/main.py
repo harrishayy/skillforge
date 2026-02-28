@@ -20,6 +20,10 @@ from pydantic import BaseModel
 
 AR_WS_PATH = "/ws/ar"
 LIVE_DETECT_WS_PATH = "/ws/live/detect"
+CAMERA_ROOM_WS_PATH = "/ws/camera/{session_id}"
+
+# Camera room state: session_id -> { "producer": ws | None, "consumers": [ws, ...] }
+_camera_rooms: dict[str, dict] = {}
 
 # MediaPipe Hand Landmarker: index finger tip (landmark 8) for "pointing_at"
 INDEX_FINGER_TIP = 8
@@ -321,6 +325,145 @@ async def websocket_live_detect(websocket: WebSocket):
         pass
     except Exception:
         pass
+
+
+def _camera_room_ensure(session_id: str) -> dict:
+    """Get or create room for session_id."""
+    if session_id not in _camera_rooms:
+        _camera_rooms[session_id] = {"producer": None, "consumers": []}
+    return _camera_rooms[session_id]
+
+
+def _camera_room_remove(session_id: str, websocket: WebSocket, role: str) -> None:
+    """Remove a client from the room and delete room if empty."""
+    if session_id not in _camera_rooms:
+        return
+    room = _camera_rooms[session_id]
+    if role == "producer":
+        room["producer"] = None
+    else:
+        try:
+            room["consumers"].remove(websocket)
+        except ValueError:
+            pass
+    if room["producer"] is None and not room["consumers"]:
+        del _camera_rooms[session_id]
+
+
+@app.websocket("/ws/camera/{session_id}")
+async def websocket_camera_room(websocket: WebSocket, session_id: str):
+    """Session-scoped camera room: one producer (phone), N consumers (laptop). First message: { role: 'producer' | 'consumer' }."""
+    await websocket.accept()
+    role: str | None = None
+    room = _camera_room_ensure(session_id)
+
+    # First message must be role
+    try:
+        raw = await websocket.receive_text()
+    except WebSocketDisconnect:
+        return
+    try:
+        msg = json.loads(raw)
+    except json.JSONDecodeError:
+        await websocket.send_json({"type": "error", "message": "invalid json"})
+        await websocket.close()
+        return
+    r = msg.get("role")
+    if r not in ("producer", "consumer"):
+        await websocket.send_json({"type": "error", "message": "expected role: producer or consumer"})
+        await websocket.close()
+        return
+    role = r
+
+    if role == "producer":
+        if room["producer"] is not None:
+            try:
+                await room["producer"].close(1000)
+            except Exception:
+                pass
+        room["producer"] = websocket
+    else:
+        room["consumers"].append(websocket)
+
+    if role == "consumer":
+        try:
+            while True:
+                await websocket.receive_text()  # keep connection open; we push to them
+        except WebSocketDisconnect:
+            pass
+        finally:
+            _camera_room_remove(session_id, websocket, role)
+        return
+
+    # Producer loop: receive frames, run detection, broadcast to consumers
+    processing = False
+    pending_data: str | None = None
+    pending_ts: int | None = None
+
+    async def process_and_broadcast(data_str: str, timestamp_ms: int) -> None:
+        nonlocal processing, pending_data, pending_ts
+        processing = True
+        payload: dict = {
+            "type": "remote_frame",
+            "data": data_str,
+            "ts": timestamp_ms,
+            "hands": None,
+            "processing_ms": 0,
+        }
+        try:
+            img = decode_frame(data_str)
+            if img is not None:
+                t0 = time.perf_counter()
+                hands_list, pointing_at = await asyncio.to_thread(run_hand_detection_video, img, timestamp_ms)
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                detect_payload = _build_detect_response(hands_list, pointing_at, elapsed_ms)
+                payload["hands"] = detect_payload.get("hands")
+                payload["processing_ms"] = detect_payload.get("processing_ms", 0)
+        except Exception as e:
+            import traceback
+            print(f"[camera room] process_and_broadcast error: {e}", flush=True)
+            traceback.print_exc()
+        try:
+            # Always broadcast the frame so the viewer shows video even if decode/detection failed
+            r = _camera_room_ensure(session_id)
+            for consumer in list(r["consumers"]):
+                try:
+                    await consumer.send_json(payload)
+                except Exception as e:
+                    import traceback
+                    print(f"[camera room] send to consumer failed: {e}", flush=True)
+                    traceback.print_exc()
+        finally:
+            processing = False
+            if pending_data is not None and pending_ts is not None:
+                d, t = pending_data, pending_ts
+                pending_data, pending_ts = None, None
+                asyncio.create_task(process_and_broadcast(d, t))
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if msg.get("type") != "frame":
+                continue
+            data = msg.get("data")
+            ts = msg.get("ts")
+            if not isinstance(data, str):
+                continue
+            timestamp_ms = int(ts) if isinstance(ts, (int, float)) else int(time.time() * 1000)
+            if processing:
+                pending_data, pending_ts = data, timestamp_ms
+            else:
+                asyncio.create_task(process_and_broadcast(data, timestamp_ms))
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        _camera_room_remove(session_id, websocket, role)
 
 
 @app.websocket(AR_WS_PATH)

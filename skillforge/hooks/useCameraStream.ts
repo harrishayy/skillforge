@@ -2,9 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+export type FacingMode = "user" | "environment";
+
 interface UseCameraStreamOptions {
   /** Video constraints passed to getUserMedia */
   constraints?: MediaTrackConstraints;
+  /** Preferred camera facing (front "user" or back "environment"). Used when starting and when switching. */
+  facingMode?: FacingMode;
 }
 
 interface UseCameraStreamReturn {
@@ -14,6 +18,9 @@ interface UseCameraStreamReturn {
   error: string | null;
   start: () => Promise<void>;
   stop: () => void;
+  /** Switch between front and back camera. Stops current stream and starts with the other facingMode. */
+  switchCamera: () => void;
+  facingMode: FacingMode;
 }
 
 /**
@@ -28,6 +35,8 @@ export function useCameraStream(
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isActive, setIsActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const facingModeRef = useRef<FacingMode>(options.facingMode ?? "user");
+  const [facingMode, setFacingMode] = useState<FacingMode>(options.facingMode ?? "user");
 
   const { constraints = {} } = options;
 
@@ -40,9 +49,16 @@ export function useCameraStream(
 
   const start = useCallback(async () => {
     setError(null);
+    const mode = facingModeRef.current;
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 }, ...constraints },
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 60 },
+          facingMode: { ideal: mode },
+          ...constraints,
+        },
         audio: false,
       });
       setStream(mediaStream);
@@ -59,5 +75,13 @@ export function useCameraStream(
     setIsActive(false);
   }, [stream]);
 
-  return { videoRef, stream, isActive, error, start, stop };
+  const switchCamera = useCallback(() => {
+    const next = facingModeRef.current === "user" ? "environment" : "user";
+    facingModeRef.current = next;
+    setFacingMode(next);
+    stop();
+    start();
+  }, [stop, start]);
+
+  return { videoRef, stream, isActive, error, start, stop, switchCamera, facingMode };
 }
