@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { LIVE_DETECT_WS } from "@/lib/constants";
 
-export type DetectMode = "hands" | "yolo" | "custom";
+export type DetectMode = "hands" | "sam3";
 
 export interface HandData {
   hand_count: number;
@@ -11,19 +11,15 @@ export interface HandData {
   pointing_at: { x: number; y: number } | null;
 }
 
-export interface YoloDetection {
-  class: string;
-  confidence: number;
-  bbox_x: number;
-  bbox_y: number;
-  bbox_width: number;
-  bbox_height: number;
+export interface Sam3Segment {
+  mask_base64: string;
+  bbox: number[];
+  score: number;
 }
 
 export interface DetectionResult {
   hands: HandData | null;
-  yolo_detections: YoloDetection[];
-  custom_detection: { bbox: number[]; confidence: number } | null;
+  sam3_segments: Sam3Segment[];
   processing_ms: number;
 }
 
@@ -116,7 +112,6 @@ export function useLiveDetect({
         if (data.type === "error") return;
         if (
           typeof data.hands !== "undefined" &&
-          Array.isArray(data.yolo_detections) &&
           typeof data.processing_ms === "number"
         ) {
           onResultRef.current(data as DetectionResult);

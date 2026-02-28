@@ -6,15 +6,24 @@ import { renderHandLandmarks } from "@/lib/annotation-renderer";
 import { useCameraStream } from "@/hooks/useCameraStream";
 import { useARStream } from "@/hooks/useARStream";
 import { useMicLevel } from "@/hooks/useMicLevel";
-import { useLiveDetect, type DetectMode, type DetectionResult } from "@/hooks/useLiveDetect";
+import type { DetectMode, DetectionResult } from "@/hooks/useLiveDetect";
+import { useSam3Detect, type Sam3Result } from "@/hooks/useSam3Detect";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
 import { CameraFeed } from "@/components/camera/CameraFeed";
 import { DetectorSidebar } from "@/components/live-detect/DetectorSidebar";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
 
-const YOLO_COLORS = [
-  "#3B82F6", "#8B5CF6", "#10B981", "#F59E0B",
-  "#EF4444", "#06B6D4", "#EC4899", "#14B8A6",
+const SAM3_COLORS = [
+  "rgba(0, 255, 128, 0.45)",
+  "rgba(0, 200, 255, 0.45)",
+  "rgba(255, 100, 255, 0.45)",
+  "rgba(255, 200, 0, 0.45)",
+  "rgba(255, 80, 80, 0.45)",
+  "rgba(100, 140, 255, 0.45)",
+];
+
+const SAM3_STROKE_COLORS = [
+  "#00FF80", "#00C8FF", "#FF64FF", "#FFC800", "#FF5050", "#648CFF",
 ];
 
 export default function LiveDetectPage() {
@@ -24,14 +33,12 @@ export default function LiveDetectPage() {
 
   const [modes, setModes] = useState<Set<DetectMode>>(new Set(["hands"]));
   const [textPrompt, setTextPrompt] = useState("");
-  const [mpResult, setMpResult] = useState<{
-    hands: DetectionResult["hands"];
-    yolo_detections: DetectionResult["yolo_detections"];
-  } | null>(null);
-  const [backendResult, setBackendResult] = useState<DetectionResult | null>(null);
+  const [mpResult, setMpResult] = useState<{ hands: DetectionResult["hands"] } | null>(null);
+  const [sam3Result, setSam3Result] = useState<Sam3Result | null>(null);
+  const sam3MaskCacheRef = useRef<Map<string, ImageBitmap>>(new Map());
   const [hasReceivedResult, setHasReceivedResult] = useState(false);
   const [fps, setFps] = useState(0);
-  const [intervalMs, setIntervalMs] = useState(33);
+  const [sam3IntervalMs, setSam3IntervalMs] = useState(500);
   const [arStreamEnabled, setArStreamEnabled] = useState(false);
 
   const { videoRef, isActive, error, start, stop } = useCameraStream();
@@ -53,33 +60,52 @@ export default function LiveDetectPage() {
   const { mpLoading, mpError } = useMediaPipeDetect({
     videoRef,
     handsEnabled: modes.has("hands"),
-    objectsEnabled: modes.has("yolo"),
+    objectsEnabled: false,
     enabled: isActive,
     onResult: (r) => {
-      setMpResult({ hands: r.hands, yolo_detections: r.mp_detections });
+      setMpResult({ hands: r.hands });
       setHasReceivedResult(true);
     },
   });
 
-  useLiveDetect({
+  useSam3Detect({
     videoRef,
-    modes: new Set(["custom"] as DetectMode[]),
     textPrompt,
-    intervalMs,
-    enabled: isActive && modes.has("custom"),
-    onResult: (r) => {
-      setBackendResult(r);
+    intervalMs: sam3IntervalMs,
+    enabled: isActive && modes.has("sam3") && textPrompt.length > 0,
+    onResult: (r: Sam3Result) => {
+      setSam3Result(r);
       setHasReceivedResult(true);
+      const cache = sam3MaskCacheRef.current;
+      for (const seg of r.sam3_segments ?? []) {
+        if (!cache.has(seg.mask_base64)) {
+          const bytes = Uint8Array.from(atob(seg.mask_base64), (c) => c.charCodeAt(0));
+          const blob = new Blob([bytes], { type: "image/png" });
+          createImageBitmap(blob).then((rawBmp) => {
+            const oc = document.createElement("canvas");
+            oc.width = rawBmp.width;
+            oc.height = rawBmp.height;
+            const octx = oc.getContext("2d")!;
+            octx.drawImage(rawBmp, 0, 0);
+            const imgData = octx.getImageData(0, 0, oc.width, oc.height);
+            const d = imgData.data;
+            for (let j = 0; j < d.length; j += 4) {
+              d[j + 3] = d[j]; // grayscale value → alpha channel
+            }
+            octx.putImageData(imgData, 0, 0);
+            createImageBitmap(oc).then((alphaBmp) => cache.set(seg.mask_base64, alphaBmp));
+          });
+        }
+      }
     },
   });
 
   const result: DetectionResult | null =
-    mpResult || backendResult
+    mpResult || sam3Result
       ? {
           hands: mpResult?.hands ?? null,
-          yolo_detections: mpResult?.yolo_detections ?? [],
-          custom_detection: backendResult?.custom_detection ?? null,
-          processing_ms: backendResult?.processing_ms ?? 0,
+          sam3_segments: sam3Result?.sam3_segments ?? [],
+          processing_ms: sam3Result?.processing_ms ?? 0,
         }
       : null;
 
@@ -117,51 +143,52 @@ export default function LiveDetectPage() {
         }
       }
 
-      result.yolo_detections.forEach((det, i) => {
-        const color = YOLO_COLORS[i % YOLO_COLORS.length];
-        const x = (det.bbox_x / 100) * canvas.width;
-        const y = (det.bbox_y / 100) * canvas.height;
-        const bw = (det.bbox_width / 100) * canvas.width;
-        const bh = (det.bbox_height / 100) * canvas.height;
-        ctx.save();
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.globalAlpha = 0.85;
-        ctx.strokeRect(x, y, bw, bh);
-        ctx.globalAlpha = 0.9;
-        ctx.fillStyle = color;
-        const label = `${det.class} ${Math.round(det.confidence * 100)}%`;
-        ctx.font = "bold 12px system-ui";
-        const tw = ctx.measureText(label).width;
-        ctx.fillRect(x, y - 18, tw + 8, 18);
-        ctx.fillStyle = "#fff";
-        ctx.globalAlpha = 1;
-        ctx.fillText(label, x + 4, y - 4);
-        ctx.restore();
-      });
+      // SAM3 segmentation masks
+      if (result.sam3_segments?.length) {
+        const maskCache = sam3MaskCacheRef.current;
+        result.sam3_segments.forEach((seg, i) => {
+          const bmp = maskCache.get(seg.mask_base64);
+          if (bmp) {
+            ctx.save();
+            ctx.globalAlpha = 0.55;
+            ctx.globalCompositeOperation = "source-over";
+            // Draw the mask as a tinted overlay
+            const offscreen = document.createElement("canvas");
+            offscreen.width = canvas.width;
+            offscreen.height = canvas.height;
+            const offCtx = offscreen.getContext("2d")!;
+            offCtx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+            offCtx.globalCompositeOperation = "source-in";
+            offCtx.fillStyle = SAM3_COLORS[i % SAM3_COLORS.length];
+            offCtx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(offscreen, 0, 0);
+            ctx.restore();
+          }
 
-      if (result.custom_detection?.bbox) {
-        const [cx, cy, cw, ch] = result.custom_detection.bbox;
-        const x = cx * canvas.width, y = cy * canvas.height;
-        const bw = cw * canvas.width, bh = ch * canvas.height;
-        const pulse = 0.5 + 0.5 * Math.sin(t * 0.004);
-        ctx.save();
-        ctx.strokeStyle = "#f97316";
-        ctx.lineWidth = 3 + pulse;
-        ctx.shadowColor = "#f97316";
-        ctx.shadowBlur = 10 + pulse * 5;
-        ctx.strokeRect(x, y, bw, bh);
-        const label = `${textPrompt} ${Math.round((result.custom_detection.confidence ?? 0) * 100)}%`;
-        ctx.shadowBlur = 0;
-        ctx.font = "bold 12px system-ui";
-        const tw = ctx.measureText(label).width;
-        ctx.fillStyle = "#f97316";
-        ctx.globalAlpha = 0.9;
-        ctx.fillRect(x, y - 18, tw + 8, 18);
-        ctx.fillStyle = "#fff";
-        ctx.globalAlpha = 1;
-        ctx.fillText(label, x + 4, y - 4);
-        ctx.restore();
+          // Bounding box + label
+          const [bx1, by1, bx2, by2] = seg.bbox;
+          const sx = bx1 * canvas.width, sy = by1 * canvas.height;
+          const sw = (bx2 - bx1) * canvas.width, sh = (by2 - by1) * canvas.height;
+          const strokeColor = SAM3_STROKE_COLORS[i % SAM3_STROKE_COLORS.length];
+          ctx.save();
+          ctx.shadowColor = strokeColor;
+          ctx.shadowBlur = 6;
+          ctx.strokeStyle = strokeColor;
+          ctx.lineWidth = 3;
+          ctx.globalAlpha = 1;
+          ctx.strokeRect(sx, sy, sw, sh);
+          ctx.shadowBlur = 0;
+          const label = `${textPrompt} ${Math.round(seg.score * 100)}%`;
+          ctx.font = "bold 14px system-ui";
+          const tw = ctx.measureText(label).width;
+          ctx.fillStyle = strokeColor;
+          ctx.globalAlpha = 0.9;
+          ctx.fillRect(sx, sy - 24, tw + 12, 24);
+          ctx.fillStyle = "#fff";
+          ctx.globalAlpha = 1;
+          ctx.fillText(label, sx + 6, sy - 7);
+          ctx.restore();
+        });
       }
     }
 
@@ -191,15 +218,15 @@ export default function LiveDetectPage() {
     stop();
     stopMic();
     setMpResult(null);
-    setBackendResult(null);
+    setSam3Result(null);
+    sam3MaskCacheRef.current.clear();
     setHasReceivedResult(false);
     setFps(0);
   };
 
   const modeBadges = [
     ...(modes.has("hands") ? [{ label: "Hands", color: "rgba(245,158,11,0.8)" }] : []),
-    ...(modes.has("yolo") ? [{ label: "Objects", color: "rgba(59,130,246,0.8)" }] : []),
-    ...(modes.has("custom") && textPrompt ? [{ label: textPrompt, color: "rgba(249,115,22,0.8)" }] : []),
+    ...(modes.has("sam3") && textPrompt ? [{ label: `SAM3: ${textPrompt}`, color: "rgba(168,85,247,0.8)" }] : []),
   ];
 
   return (
@@ -240,8 +267,8 @@ export default function LiveDetectPage() {
           <div className="ml-auto flex items-center gap-4 text-xs" style={{ color: "#555" }}>
             {mpLoading && <span className="animate-pulse" style={{ color: "var(--sf-yellow)" }}>Loading model…</span>}
             <span>{fps} fps</span>
-            {backendResult && modes.has("custom") && (
-              <span>{backendResult.processing_ms}ms (custom)</span>
+            {sam3Result && modes.has("sam3") && (
+              <span>{sam3Result.processing_ms}ms (SAM3)</span>
             )}
           </div>
         )}
@@ -253,15 +280,13 @@ export default function LiveDetectPage() {
           onToggleMode={toggleMode}
           textPrompt={textPrompt}
           onTextPromptChange={setTextPrompt}
-          intervalMs={intervalMs}
-          onIntervalChange={setIntervalMs}
           isRunning={isActive}
           mpLoading={mpLoading}
+          sam3IntervalMs={sam3IntervalMs}
+          onSam3IntervalChange={setSam3IntervalMs}
           stats={{
             handCount: result?.hands?.hand_count ?? 0,
-            yoloCount: result?.yolo_detections.length ?? 0,
-            customFound: !!result?.custom_detection,
-            yoloDetections: result?.yolo_detections ?? [],
+            sam3Count: result?.sam3_segments?.length ?? 0,
             hasReceivedResult,
           }}
           micLevel={micLevel}
@@ -288,8 +313,8 @@ export default function LiveDetectPage() {
                 Live Camera Detection
               </h2>
               <p className="text-sm mb-8 leading-relaxed" style={{ color: "#777" }}>
-                Hand tracking and object detection run directly on your device in real-time —
-                no upload delay. Custom prompt uses AI vision on the backend.
+                Hand tracking runs on-device in real-time. SAM 3 segments objects
+                by concept on a cloud GPU.
               </p>
               {error && <ErrorBanner message={error} className="mb-4" />}
               {mpError && <ErrorBanner message={`MediaPipe: ${mpError}`} className="mb-4" />}
@@ -302,7 +327,7 @@ export default function LiveDetectPage() {
               </button>
             </div>
           ) : (
-            <div className="w-full max-w-4xl">
+            <div className="w-full max-w-6xl">
               <CameraFeed
                 videoRef={videoRef}
                 canvasRef={canvasRef}
@@ -313,8 +338,7 @@ export default function LiveDetectPage() {
                       <p className="text-xs" style={{ color: "#555" }}>
                         {[
                           modes.has("hands") && "Hands: real-time",
-                          modes.has("yolo") && "Objects: real-time",
-                          modes.has("custom") && `Custom: every ${intervalMs}ms`,
+                          modes.has("sam3") && `SAM3: every ${sam3IntervalMs}ms`,
                         ].filter(Boolean).join(" · ")}
                         {" · "}{fps} render fps
                         {arStreamEnabled && (

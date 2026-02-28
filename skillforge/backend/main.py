@@ -217,7 +217,12 @@ def run_hand_detection_video(img_bgr: np.ndarray, timestamp_ms: int) -> tuple[li
     return hands_out, pointing_at
 
 
-def _build_detect_response(hands_list: list[list[dict]], pointing_at: dict | None, elapsed_ms: float) -> dict:
+def _build_detect_response(
+    hands_list: list[list[dict]],
+    pointing_at: dict | None,
+    elapsed_ms: float,
+    sam3_segments: list[dict] | None = None,
+) -> dict:
     """Build DetectionResult-shaped dict for frontend."""
     hands_data = None
     if hands_list:
@@ -228,8 +233,7 @@ def _build_detect_response(hands_list: list[list[dict]], pointing_at: dict | Non
         }
     return {
         "hands": hands_data,
-        "yolo_detections": [],
-        "custom_detection": None,
+        "sam3_segments": sam3_segments or [],
         "processing_ms": round(elapsed_ms, 0),
     }
 
