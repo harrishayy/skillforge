@@ -1,46 +1,70 @@
 """
-SOFTWARE WORKFLOW — Nemotron VL frame analysis for screen recording decomposition.
-Used exclusively by: services/workflow_builder.py (software pipeline).
+Nemotron VL — binary object presence detection across video frames.
 
-Physical workflows use GroundingDINO + DINOv2 in: services/physical_pipeline.py
+Calls a self-hosted Nemotron Nano 12B VL server (OpenAI-compatible vLLM)
+via NEMOTRON_URL. For each frame, answers: "Is this object present? Yes/No."
+No API key required — the server has no auth.
+
+Used by: services/key_object_pipeline.py (multi-agent hardware pipeline).
 """
 import json
-import re
 import os
 import asyncio
+import time
 import httpx
 from utils.frame_utils import resize_frame_for_api
 
-NIM_API_BASE = "https://integrate.api.nvidia.com/v1"
-NIM_MODEL = "nvidia/nemotron-nano-vl-12b-v2"
+NEMOTRON_URL = os.environ.get("NEMOTRON_URL", "")
+NEMOTRON_MODEL = "nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16"
 
-_SYSTEM_PROMPT = """You are a visual analysis expert examining a frame from a software screen recording.
-Analyze the frame and return ONLY a valid JSON object (no markdown, no explanation) with these fields:
-{
-  "app_name": "name of application or context shown",
-  "current_action": "one sentence describing what is happening",
-  "ui_elements": [
-    {"element_type": "button|input|menu|link|icon|text", "label": "text/name", "location": "top-left|top-center|top-right|center-left|center|center-right|bottom-left|bottom-center|bottom-right"}
-  ],
-  "step_boundary": true or false,
-  "step_description": "if step_boundary is true: one sentence describing the new step being started",
-  "important_regions": [
-    {"label": "description", "bbox_percent": {"x": 0-100, "y": 0-100, "w": 0-100, "h": 0-100}}
-  ]
-}"""
+_startup_logged = False
+_client: httpx.AsyncClient | None = None
 
 
-async def analyze_frame(
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(
+            timeout=60.0,
+            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+        )
+    return _client
+
+
+async def detect_object_in_frame(
     frame_path: str,
-    api_key: str | None = None,
+    object_description: str,
 ) -> dict:
-    """Analyze a single software screen-recording frame with Nemotron VL via NIM API."""
-    key = api_key or os.environ.get("NVIDIA_NIM_API_KEY", "")
+    """
+    Check whether a described object is present in the given frame.
+
+    Returns {"present": bool, "description": str} where description is a
+    1-sentence explanation when the object is found, or why it's not visible.
+    """
+    global _startup_logged
+    nemotron_url = os.environ.get("NEMOTRON_URL", "")
+
+    if not nemotron_url:
+        if not _startup_logged:
+            print("[Nemotron] ⚠ NEMOTRON_URL not set — skipping object detection", flush=True)
+            _startup_logged = True
+        return {"present": False, "description": ""}
+
+    if not _startup_logged:
+        print(f"[Nemotron] Configured → {nemotron_url}", flush=True)
+        _startup_logged = True
+
     image_b64 = resize_frame_for_api(frame_path, max_size=1024)
-    system_prompt = _SYSTEM_PROMPT
+
+    prompt = (
+        f'Is the following object present in this image?\n'
+        f'Object: {object_description}\n\n'
+        f'Answer ONLY with valid JSON, no markdown:\n'
+        f'{{"present": true or false, "description": "1 sentence explaining what you see or why the object is not visible"}}'
+    )
 
     payload = {
-        "model": NIM_MODEL,
+        "model": NEMOTRON_MODEL,
         "messages": [
             {
                 "role": "user",
@@ -49,85 +73,115 @@ async def analyze_frame(
                         "type": "image_url",
                         "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
                     },
-                    {"type": "text", "text": system_prompt},
+                    {"type": "text", "text": prompt},
                 ],
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 1024,
+        "max_tokens": 256,
     }
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(
-            f"{NIM_API_BASE}/chat/completions",
-            headers={"Authorization": f"Bearer {key}"},
+    try:
+        t0 = time.perf_counter()
+        client = _get_client()
+        resp = await client.post(
+            f"{nemotron_url}/v1/chat/completions",
             json=payload,
         )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
+        resp.raise_for_status()
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
-    return _parse_json_response(content)
+        content = resp.json()["choices"][0]["message"]["content"]
+        result = _parse_detection_response(content)
+        status = "✓ FOUND" if result["present"] else "✗ not found"
+        print(f"[Nemotron] {status} in {elapsed_ms}ms — {result['description'][:80]}", flush=True)
+        return result
+
+    except httpx.ConnectError:
+        print(f"[Nemotron] ✗ Connection refused — is the server running at {nemotron_url}?", flush=True)
+        return {"present": False, "description": ""}
+    except httpx.TimeoutException:
+        print("[Nemotron] ✗ Request timed out (60s limit)", flush=True)
+        return {"present": False, "description": ""}
+    except Exception as e:
+        print(f"[Nemotron] ✗ Detection failed: {e}", flush=True)
+        return {"present": False, "description": ""}
 
 
-def _parse_json_response(text: str) -> dict:
-    """Extract JSON from model response robustly."""
-    # Try direct parse first
+def _parse_detection_response(text: str) -> dict:
+    """Extract {present, description} JSON from model response."""
+    import re
+
+    text = text.strip()
+
+    # Direct JSON parse
     try:
-        return json.loads(text.strip())
+        data = json.loads(text)
+        return {
+            "present": bool(data.get("present", False)),
+            "description": str(data.get("description", "")),
+        }
     except json.JSONDecodeError:
         pass
 
-    # Try extracting from markdown code block
+    # Extract from markdown code block
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group(1))
+            data = json.loads(match.group(1))
+            return {
+                "present": bool(data.get("present", False)),
+                "description": str(data.get("description", "")),
+            }
         except json.JSONDecodeError:
             pass
 
-    # Try extracting bare JSON object
+    # Extract bare JSON
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group(0))
+            data = json.loads(match.group(0))
+            return {
+                "present": bool(data.get("present", False)),
+                "description": str(data.get("description", "")),
+            }
         except json.JSONDecodeError:
             pass
 
-    # Fallback: return raw text as ai_description
-    return {
-        "app_name": "unknown",
-        "current_action": text[:200],
-        "ui_elements": [],
-        "step_boundary": False,
-        "step_description": "",
-        "important_regions": [],
-        "raw_text": text,
-    }
+    # Heuristic fallback: check if response contains "true" or "yes"
+    lower = text.lower()
+    present = any(w in lower for w in ["true", '"present": true', "yes, "])
+    return {"present": present, "description": text[:200]}
 
 
-async def analyze_frames_batch(
-    frames: list[dict],
-    api_key: str | None = None,
-    on_progress = None,
+async def detect_object_in_frames_batch(
+    frame_paths: list[str],
+    object_description: str,
     batch_size: int = 4,
+    on_progress=None,
 ) -> list[dict]:
-    """Analyze all software screen-recording frames, batching requests for throughput."""
+    """
+    Scan multiple frames for the presence of a described object.
+    Returns list of {frame_path, present, description} in the same order.
+    """
     results = []
-    total = len(frames)
+    total = len(frame_paths)
 
     for i in range(0, total, batch_size):
-        batch = frames[i : i + batch_size]
-        tasks = [analyze_frame(f["path"], api_key) for f in batch]
+        batch = frame_paths[i : i + batch_size]
+        tasks = [detect_object_in_frame(fp, object_description) for fp in batch]
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for j, (frame, result) in enumerate(zip(batch, batch_results)):
+        for fp, result in zip(batch, batch_results):
             if isinstance(result, Exception):
-                result = {"error": str(result), "step_boundary": False, "ui_elements": [], "important_regions": []}
-            results.append({**frame, "vl_analysis": result})
+                print(f"[Nemotron] ✗ Batch detection error: {result}", flush=True)
+                result = {"present": False, "description": f"Error: {result}"}
+            results.append({"frame_path": fp, **result})
 
         done = min(i + batch_size, total)
-        pct = 10 + int((done / total) * 40)  # 10-50% range
         if on_progress:
-            await on_progress(f"Nemotron VL: analyzed {done}/{total} frames", pct)
+            await on_progress(f"Nemotron: scanned {done}/{total} frames", done, total)
 
+    positive = sum(1 for r in results if r["present"])
+    print(f"[Nemotron] Scan complete: {positive}/{total} frames contain the object", flush=True)
     return results

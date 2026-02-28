@@ -1,35 +1,29 @@
 """
-Database abstraction layer.
+Database layer — Neon PostgreSQL via asyncpg.
 
-Uses Neon PostgreSQL (asyncpg) when DATABASE_URL is set to a postgres:// URI,
-otherwise falls back to local SQLite (aiosqlite) for development.
+All query functions accept `?` placeholders which are automatically
+converted to `$1, $2, …` for PostgreSQL.
 
-All query functions accept SQLite-style `?` placeholders — they are
-automatically converted to `$1, $2, …` when running on PostgreSQL,
-so router/service code never needs to change.
+Requires DATABASE_URL to be set to a postgres:// or postgresql:// URI.
 """
 import os
 import re
 import uuid
 import time
-import aiosqlite
-from pathlib import Path
-from typing import Any
+import asyncpg
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-DB_PATH = Path(__file__).parent.parent / "skillforge.db"
-_pool = None   # asyncpg pool — set by init_db() when DATABASE_URL is postgres://
+_pool: asyncpg.Pool | None = None
 
 # ── Schema ─────────────────────────────────────────────────────────────────────
 
-# Split into individual statements for asyncpg compatibility
 _CREATE_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS workflows (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
     description TEXT,
-    mode        TEXT NOT NULL CHECK(mode IN ('software', 'hardware')),
+    mode        TEXT NOT NULL CHECK(mode IN ('hardware')),
     status      TEXT NOT NULL DEFAULT 'processing'
                 CHECK(status IN ('processing', 'ready', 'failed')),
     video_path  TEXT,
@@ -50,6 +44,9 @@ _CREATE_STATEMENTS = [
     key_frame_path  TEXT,
     video_path      TEXT,
     ai_description  TEXT,
+    transcript      TEXT,
+    note            TEXT,
+    sam3_prompt     TEXT,
     created_at      BIGINT NOT NULL,
     updated_at      BIGINT NOT NULL,
     UNIQUE(workflow_id, step_number)
@@ -85,12 +82,14 @@ _CREATE_STATEMENTS = [
     is_primary      INTEGER DEFAULT 0
 )""",
     """CREATE TABLE IF NOT EXISTS step_frames (
-    id           TEXT PRIMARY KEY,
-    step_id      TEXT NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
-    timestamp_ms BIGINT NOT NULL,
-    frame_path   TEXT NOT NULL,
-    is_key_frame INTEGER DEFAULT 0,
-    created_at   BIGINT NOT NULL
+    id                 TEXT PRIMARY KEY,
+    step_id            TEXT NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
+    timestamp_ms       BIGINT NOT NULL,
+    frame_path         TEXT NOT NULL,
+    is_key_frame       INTEGER DEFAULT 0,
+    object_detected    INTEGER DEFAULT 0,
+    object_description TEXT,
+    created_at         BIGINT NOT NULL
 )""",
     """CREATE TABLE IF NOT EXISTS pipeline_logs (
     id          TEXT PRIMARY KEY,
@@ -107,14 +106,11 @@ _CREATE_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_pipeline_logs_workflow ON pipeline_logs(workflow_id, created_at)",
 ]
 
-# Keep for aiosqlite executescript (needs a single string)
-CREATE_TABLES_SQL = ";\n".join(_CREATE_STATEMENTS) + ";"
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _to_pg(sql: str) -> str:
-    """Convert SQLite ? placeholders to PostgreSQL $1, $2, … notation."""
+    """Convert ? placeholders to PostgreSQL $1, $2, … notation."""
     counter = [0]
 
     def replace(m):
@@ -124,39 +120,37 @@ def _to_pg(sql: str) -> str:
     return re.sub(r"\?", replace, sql)
 
 
-def _is_postgres() -> bool:
-    return _pool is not None
-
-
 # ── Initialisation ─────────────────────────────────────────────────────────────
 
 async def init_db():
     global _pool
     db_url = os.environ.get("DATABASE_URL", "")
 
-    if db_url.startswith(("postgres://", "postgresql://")):
-        try:
-            import asyncpg
-            _pool = await asyncpg.create_pool(db_url, min_size=2, max_size=10, ssl="require")
-            async with _pool.acquire() as conn:
-                for stmt in _CREATE_STATEMENTS:
-                    await conn.execute(stmt)
-                await _run_migrations_pg(conn)
-            print("[DB] Connected to Neon PostgreSQL")
-        except Exception as e:
-            print(f"[DB] PostgreSQL connection failed: {e}. Falling back to SQLite.")
-            _pool = None
-            await _init_sqlite()
-    else:
-        await _init_sqlite()
+    if not db_url.startswith(("postgres://", "postgresql://")):
+        raise RuntimeError(
+            "DATABASE_URL must be set to a postgres:// or postgresql:// URI. "
+            "SQLite is no longer supported — use Neon PostgreSQL."
+        )
+
+    _pool = await asyncpg.create_pool(
+        db_url, min_size=2, max_size=10, ssl="require",
+        statement_cache_size=0,
+    )
+    async with _pool.acquire() as conn:
+        for stmt in _CREATE_STATEMENTS:
+            await conn.execute(stmt)
+        await _run_migrations(conn)
+    print("[DB] Connected to Neon PostgreSQL")
 
 
-async def _run_migrations_pg(conn):
+async def _run_migrations(conn):
     """Migrate existing Postgres databases to match the current schema."""
     migrations = [
         "ALTER TABLE steps ADD COLUMN IF NOT EXISTS video_path TEXT",
+        "ALTER TABLE steps ADD COLUMN IF NOT EXISTS transcript TEXT",
+        "ALTER TABLE steps ADD COLUMN IF NOT EXISTS note TEXT",
+        "ALTER TABLE steps ADD COLUMN IF NOT EXISTS sam3_prompt TEXT",
         "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS published INTEGER DEFAULT 0",
-        # INTEGER → BIGINT for millisecond timestamps and durations
         "ALTER TABLE workflows ALTER COLUMN duration_ms TYPE BIGINT",
         "ALTER TABLE workflows ALTER COLUMN created_at TYPE BIGINT",
         "ALTER TABLE workflows ALTER COLUMN updated_at TYPE BIGINT",
@@ -166,6 +160,8 @@ async def _run_migrations_pg(conn):
         "ALTER TABLE steps ALTER COLUMN updated_at TYPE BIGINT",
         "ALTER TABLE annotations ALTER COLUMN created_at TYPE BIGINT",
         "ALTER TABLE pipeline_logs ALTER COLUMN created_at TYPE BIGINT",
+        "ALTER TABLE step_frames ADD COLUMN IF NOT EXISTS object_detected INTEGER DEFAULT 0",
+        "ALTER TABLE step_frames ADD COLUMN IF NOT EXISTS object_description TEXT",
     ]
     for sql in migrations:
         try:
@@ -174,71 +170,30 @@ async def _run_migrations_pg(conn):
             pass
 
 
-async def _init_sqlite():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.executescript(CREATE_TABLES_SQL)
-        # Safe migration for existing databases
-        try:
-            await db.execute("ALTER TABLE steps ADD COLUMN video_path TEXT")
-        except Exception:
-            pass
-        try:
-            await db.execute("ALTER TABLE workflows ADD COLUMN published INTEGER DEFAULT 0")
-        except Exception:
-            pass
-        await db.commit()
-    print(f"[DB] Using SQLite at {DB_PATH}")
-
-
 # ── Query helpers ──────────────────────────────────────────────────────────────
 
 async def fetchone(query: str, params: tuple = ()) -> dict | None:
-    if _is_postgres():
-        async with _pool.acquire() as conn:
-            row = await conn.fetchrow(_to_pg(query), *params)
-            return dict(row) if row else None
-    else:
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(query, params) as cursor:
-                row = await cursor.fetchone()
-                return dict(row) if row else None
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(_to_pg(query), *params)
+        return dict(row) if row else None
 
 
 async def fetchall(query: str, params: tuple = ()) -> list[dict]:
-    if _is_postgres():
-        async with _pool.acquire() as conn:
-            rows = await conn.fetch(_to_pg(query), *params)
-            return [dict(r) for r in rows]
-    else:
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(query, params) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(r) for r in rows]
+    async with _pool.acquire() as conn:
+        rows = await conn.fetch(_to_pg(query), *params)
+        return [dict(r) for r in rows]
 
 
 async def execute(query: str, params: tuple = ()) -> None:
-    if _is_postgres():
-        async with _pool.acquire() as conn:
-            await conn.execute(_to_pg(query), *params)
-    else:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(query, params)
-            await db.commit()
+    async with _pool.acquire() as conn:
+        await conn.execute(_to_pg(query), *params)
 
 
 async def execute_many(queries: list[tuple[str, tuple]]) -> None:
-    if _is_postgres():
-        async with _pool.acquire() as conn:
-            async with conn.transaction():
-                for query, params in queries:
-                    await conn.execute(_to_pg(query), *params)
-    else:
-        async with aiosqlite.connect(DB_PATH) as db:
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
             for query, params in queries:
-                await db.execute(query, params)
-            await db.commit()
+                await conn.execute(_to_pg(query), *params)
 
 
 # ── Utilities ──────────────────────────────────────────────────────────────────

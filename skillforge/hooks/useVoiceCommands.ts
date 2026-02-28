@@ -4,7 +4,7 @@ import {
   matchVoiceIntent,
   shouldUseLLMFallback,
 } from "@/lib/voice-intent-matcher";
-import { classifyVoiceIntent } from "@/lib/api-client";
+import { classifyVoiceIntent, transcribeAudio } from "@/lib/api-client";
 import { showErrorToast } from "@/store/toast-store";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -17,9 +17,18 @@ interface UseVoiceCommandsOptions {
   enabled?: boolean;
   useLLMFallback?: boolean;
   useFuzzy?: boolean;
+  /**
+   * "browser" — Web Speech API (default, runs in-browser via Chrome/Google).
+   * "server"  — Records mic chunks and sends to the backend ASR endpoint
+   *             (Brev-hosted NVIDIA Parakeet CTC 1.1B).
+   */
+  transcriptionSource?: "browser" | "server";
+  /** Required when transcriptionSource is "server". */
+  audioStream?: MediaStream | null;
 }
 
 const LLM_THROTTLE_MS = 2500;
+const CHUNK_DURATION_MS = 2000;
 
 export type VoiceStatus = "off" | "starting" | "listening" | "unavailable";
 
@@ -30,6 +39,8 @@ export function useVoiceCommands({
   enabled = true,
   useLLMFallback = false,
   useFuzzy = true,
+  transcriptionSource = "browser",
+  audioStream = null,
 }: UseVoiceCommandsOptions) {
   const transcriptRef = useRef<string>("");
   const [isListening, setIsListening] = useState(false);
@@ -52,45 +63,10 @@ export function useVoiceCommands({
       return;
     }
 
-    if (typeof window !== "undefined" && !window.isSecureContext) {
-      setUnavailableReason("Voice commands require localhost or HTTPS. Open http://localhost:3000 instead.");
-      console.warn("[VoiceCommands] Blocked: page is not a secure context. Use http://localhost:3000");
-      return;
-    }
-
-    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    if (!SR) {
-      setUnavailableReason("SpeechRecognition not supported in this browser.");
-      return;
-    }
-
     let active = true;
     let stepTranscript = "";
-    const recognition: SRInstance = new SR();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
 
-    recognition.onaudiostart = () => setIsListening(true);
-
-    recognition.onend = () => {
-      if (active) {
-        try { recognition.start(); } catch {}
-      }
-    };
-
-    recognition.onerror = (e: { error: string }) => {
-      if (
-        e.error === "not-allowed" ||
-        e.error === "service-not-available" ||
-        e.error === "audio-capture"
-      ) {
-        showErrorToast(`Voice recognition error: ${e.error}`);
-        setIsListening(false);
-        active = false;
-      }
-    };
-
+    // ── Shared intent matcher (used by both modes) ─────────────────────────
     const runMatcher = (check: string, hasFinal: boolean) => {
       const words = check.trim().split(/\s+/).filter(Boolean);
       if (words.length < 1) return;
@@ -116,7 +92,6 @@ export function useVoiceCommands({
 
       if (!intent) return;
 
-      // Cooldown: ignore commands fired within 2s of the last one
       const now = Date.now();
       if (now - lastCommandRef.current < COMMAND_COOLDOWN_MS) return;
       lastCommandRef.current = now;
@@ -127,6 +102,111 @@ export function useVoiceCommands({
 
       stepTranscript = "";
       transcriptRef.current = "";
+    };
+
+    // ── Server ASR mode (Brev-hosted Parakeet CTC 1.1B) ───────────────────
+    if (transcriptionSource === "server") {
+      if (!audioStream || !audioStream.active) {
+        setUnavailableReason(null);
+        return;
+      }
+      setUnavailableReason(null);
+
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/webm";
+
+      let currentRecorder: MediaRecorder | null = null;
+
+      const startChunk = () => {
+        if (!active || !audioStream.active) return;
+        try {
+          const recorder = new MediaRecorder(audioStream, { mimeType });
+          const chunks: Blob[] = [];
+
+          recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) chunks.push(e.data);
+          };
+
+          recorder.onstop = async () => {
+            if (chunks.length === 0 || !active) return;
+            const blob = new Blob(chunks, { type: mimeType });
+            try {
+              const transcript = await transcribeAudio(blob);
+              if (!active || !transcript) return;
+              stepTranscript += transcript + " ";
+              transcriptRef.current = stepTranscript;
+              runMatcher(transcript, true);
+            } catch {
+              // Individual chunk failures are non-fatal; next chunk will retry
+            }
+          };
+
+          recorder.start();
+          currentRecorder = recorder;
+          setIsListening(true);
+        } catch (err) {
+          console.warn("[ASR] MediaRecorder failed:", err);
+          setUnavailableReason("MediaRecorder not supported for audio");
+        }
+      };
+
+      startChunk();
+
+      const timer = setInterval(() => {
+        if (!active) return;
+        if (currentRecorder?.state === "recording") {
+          currentRecorder.stop();
+        }
+        startChunk();
+      }, CHUNK_DURATION_MS);
+
+      return () => {
+        active = false;
+        clearInterval(timer);
+        if (currentRecorder?.state === "recording") {
+          try { currentRecorder.stop(); } catch { /* cleanup */ }
+        }
+        setIsListening(false);
+      };
+    }
+
+    // ── Browser SpeechRecognition mode (default) ───────────────────────────
+    if (typeof window !== "undefined" && !window.isSecureContext) {
+      setUnavailableReason("Voice commands require localhost or HTTPS. Open http://localhost:3000 instead.");
+      console.warn("[VoiceCommands] Blocked: page is not a secure context. Use http://localhost:3000");
+      return;
+    }
+
+    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!SR) {
+      setUnavailableReason("SpeechRecognition not supported in this browser.");
+      return;
+    }
+
+    const recognition: SRInstance = new SR();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    recognition.onaudiostart = () => setIsListening(true);
+
+    recognition.onend = () => {
+      if (active) {
+        try { recognition.start(); } catch {}
+      }
+    };
+
+    recognition.onerror = (e: { error: string }) => {
+      if (
+        e.error === "not-allowed" ||
+        e.error === "service-not-available" ||
+        e.error === "audio-capture"
+      ) {
+        showErrorToast(`Voice recognition error: ${e.error}`);
+        setIsListening(false);
+        active = false;
+      }
     };
 
     recognition.onresult = (event: any) => {
@@ -144,14 +224,9 @@ export function useVoiceCommands({
 
       transcriptRef.current = stepTranscript;
 
-      // Only run the command matcher on finalised results — ignoring interim
-      // transcripts prevents ambient speech and partial phrases from triggering
-      // commands prematurely.
       if (hasFinal) runMatcher(final.trim(), true);
     };
 
-    // Small delay so React Strict Mode's first-pass cleanup finishes before
-    // we call start(). Chrome only allows one SpeechRecognition at a time.
     const timer = setTimeout(() => {
       if (!active) return;
       try { recognition.start(); } catch {}
@@ -163,7 +238,7 @@ export function useVoiceCommands({
       try { recognition.stop(); } catch {}
       setIsListening(false);
     };
-  }, [enabled, useFuzzy, useLLMFallback]);
+  }, [enabled, useFuzzy, useLLMFallback, transcriptionSource, audioStream]);
 
   const snapshotTranscript = useCallback((): string => {
     const t = transcriptRef.current.trim();

@@ -55,6 +55,7 @@ export default function RecordingSessionPage() {
   const [stepNotes, setStepNotes] = useState<Record<number, string>>({});
   const stepNotesRef = useRef<Record<number, string>>({});
   stepNotesRef.current = stepNotes;
+  const [editingStepNumber, setEditingStepNumber] = useState<number | null>(null);
 
   // Toast state
   const [savedStepToast, setSavedStepToast] = useState<number | null>(null);
@@ -78,6 +79,10 @@ export default function RecordingSessionPage() {
 
   const handleSaveNote = useCallback((stepNumber: number, text: string) => {
     setStepNotes((prev) => ({ ...prev, [stepNumber]: text }));
+  }, []);
+
+  const handleEditStep = useCallback((stepNumber: number) => {
+    setEditingStepNumber(stepNumber);
   }, []);
 
   const [micEnabled, setMicEnabled] = useState(true);
@@ -191,6 +196,7 @@ export default function RecordingSessionPage() {
       const nextStep = prevStepNum + 1;
       stepStartTimeRef.current = snapshotTime;
       setCurrentStepNumber(nextStep);
+      setEditingStepNumber(null);
       fetchStepPrompt(nextStep, [...stepTranscriptsRef.current]);
     } catch (err) {
       showErrorToast(err);
@@ -358,6 +364,8 @@ export default function RecordingSessionPage() {
     onNextStep: handleNextStep,
     onFinish: handleFinishRequest,
     enabled: micEnabled && (sessionState === "recording" || sessionState === "confirming_finish"),
+    transcriptionSource: "server",
+    audioStream: webcamRecorder.audioStream,
   });
 
   snapshotTranscriptRef.current = voice.snapshotTranscript;
@@ -703,14 +711,18 @@ export default function RecordingSessionPage() {
         visible={panels.steps && isRecordingActive}
         completedSteps={completedSteps}
         currentStepNumber={currentStepNumber}
+        editingStepNumber={editingStepNumber}
+        onStepClick={handleEditStep}
       />
 
       {/* Right panel: help & chat */}
       <HelpAndChatPanel
         visible={panels.helpChat && isRecordingActive}
         currentStepNumber={currentStepNumber}
+        editingStepNumber={editingStepNumber}
         stepNotes={stepNotes}
         onSaveNote={handleSaveNote}
+        onEditStep={handleEditStep}
       />
 
       {/* Right toolbar */}

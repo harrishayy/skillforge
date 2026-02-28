@@ -33,7 +33,11 @@ async def _get_full_workflow(workflow_id: str) -> dict:
             "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms", (step["id"],)
         )
         frames = [
-            {**f, "is_key_frame": bool(f.get("is_key_frame", 0))}
+            {
+                **f,
+                "is_key_frame": bool(f.get("is_key_frame", 0)),
+                "object_detected": bool(f.get("object_detected", 0)),
+            }
             for f in frames_raw
         ]
         steps.append({**step, "annotations": annotations, "click_targets": click_targets, "frames": frames})

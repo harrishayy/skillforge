@@ -37,7 +37,13 @@ export function useWorkflowSocket(
     connect();
 
     return () => {
-      wsRef.current?.close(1000, "component unmounted");
+      const ws = wsRef.current;
+      if (!ws) return;
+      if (ws.readyState === WebSocket.CONNECTING) {
+        ws.addEventListener("open", () => ws.close(1000, "component unmounted"), { once: true });
+      } else {
+        ws.close(1000, "component unmounted");
+      }
     };
   }, [workflowId]);
 

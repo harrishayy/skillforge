@@ -68,6 +68,41 @@ export function StepFrameViewer() {
       {/* Main content */}
       {tab === "frames" ? (
         <div className="flex-1 flex flex-col gap-3 min-h-0">
+          {/* Filmstrip (above frame viewer) */}
+          {frames.length > 1 && (
+            <div className="shrink-0 overflow-x-auto">
+              <div className="flex gap-1.5 pb-1">
+                {frames.map((f) => {
+                  const isActive = currentFramePath === f.frame_path;
+                  return (
+                    <button
+                      key={f.id}
+                      onClick={() => setActiveFrame(step.id, f.frame_path)}
+                      className="shrink-0 rounded-md overflow-hidden transition-all"
+                      style={{
+                        width: 72,
+                        height: 48,
+                        border: isActive
+                          ? "2px solid var(--sf-yellow)"
+                          : f.is_key_frame
+                            ? "2px solid var(--sf-purple)"
+                            : "2px solid #333",
+                        opacity: isActive ? 1 : 0.7,
+                      }}
+                    >
+                      <img
+                        src={frameUrl(f.frame_path)}
+                        alt={`Frame ${f.timestamp_ms}ms`}
+                        className="w-full h-full object-cover"
+                        draggable={false}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Frame viewer with SAM3 */}
           <div className="relative flex-1 flex items-center justify-center overflow-hidden rounded-xl" style={{ backgroundColor: "#111" }}>
             {currentFramePath ? (
@@ -137,41 +172,6 @@ export function StepFrameViewer() {
               Click on frame to add SAM3 segmentation
             </div>
           </div>
-
-          {/* Filmstrip */}
-          {frames.length > 1 && (
-            <div className="shrink-0 overflow-x-auto">
-              <div className="flex gap-1.5 pb-1">
-                {frames.map((f) => {
-                  const isActive = currentFramePath === f.frame_path;
-                  return (
-                    <button
-                      key={f.id}
-                      onClick={() => setActiveFrame(step.id, f.frame_path)}
-                      className="shrink-0 rounded-md overflow-hidden transition-all"
-                      style={{
-                        width: 72,
-                        height: 48,
-                        border: isActive
-                          ? "2px solid var(--sf-yellow)"
-                          : f.is_key_frame
-                            ? "2px solid var(--sf-purple)"
-                            : "2px solid #333",
-                        opacity: isActive ? 1 : 0.7,
-                      }}
-                    >
-                      <img
-                        src={frameUrl(f.frame_path)}
-                        alt={`Frame ${f.timestamp_ms}ms`}
-                        className="w-full h-full object-cover"
-                        draggable={false}
-                      />
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
         </div>
       ) : (
         /* Video tab */
