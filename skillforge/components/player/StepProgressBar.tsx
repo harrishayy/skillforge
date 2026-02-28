@@ -47,12 +47,12 @@ export function StepProgressBar({ steps, onStepClick }: StepProgressBarProps) {
                 style={{ backgroundColor: "#2a2a2a" }}
               >
                 <div
-                  className="h-full rounded-full"
+                  className="h-full"
                   style={{
                     width: `${fillPercent}%`,
                     backgroundColor: fillColor,
                     transition: isPlaying
-                      ? "width 250ms linear"
+                      ? "width 100ms linear"
                       : "width 80ms ease-out",
                   }}
                 />

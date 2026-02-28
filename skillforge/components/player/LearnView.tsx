@@ -84,11 +84,21 @@ export function LearnView({
     [workflow, workflowId, setCurrentInstruction, setIsPausedAtStepEnd]
   );
 
-  const handleTimeUpdate = useCallback(() => {
-    const video = videoRef.current;
-    if (!video || !video.duration) return;
-    setStepProgress(video.currentTime / video.duration);
-  }, [setStepProgress]);
+  // RAF-based progress tracker — fires every frame (~16ms) for smooth bar fill
+  const isPlaying = usePlayerStore((s) => s.isPlaying);
+  useEffect(() => {
+    if (!isPlaying) return;
+    let raf: number;
+    const tick = () => {
+      const video = videoRef.current;
+      if (video && video.duration && !isNaN(video.duration) && video.duration > 0) {
+        setStepProgress(video.currentTime / video.duration);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isPlaying, currentStepIndex, setStepProgress]);
 
   const handleStepClick = useCallback(
     (index: number) => {
@@ -199,7 +209,6 @@ export function LearnView({
                   autoPlay
                   onPlay={() => setIsPlaying(true)}
                   onPause={() => setIsPlaying(false)}
-                  onTimeUpdate={handleTimeUpdate}
                   onEnded={handleVideoEnded}
                 />
                 {currentStep && (

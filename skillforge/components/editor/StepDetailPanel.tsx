@@ -1,6 +1,7 @@
 "use client";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useWorkflowStore, selectedStep } from "@/store/workflow-store";
+import { showSuccessToast } from "@/store/toast-store";
 import { msToTimestamp } from "@/lib/video-utils";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
@@ -47,12 +48,16 @@ export function StepDetailPanel() {
     setAdditionalContext("");
   };
 
-  const handleRerunPipeline = () => {
-    rerunPipeline(step.id, {
+  const handleRerunPipeline = async () => {
+    const success = await rerunPipeline(step.id, {
       run_claude: rerunClaude,
       run_nemotron: rerunNemotron,
       run_sam3: rerunSam3,
     });
+    if (success) {
+      setOpenModal(null);
+      showSuccessToast("Analysis redone! Video overlay updated.");
+    }
   };
 
   return (
