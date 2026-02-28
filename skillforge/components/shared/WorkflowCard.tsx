@@ -60,6 +60,12 @@ export function WorkflowCard({ workflow, href, actions }: WorkflowCardProps) {
             {workflow.status === "failed" && (
               <Badge variant="red">Failed</Badge>
             )}
+            {workflow.status === "ready" && workflow.published && (
+              <Badge variant="green">Published</Badge>
+            )}
+            {workflow.status === "ready" && !workflow.published && (
+              <Badge variant="zinc">Draft</Badge>
+            )}
           </div>
         </div>
       </Link>

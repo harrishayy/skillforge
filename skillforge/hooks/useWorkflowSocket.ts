@@ -2,6 +2,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import type { PipelineEvent } from "@/types";
 import { PIPELINE_WS } from "@/lib/constants";
+import { showErrorToast } from "@/store/toast-store";
 
 export function useWorkflowSocket(
   workflowId: string | null,
@@ -26,8 +27,8 @@ export function useWorkflowSocket(
       };
 
       ws.onclose = (e) => {
-        // Reconnect on non-intentional close after delay
         if (e.code !== 1000) {
+          showErrorToast("Pipeline connection lost, reconnecting...");
           setTimeout(connect, 2000);
         }
       };

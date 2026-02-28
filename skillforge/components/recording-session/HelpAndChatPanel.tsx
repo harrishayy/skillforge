@@ -1,10 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+
+type PanelTab = "helpChat" | "notes";
 
 interface HelpAndChatPanelProps {
   visible: boolean;
+  currentStepNumber?: number;
+  stepNotes?: Record<number, string>;
+  onSaveNote?: (stepNumber: number, text: string) => void;
 }
 
 const GLASS =
@@ -71,7 +76,6 @@ function HelpSection() {
                 title="Hand Gestures"
                 items={[
                   "Double-tap pinch (right hand) → next step",
-                  "Double-tap pinch (left hand) → undo step",
                 ]}
               />
               <HelpItem
@@ -211,7 +215,92 @@ function RecordingChat() {
   );
 }
 
-export function HelpAndChatPanel({ visible }: HelpAndChatPanelProps) {
+function StepNotesTab({
+  currentStepNumber,
+  stepNotes,
+  onSaveNote,
+}: {
+  currentStepNumber: number;
+  stepNotes: Record<number, string>;
+  onSaveNote: (stepNumber: number, text: string) => void;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const currentNote = stepNotes[currentStepNumber] ?? "";
+
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.value = currentNote;
+    }
+  }, [currentStepNumber, currentNote]);
+
+  const previousNotes = Object.entries(stepNotes)
+    .filter(([num]) => Number(num) < currentStepNumber && stepNotes[Number(num)]?.trim())
+    .sort(([a], [b]) => Number(a) - Number(b));
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0">
+      <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--sf-yellow)" }}>
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+        </svg>
+        <span className="text-sm font-bold text-white">Step {currentStepNumber} Notes</span>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div>
+          <label className="block text-xs font-bold mb-2" style={{ color: "rgba(255,255,255,0.5)" }}>
+            Description for Step {currentStepNumber}
+          </label>
+          <textarea
+            ref={textareaRef}
+            defaultValue={currentNote}
+            onChange={(e) => onSaveNote(currentStepNumber, e.target.value)}
+            rows={4}
+            placeholder="Add notes about what you're demonstrating in this step..."
+            className="w-full rounded-lg px-3 py-2.5 text-sm outline-none resize-none"
+            style={{
+              backgroundColor: "rgba(255, 255, 255, 0.08)",
+              border: "1px solid rgba(255, 255, 255, 0.12)",
+              color: "white",
+            }}
+          />
+          <p className="text-[10px] mt-1" style={{ color: "rgba(255,255,255,0.3)" }}>
+            These notes supplement the automatic voice transcript to improve AI output.
+          </p>
+        </div>
+
+        {previousNotes.length > 0 && (
+          <div>
+            <label className="block text-xs font-bold mb-2" style={{ color: "rgba(255,255,255,0.4)" }}>
+              Previous Step Notes
+            </label>
+            <div className="space-y-2">
+              {previousNotes.map(([num, text]) => (
+                <div
+                  key={num}
+                  className="rounded-lg px-3 py-2"
+                  style={{ backgroundColor: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" }}
+                >
+                  <span className="text-[10px] font-bold" style={{ color: "var(--sf-purple)" }}>
+                    Step {num}
+                  </span>
+                  <p className="text-xs mt-0.5" style={{ color: "rgba(255,255,255,0.6)" }}>
+                    {text}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function HelpAndChatPanel({ visible, currentStepNumber = 1, stepNotes = {}, onSaveNote }: HelpAndChatPanelProps) {
+  const [activeTab, setActiveTab] = useState<PanelTab>("helpChat");
+
   return (
     <div
       className={`fixed top-20 right-20 z-50 w-80 h-[calc(100vh-10rem)] flex flex-col transition-all duration-300 ${GLASS} ${
@@ -220,8 +309,42 @@ export function HelpAndChatPanel({ visible }: HelpAndChatPanelProps) {
           : "opacity-0 translate-x-8 pointer-events-none"
       }`}
     >
-      <HelpSection />
-      <RecordingChat />
+      {/* Tab bar */}
+      <div className="flex shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+        <button
+          onClick={() => setActiveTab("helpChat")}
+          className="flex-1 text-xs font-bold py-2.5 transition-all"
+          style={{
+            color: activeTab === "helpChat" ? "var(--sf-white)" : "rgba(255,255,255,0.35)",
+            borderBottom: activeTab === "helpChat" ? "2px solid var(--sf-purple)" : "2px solid transparent",
+          }}
+        >
+          Help & Chat
+        </button>
+        <button
+          onClick={() => setActiveTab("notes")}
+          className="flex-1 text-xs font-bold py-2.5 transition-all"
+          style={{
+            color: activeTab === "notes" ? "var(--sf-white)" : "rgba(255,255,255,0.35)",
+            borderBottom: activeTab === "notes" ? "2px solid var(--sf-yellow)" : "2px solid transparent",
+          }}
+        >
+          Step Notes
+        </button>
+      </div>
+
+      {activeTab === "helpChat" ? (
+        <>
+          <HelpSection />
+          <RecordingChat />
+        </>
+      ) : (
+        <StepNotesTab
+          currentStepNumber={currentStepNumber}
+          stepNotes={stepNotes}
+          onSaveNote={onSaveNote ?? (() => {})}
+        />
+      )}
     </div>
   );
 }

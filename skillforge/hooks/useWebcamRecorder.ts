@@ -1,5 +1,6 @@
 "use client";
 import { useState, useRef, useCallback } from "react";
+import { showErrorToast } from "@/store/toast-store";
 
 export interface WebcamRecorderState {
   isRecording: boolean;
@@ -28,6 +29,8 @@ export function useWebcamRecorder() {
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const mimeTypeRef = useRef<string>("video/webm");
   const stopResolveRef = useRef<((blob: Blob) => void) | null>(null);
+  const isPausedRef = useRef(false);
+  const pausedDurationRef = useRef(0);
 
   const _startRecorderOnStream = useCallback((stream: MediaStream) => {
     const mimeType = mimeTypeRef.current;
@@ -85,6 +88,8 @@ export function useWebcamRecorder() {
       recordingStreamRef.current = recordingStream;
       _startRecorderOnStream(recordingStream);
 
+      isPausedRef.current = false;
+      pausedDurationRef.current = 0;
       startTimeRef.current = Date.now();
       timerRef.current = setInterval(() => {
         setState((s) => ({ ...s, durationMs: Date.now() - startTimeRef.current }));
@@ -102,6 +107,7 @@ export function useWebcamRecorder() {
       return stream;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Camera access denied";
+      showErrorToast(`Camera error: ${msg}`);
       setState((s) => ({ ...s, error: msg }));
       return null;
     }
@@ -154,21 +160,29 @@ export function useWebcamRecorder() {
     if (mediaRecorderRef.current?.state === "recording") {
       mediaRecorderRef.current.pause();
       if (timerRef.current) clearInterval(timerRef.current);
-      setState((s) => ({ ...s, isPaused: true }));
+      isPausedRef.current = true;
+      pausedDurationRef.current = Date.now() - startTimeRef.current;
+      setState((s) => ({ ...s, isPaused: true, durationMs: pausedDurationRef.current }));
     }
   }, []);
 
   const resume = useCallback(() => {
     if (mediaRecorderRef.current?.state === "paused") {
       mediaRecorderRef.current.resume();
-      const pausedAt = state.durationMs;
-      startTimeRef.current = Date.now() - pausedAt;
+      startTimeRef.current = Date.now() - pausedDurationRef.current;
+      isPausedRef.current = false;
       timerRef.current = setInterval(() => {
         setState((s) => ({ ...s, durationMs: Date.now() - startTimeRef.current }));
       }, 500);
       setState((s) => ({ ...s, isPaused: false }));
     }
-  }, [state.durationMs]);
+  }, []);
 
-  return { ...state, start, stop, pause, resume, snapshot };
+  const getDurationMs = useCallback((): number => {
+    if (isPausedRef.current) return pausedDurationRef.current;
+    if (!startTimeRef.current) return 0;
+    return Date.now() - startTimeRef.current;
+  }, []);
+
+  return { ...state, start, stop, pause, resume, snapshot, getDurationMs };
 }

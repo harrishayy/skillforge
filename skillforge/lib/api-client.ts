@@ -42,8 +42,11 @@ async function apiFetch<T>(
 
 // ─── Workflows ────────────────────────────────────────────────────────────────
 
-export async function listWorkflows(): Promise<WorkflowSummary[]> {
-  const data = await apiFetch<{ workflows: WorkflowSummary[] }>("/api/workflows");
+export async function listWorkflows(
+  opts?: { publishedOnly?: boolean }
+): Promise<WorkflowSummary[]> {
+  const qs = opts?.publishedOnly ? "?published_only=true" : "";
+  const data = await apiFetch<{ workflows: WorkflowSummary[] }>(`/api/workflows${qs}`);
   return data.workflows;
 }
 
@@ -63,6 +66,14 @@ export async function updateWorkflow(
 
 export async function deleteWorkflow(id: string): Promise<void> {
   await apiFetch(`/api/workflows/${id}`, { method: "DELETE" });
+}
+
+export async function publishWorkflow(id: string): Promise<Workflow> {
+  return apiFetch<Workflow>(`/api/workflows/${id}/publish`, { method: "POST" });
+}
+
+export async function unpublishWorkflow(id: string): Promise<Workflow> {
+  return apiFetch<Workflow>(`/api/workflows/${id}/unpublish`, { method: "POST" });
 }
 
 export async function uploadRecording(formData: FormData): Promise<{
@@ -85,6 +96,7 @@ export async function uploadStepVideos(opts: {
   title: string;
   initialDescription?: string;
   stepTranscripts?: string[];
+  stepNotes?: string[];
 }): Promise<{ workflow_id: string; status: string }> {
   const formData = new FormData();
   opts.stepVideos.forEach((blob, i) => {
@@ -96,6 +108,9 @@ export async function uploadStepVideos(opts: {
   }
   if (opts.stepTranscripts) {
     formData.append("step_transcripts_json", JSON.stringify(opts.stepTranscripts));
+  }
+  if (opts.stepNotes) {
+    formData.append("step_notes_json", JSON.stringify(opts.stepNotes));
   }
 
   const res = await fetch(`${API_BASE}/api/workflows/upload-steps`, {
@@ -183,7 +198,7 @@ export async function deleteClickTarget(targetId: string): Promise<void> {
   await apiFetch(`/api/click-targets/${targetId}`, { method: "DELETE" });
 }
 
-// ─── Review: Regenerate & Segment ─────────────────────────────────────────────
+// ─── Regenerate & Segment ────────────────────────────────────────────────────
 
 export async function regenerateStep(
   stepId: string,
@@ -205,25 +220,6 @@ export async function segmentPoint(
     method: "POST",
     body: JSON.stringify({ x, y, frame_timestamp_ms: frameTimestampMs }),
   });
-}
-
-export async function reRecordStep(
-  workflowId: string,
-  stepId: string,
-  videoBlob: Blob
-): Promise<Step> {
-  const formData = new FormData();
-  formData.append("video", videoBlob, "refilm.webm");
-
-  const res = await fetch(
-    `${API_BASE}/api/workflows/${workflowId}/steps/${stepId}/re-record`,
-    { method: "POST", body: formData }
-  );
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, body.detail ?? "Re-record failed");
-  }
-  return res.json();
 }
 
 // ─── Copilot ──────────────────────────────────────────────────────────────────

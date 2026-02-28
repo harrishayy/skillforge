@@ -375,22 +375,16 @@ async def _decompose_guided(
         key_frame = min(segment_frames, key=lambda f: abs(f["timestamp_ms"] - mid_ms))
         key_frame_path = key_frame.get("relative_path", "")
 
-        # Ask Claude to generate title, description, and annotations for this single step
         transcript_context = f'Expert narration: "{transcript}"' if transcript else "No narration captured."
-        yolo_info = [
-            {"class": d.get("class"), "bbox": [d.get("bbox_x"), d.get("bbox_y"), d.get("bbox_width"), d.get("bbox_height")], "conf": round(d.get("confidence", 0), 2)}
-            for d in key_frame.get("yolo_detections", [])[:10]
-        ]
 
         user_msg = (
             f"Step {step_number} of the guided recording.\n"
             f"Time range: {start_ms}ms – {end_ms}ms\n"
-            f"{transcript_context}\n"
-            f"YOLO detections on key frame: {json.dumps(yolo_info)}\n\n"
+            f"{transcript_context}\n\n"
             "Using the transcript as the primary source, create this workflow step by calling create_workflow_step. "
             "Extract a concise title (≤8 words) from the transcript. "
             "Write a direct imperative description. "
-            "Add bounding_box + arrow annotations for any visible UI elements the expert interacted with."
+            "Add bounding_box + arrow annotations for any key elements mentioned in the transcript."
         )
 
         messages = [{"role": "user", "content": user_msg}]

@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from models.database import init_db
-from services.yolo_detector import load_model as load_yolo
 from services.mediapipe_tracker import load_mediapipe
 
 from routers.workflows import router as workflows_router
@@ -26,7 +25,6 @@ from routers.voice import router as voice_router
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
-    load_yolo()
     load_mediapipe()
     print("[SkillForge API] Ready")
     yield

@@ -53,18 +53,7 @@ DATABASE_URL='postgresql://neondb_owner:YOUR_PASSWORD@ep-your-endpoint.region.aw
 
 ## Storage
 
-- **Local** — Videos saved to `uploads/videos/`, frames to `uploads/frames/` (served as static files at `/uploads`).
-- **Cloudflare R2** — When `CF_R2_*` env vars are set, media is uploaded post-pipeline to R2 CDN and URLs are stored in the database.
-
-### Setting up Cloudflare R2
-
-1. Log in to the Cloudflare dashboard, navigate to R2, and create a bucket named `skillforge-media`.
-2. Enable public access on the bucket.
-3. Navigate to R2 > Manage API Tokens and create a token with Object Read and Write permissions.
-4. Collect your Account ID, Access Key ID, Secret Access Key, and the public bucket URL.
-5. Set all `CF_R2_*` variables in `.env`.
-
-If R2 is not configured, uploaded files are served from the local `uploads/` directory.
+Videos are saved to `uploads/videos/`, frames to `uploads/frames/`, and served as static files at `/uploads`.
 
 ---
 
@@ -249,7 +238,6 @@ Video upload
   → detect_ui_elements()          [YOLO] / extract_hand_data() [MediaPipe]
   → decompose_workflow()          [Claude — structured step JSON]
   → persist to DB
-  → upload to R2 (if configured)
   → broadcast WS complete
 ```
 
@@ -262,7 +250,6 @@ Video upload
   → detect_object()               [Grounding DINO or Claude] per step
   → extract_features()            [DINOv2] per step
   → persist steps + fingerprints to DB
-  → upload to R2 (if configured)
   → broadcast WS complete
 ```
 
@@ -280,7 +267,7 @@ Video upload
 | `title` | text | Workflow name |
 | `mode` | text | `software` or `hardware` |
 | `status` | text | Pipeline processing status |
-| `video_path` | text | Local or R2 path |
+| `video_path` | text | Local path |
 | `duration_ms` | integer | Video duration in milliseconds |
 
 #### `steps`
@@ -338,7 +325,7 @@ Recorded keyboard, click, and scroll events captured during software screen reco
 | `id` | integer | Primary key |
 | `title` | text | Workflow name |
 | `status` | text | Pipeline processing status |
-| `video_path` | text | Local or R2 path |
+| `video_path` | text | Local path |
 | `thumbnail_path` | text | Cover image path |
 
 #### `physical_steps`

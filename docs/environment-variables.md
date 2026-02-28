@@ -41,20 +41,6 @@ Setup details: [API Server Setup — Database](api-server-setup.md#database)
 | `CORS_ORIGINS` | No | `http://localhost:3000` | Comma-separated allowed origins for CORS |
 | `UPLOAD_DIR` | No | `uploads` | Local directory for uploaded videos and extracted frames |
 
-### Cloudflare R2 (Object Storage)
-
-All R2 variables are optional. When unset, files are served from the local `uploads/` directory.
-
-| Variable | Description |
-|---|---|
-| `CF_R2_ACCOUNT_ID` | Cloudflare account ID (found in dashboard sidebar) |
-| `CF_R2_ACCESS_KEY_ID` | R2 API token access key |
-| `CF_R2_SECRET_ACCESS_KEY` | R2 API token secret key |
-| `CF_R2_BUCKET_NAME` | R2 bucket name (default: `skillforge-media`) |
-| `CF_R2_PUBLIC_URL` | Public CDN base URL for the bucket (e.g. `https://pub-abcdef1234567890.r2.dev`) |
-
-Setup details: [API Server Setup — Storage](api-server-setup.md#storage)
-
 ### ML Inference Servers
 
 All ML server URLs are optional. Without them, the system degrades gracefully — Claude Vision handles detection tasks, and segmentation / feature extraction are skipped.

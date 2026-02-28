@@ -27,7 +27,7 @@ export function ModeSelector({ onExpertSelect }: ModeSelectorProps) {
       >
         <RoleCard
           icon="🎬"
-          title="Expert Recording Video"
+          title="Expert Recording"
           description="Record a task via webcam with hand tracking and object detection. AI builds an annotated workflow automatically."
           bg="var(--sf-purple)"
           onClick={onExpertSelect}
@@ -35,7 +35,7 @@ export function ModeSelector({ onExpertSelect }: ModeSelectorProps) {
         <Link href="/library" className="block">
           <RoleCard
             icon="🎓"
-            title="Learning Trainee Video"
+            title="Learning Trainee"
             description="Browse and watch expert recordings with live AI annotations, bounding boxes, and a Claude copilot guide."
             bg="var(--sf-lime)"
             borderLeft

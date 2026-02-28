@@ -2,12 +2,17 @@
 SAM 3 concept segmentation service.
 
 Calls a remote SAM 3 inference server (if SAM3_URL is set) to segment
-objects matching a text concept prompt. Designed for the live detection
-pipeline — accepts raw frame bytes, returns masks + boxes + scores.
+objects matching a text concept prompt.  Supports:
+  - Text-prompted concept segmentation (live detection + pipeline)
+  - Point-prompted segmentation (click-to-segment in editor)
+  - Context-driven auto-segmentation (pipeline: title/description/transcript → prompt)
+  - Toggle (add/remove) segmentation for interactive refinement
 """
 
 import os
+import re
 import time
+import base64
 import httpx
 
 
@@ -169,3 +174,74 @@ async def segment_box(
     except Exception as e:
         print(f"[SAM3] Box segmentation failed: {e}")
         return None
+
+
+# ── Context-driven segmentation (pipeline integration) ──────────────────────
+
+def _extract_keywords(title: str, description: str, transcript: str) -> str:
+    """Build a concise SAM3 text prompt from step context."""
+    combined = f"{title}. {description}. {transcript}"
+    combined = re.sub(r"[^a-zA-Z0-9\s,]", " ", combined)
+    words = combined.lower().split()
+    stopwords = {
+        "the", "a", "an", "to", "and", "or", "of", "in", "on", "at", "is",
+        "it", "for", "this", "that", "with", "from", "by", "as", "be", "are",
+        "was", "were", "been", "do", "does", "did", "will", "would", "should",
+        "can", "could", "may", "might", "then", "than", "so", "if", "not",
+        "step", "click", "press", "tap", "select", "go", "open", "close",
+        "now", "next", "here", "there", "just", "also", "very", "your", "you",
+        "we", "i", "my", "its", "im", "ive",
+    }
+    seen = set()
+    keywords = []
+    for w in words:
+        if len(w) > 2 and w not in stopwords and w not in seen:
+            seen.add(w)
+            keywords.append(w)
+        if len(keywords) >= 8:
+            break
+    return ", ".join(keywords) if keywords else "object"
+
+
+async def segment_with_context(
+    frame_bytes: bytes,
+    title: str = "",
+    description: str = "",
+    transcript: str = "",
+    confidence_threshold: float = 0.35,
+) -> dict | None:
+    """
+    Auto-segment a key frame using step context as the text prompt.
+    Extracts keywords from title/description/transcript and calls segment_concept.
+    """
+    prompt = _extract_keywords(title, description, transcript)
+    print(f"[SAM3] Auto-segment prompt: \"{prompt}\"", flush=True)
+    return await segment_concept(frame_bytes, prompt, confidence_threshold)
+
+
+async def toggle_segment(
+    frame_bytes: bytes,
+    x: float,
+    y: float,
+    existing_segments: list[dict],
+) -> dict:
+    """
+    Interactive add/remove: if (x, y) falls inside an existing segment's bbox,
+    remove it; otherwise add a new segment via point-prompted SAM3.
+
+    Returns {"segments": [...], "removed_index": int | None}.
+    """
+    for i, seg in enumerate(existing_segments):
+        bbox = seg.get("bbox", [])
+        if len(bbox) == 4:
+            bx1, by1, bx2, by2 = bbox
+            if bx1 <= x <= bx2 and by1 <= y <= by2:
+                remaining = [s for j, s in enumerate(existing_segments) if j != i]
+                return {"segments": remaining, "removed_index": i}
+
+    result = await segment_point(frame_bytes, x, y)
+    if result and result.get("segments"):
+        merged = existing_segments + result["segments"]
+        return {"segments": merged, "removed_index": None}
+
+    return {"segments": existing_segments, "removed_index": None}

@@ -1,9 +1,28 @@
-import cv2
+import av
+import json
 import asyncio
+import subprocess
+import numpy as np
 from pathlib import Path
+from PIL import Image
 from typing import Callable, Awaitable
 
 FRAMES_DIR = Path(__file__).parent.parent / "uploads" / "frames"
+
+
+def _bhattacharyya_distance(hist_a: np.ndarray, hist_b: np.ndarray) -> float:
+    """Bhattacharyya distance between two normalized histograms."""
+    bc = np.sum(np.sqrt(hist_a * hist_b))
+    bc = min(bc, 1.0)
+    return float(np.sqrt(1.0 - bc)) if bc < 1.0 else 0.0
+
+
+def _grayscale_histogram(frame: av.VideoFrame) -> np.ndarray:
+    """Compute a normalised 256-bin grayscale histogram from a PyAV frame."""
+    gray = frame.to_ndarray(format="gray")
+    hist, _ = np.histogram(gray.ravel(), bins=256, range=(0, 256))
+    total = hist.sum()
+    return hist.astype(np.float64) / total if total > 0 else hist.astype(np.float64)
 
 
 async def extract_frames(
@@ -13,47 +32,34 @@ async def extract_frames(
 ) -> list[dict]:
     """
     Extract key frames from video using scene-change detection.
-    Returns list of {timestamp_ms, path} dicts.
-    Always samples at ~1fps, plus extra frames on histogram scene changes.
+    Returns list of {timestamp_ms, path, relative_path} dicts.
+    Samples at ~1fps, plus extra frames on histogram scene changes.
     """
     output_dir = FRAMES_DIR / workflow_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    frames: list[dict] = []
-
     def _extract_sync() -> list[dict]:
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise RuntimeError(f"Cannot open video: {video_path}")
+        container = av.open(video_path)
+        stream = container.streams.video[0]
+        time_base = float(stream.time_base) if stream.time_base else 1.0 / 30.0
 
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         prev_hist = None
         last_sampled_ms = -1000
         results = []
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+        for frame in container.decode(video=0):
+            if frame.pts is None:
+                continue
+            current_ms = int(frame.pts * time_base * 1000)
 
-            current_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
-            frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-
-            # Compute histogram for scene change detection
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
-            hist = cv2.normalize(hist, hist).flatten()
-
+            hist = _grayscale_histogram(frame)
             should_save = False
 
-            # Always sample at 1fps
             if current_ms - last_sampled_ms >= 1000:
                 should_save = True
 
-            # Also save on significant scene change
             if prev_hist is not None:
-                diff = cv2.compareHist(prev_hist, hist, cv2.HISTCMP_BHATTACHARYYA)
+                diff = _bhattacharyya_distance(prev_hist, hist)
                 if diff > 0.3 and current_ms - last_sampled_ms >= 200:
                     should_save = True
 
@@ -61,7 +67,7 @@ async def extract_frames(
 
             if should_save:
                 frame_path = output_dir / f"frame_{current_ms:08d}.jpg"
-                cv2.imwrite(str(frame_path), frame)
+                frame.to_image().save(str(frame_path), "JPEG", quality=90)
                 results.append({
                     "timestamp_ms": current_ms,
                     "path": str(frame_path),
@@ -69,10 +75,9 @@ async def extract_frames(
                 })
                 last_sampled_ms = current_ms
 
-        cap.release()
+        container.close()
         return results
 
-    # Run blocking CV code in thread pool
     loop = asyncio.get_event_loop()
     frames = await loop.run_in_executor(None, _extract_sync)
 
@@ -82,9 +87,44 @@ async def extract_frames(
     return frames
 
 
+MAX_DURATION_MS = 24 * 60 * 60 * 1000  # 24 hours
+
+
 def get_video_duration_ms(video_path: str) -> int:
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    cap.release()
-    return int((total_frames / fps) * 1000)
+    dur = _duration_via_pyav(video_path)
+    if dur is None:
+        dur = _duration_via_ffprobe(video_path)
+    if dur is None:
+        dur = 0
+    return min(max(dur, 0), MAX_DURATION_MS)
+
+
+def _duration_via_pyav(video_path: str) -> int | None:
+    """Duration via PyAV container metadata (microseconds → ms)."""
+    try:
+        container = av.open(video_path)
+        if container.duration and container.duration > 0:
+            dur_ms = int(container.duration / 1000)
+            container.close()
+            return dur_ms
+        container.close()
+        return None
+    except Exception:
+        return None
+
+
+def _duration_via_ffprobe(video_path: str) -> int | None:
+    """Reliable fallback via ffprobe — handles all container formats."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet", "-print_format", "json",
+                "-show_format", video_path,
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        info = json.loads(result.stdout)
+        seconds = float(info["format"]["duration"])
+        return int(seconds * 1000)
+    except Exception:
+        return None

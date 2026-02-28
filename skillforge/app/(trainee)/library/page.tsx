@@ -10,8 +10,8 @@ export default function LibraryPage() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    listWorkflows()
-      .then((all) => setWorkflows(all.filter((w) => w.status === "ready")))
+    listWorkflows({ publishedOnly: true })
+      .then(setWorkflows)
       .finally(() => setIsLoading(false));
   }, []);
 

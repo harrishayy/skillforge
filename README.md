@@ -27,7 +27,6 @@ graph TB
     SAM3["SAM 3 GPU Server<br/>NVIDIA Brev"]
 
     NeonDB["Neon PostgreSQL"]
-    R2["Cloudflare R2"]
     Claude["Anthropic Claude"]
     Nemotron["NVIDIA Nemotron VL"]
 
@@ -35,7 +34,6 @@ graph TB
     Browser -->|"WebSocket"| AR
     API -->|"HTTP"| SAM3
     API --> NeonDB
-    API --> R2
     API --> Claude
     API --> Nemotron
     AR -->|"MediaPipe"| Browser
@@ -53,7 +51,7 @@ graph TB
 ## Tech Stack
 
 - **Frontend** — Next.js 16, React 19, TypeScript, Tailwind CSS 4, Zustand, Fabric.js, Framer Motion
-- **Backend** — Python FastAPI, uvicorn, Neon PostgreSQL (asyncpg), SQLite fallback, Cloudflare R2
+- **Backend** — Python FastAPI, uvicorn, Neon PostgreSQL (asyncpg), SQLite fallback
 - **AI / ML** — Claude Sonnet (Anthropic), Nemotron VL (NVIDIA NIM), MediaPipe Hands, YOLOv8n, Grounding DINO 1.5, SAM 2/3, DINOv2
 - **Real-time** — WebSockets for pipeline progress, live sessions, and AR hand tracking
 
@@ -164,7 +162,7 @@ SkillForge is designed to be fully functional with only an `ANTHROPIC_API_KEY`, 
 | Segmentation | SAM 3 / SAM 2 | Skipped |
 | Feature extraction | DINOv2 | Skipped |
 | Database | Neon PostgreSQL | Local SQLite |
-| File storage | Cloudflare R2 | Local `uploads/` |
+| File storage | Local `uploads/` | — |
 
 ---
 

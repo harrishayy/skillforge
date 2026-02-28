@@ -1,12 +1,29 @@
 "use client";
 import { create } from "zustand";
-import type { Workflow, Step, Annotation } from "@/types";
-import { updateStep, updateAnnotation, deleteAnnotation } from "@/lib/api-client";
+import type { Workflow, Step, Annotation, Sam3Segment } from "@/types";
+import {
+  updateStep,
+  updateAnnotation,
+  deleteAnnotation,
+  segmentPoint,
+  regenerateStep,
+} from "@/lib/api-client";
+import { showErrorToast } from "@/store/toast-store";
 
 interface WorkflowStore {
   workflow: Workflow | null;
   selectedStepId: string | null;
   isLoading: boolean;
+
+  // SAM3 segmentation state
+  segmentsByStep: Record<string, Sam3Segment[]>;
+  segmentingStepId: string | null;
+
+  // Regeneration state
+  regeneratingStepId: string | null;
+
+  // Active filmstrip frame per step
+  activeFramePath: Record<string, string>;
 
   setWorkflow: (wf: Workflow) => void;
   selectStep: (stepId: string | null) => void;
@@ -20,12 +37,27 @@ interface WorkflowStore {
   saveStep: (stepId: string, fields: Partial<Step>) => Promise<void>;
   saveAnnotation: (ann: Annotation) => Promise<void>;
   deleteAnnotationById: (annId: string) => Promise<void>;
+
+  // SAM3 segmentation actions
+  addSegment: (stepId: string, x: number, y: number, frameTimestampMs: number) => Promise<void>;
+  removeSegment: (stepId: string, index: number) => void;
+  clearSegments: (stepId: string) => void;
+
+  // Regeneration
+  regenerate: (stepId: string, additionalContext: string) => Promise<void>;
+
+  // Filmstrip
+  setActiveFrame: (stepId: string, framePath: string) => void;
 }
 
 export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   workflow: null,
   selectedStepId: null,
   isLoading: false,
+  segmentsByStep: {},
+  segmentingStepId: null,
+  regeneratingStepId: null,
+  activeFramePath: {},
 
   setWorkflow: (wf) => set({ workflow: wf }),
 
@@ -105,18 +137,77 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
 
   saveStep: async (stepId, fields) => {
     get().updateStepLocal(stepId, fields);
-    await updateStep(stepId, fields);
+    try {
+      await updateStep(stepId, fields);
+    } catch (e) {
+      showErrorToast(e);
+    }
   },
 
   saveAnnotation: async (ann) => {
     get().updateAnnotationLocal(ann.id, ann);
-    await updateAnnotation(ann.id, ann);
+    try {
+      await updateAnnotation(ann.id, ann);
+    } catch (e) {
+      showErrorToast(e);
+    }
   },
 
   deleteAnnotationById: async (annId) => {
     get().removeAnnotationLocal(annId);
-    await deleteAnnotation(annId);
+    try {
+      await deleteAnnotation(annId);
+    } catch (e) {
+      showErrorToast(e);
+    }
   },
+
+  addSegment: async (stepId, x, y, frameTimestampMs) => {
+    set({ segmentingStepId: stepId });
+    try {
+      const result = await segmentPoint(stepId, x, y, frameTimestampMs);
+      set((s) => ({
+        segmentsByStep: {
+          ...s.segmentsByStep,
+          [stepId]: [...(s.segmentsByStep[stepId] ?? []), ...result.segments],
+        },
+        segmentingStepId: null,
+      }));
+    } catch (e) {
+      showErrorToast(e);
+      set({ segmentingStepId: null });
+    }
+  },
+
+  removeSegment: (stepId, index) =>
+    set((s) => ({
+      segmentsByStep: {
+        ...s.segmentsByStep,
+        [stepId]: (s.segmentsByStep[stepId] ?? []).filter((_, i) => i !== index),
+      },
+    })),
+
+  clearSegments: (stepId) =>
+    set((s) => ({
+      segmentsByStep: { ...s.segmentsByStep, [stepId]: [] },
+    })),
+
+  regenerate: async (stepId, additionalContext) => {
+    set({ regeneratingStepId: stepId });
+    try {
+      const result = await regenerateStep(stepId, additionalContext);
+      get().updateStepLocal(stepId, result.step);
+      set({ regeneratingStepId: null });
+    } catch (e) {
+      showErrorToast(e);
+      set({ regeneratingStepId: null });
+    }
+  },
+
+  setActiveFrame: (stepId, framePath) =>
+    set((s) => ({
+      activeFramePath: { ...s.activeFramePath, [stepId]: framePath },
+    })),
 }));
 
 export const selectedStep = (state: { workflow: Workflow | null; selectedStepId: string | null }) =>
