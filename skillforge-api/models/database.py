@@ -47,6 +47,7 @@ _CREATE_STATEMENTS = [
     start_ms        INTEGER NOT NULL,
     end_ms          INTEGER NOT NULL,
     key_frame_path  TEXT,
+    video_path      TEXT,
     ai_description  TEXT,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
@@ -140,11 +141,11 @@ async def init_db():
     if db_url.startswith(("postgres://", "postgresql://")):
         try:
             import asyncpg
-            # Neon uses sslmode=require; asyncpg needs ssl=True
             _pool = await asyncpg.create_pool(db_url, min_size=2, max_size=10, ssl="require")
             async with _pool.acquire() as conn:
                 for stmt in _CREATE_STATEMENTS:
                     await conn.execute(stmt)
+                await _run_migrations_pg(conn)
             print("[DB] Connected to Neon PostgreSQL")
         except Exception as e:
             print(f"[DB] PostgreSQL connection failed: {e}. Falling back to SQLite.")
@@ -154,9 +155,22 @@ async def init_db():
         await _init_sqlite()
 
 
+async def _run_migrations_pg(conn):
+    """Add columns that may be missing on existing databases (Postgres)."""
+    try:
+        await conn.execute("ALTER TABLE steps ADD COLUMN IF NOT EXISTS video_path TEXT")
+    except Exception:
+        pass
+
+
 async def _init_sqlite():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(CREATE_TABLES_SQL)
+        # Safe migration for existing databases
+        try:
+            await db.execute("ALTER TABLE steps ADD COLUMN video_path TEXT")
+        except Exception:
+            pass
         await db.commit()
     print(f"[DB] Using SQLite at {DB_PATH}")
 

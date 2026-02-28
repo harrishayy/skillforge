@@ -16,6 +16,7 @@ const STAGE_LABELS: Record<string, string> = {
   yolo: "Detecting UI elements",
   mediapipe: "Tracking hand movements",
   claude_decompose: "Claude decomposing workflow",
+  storage: "Uploading to CDN",
   complete: "Complete",
   error: "Error",
 };
@@ -46,7 +47,7 @@ export function PipelineStatus({ workflowId }: PipelineStatusProps) {
     if (event.type === "complete") {
       setProgress(100);
       setIsDone(true);
-      setTimeout(() => { router.push(`/editor/${workflowId}`); }, 1500);
+      setTimeout(() => { router.push(`/review/${workflowId}`); }, 1500);
     }
     if (event.type === "error") {
       setLogs((prev) => [
@@ -71,7 +72,7 @@ export function PipelineStatus({ workflowId }: PipelineStatusProps) {
         {isDone ? "Workflow Ready!" : "AI Processing Your Recording..."}
       </h2>
       <p className="text-sm mb-6" style={{ color: "var(--sf-gray)" }}>
-        {isDone ? "Redirecting to editor..." : "Nemotron VL and Claude are analyzing your recording."}
+        {isDone ? "Redirecting to review..." : "Nemotron VL and Claude are analyzing your recording."}
       </p>
 
       <ProgressBar value={progress} className="mb-6" />

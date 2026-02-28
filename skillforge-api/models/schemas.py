@@ -75,6 +75,16 @@ class AnalyzeFrameRequest(BaseModel):
     timestamp_ms: int
 
 
+class RegenerateStepRequest(BaseModel):
+    additional_context: str = ""
+
+
+class SegmentPointRequest(BaseModel):
+    x: float = Field(..., ge=0, le=1, description="Normalized x coordinate (0-1)")
+    y: float = Field(..., ge=0, le=1, description="Normalized y coordinate (0-1)")
+    frame_timestamp_ms: int
+
+
 class CopilotChatRequest(BaseModel):
     workflow_id: str
     step_id: str
@@ -134,6 +144,7 @@ class StepResponse(BaseModel):
     start_ms: int
     end_ms: int
     key_frame_path: Optional[str] = None
+    video_path: Optional[str] = None
     ai_description: Optional[str] = None
     annotations: list[AnnotationResponse] = []
     click_targets: list[ClickTargetResponse] = []

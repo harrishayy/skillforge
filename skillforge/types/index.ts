@@ -56,6 +56,7 @@ export interface Step {
   start_ms: number;
   end_ms: number;
   key_frame_path?: string;
+  video_path?: string;
   ai_description?: string;
   annotations: Annotation[];
   click_targets: ClickTarget[];
@@ -152,6 +153,25 @@ export interface RecordingSession {
   blob: Blob | null;
   inputEvents: RecordedInputEvent[];
   duration_ms: number;
+}
+
+// ─── Review ──────────────────────────────────────────────────────────────────
+
+export type ReviewStepStatus = "pending" | "approved" | "refilm";
+
+export interface Sam3Segment {
+  mask_base64: string;
+  bbox: [number, number, number, number];
+  score: number;
+}
+
+export interface SegmentPointResponse {
+  segments: Sam3Segment[];
+  frame_path: string;
+}
+
+export interface RegenerateStepResponse {
+  step: Step;
 }
 
 // ─── Editor State ─────────────────────────────────────────────────────────────

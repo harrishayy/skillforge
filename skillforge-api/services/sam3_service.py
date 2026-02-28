@@ -101,6 +101,27 @@ async def segment_concept(
         return None
 
 
+async def segment_point(
+    frame_bytes: bytes,
+    x: float,
+    y: float,
+    radius: float = 0.05,
+) -> dict | None:
+    """
+    Segment the object at a specific point by creating a small bounding box
+    around (x, y) and delegating to segment_box.
+
+    Args:
+        x, y: Normalized coordinates (0-1) of the click point.
+        radius: Half-size of the bounding box in normalized coords.
+    """
+    x1 = max(0.0, x - radius)
+    y1 = max(0.0, y - radius)
+    x2 = min(1.0, x + radius)
+    y2 = min(1.0, y + radius)
+    return await segment_box(frame_bytes, [x1, y1, x2, y2])
+
+
 async def segment_box(
     frame_bytes: bytes,
     bbox: list[float],

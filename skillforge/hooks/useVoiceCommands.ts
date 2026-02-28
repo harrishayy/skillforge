@@ -1,10 +1,13 @@
 "use client";
-import { useRef, useCallback, useEffect } from "react";
+import { useRef, useCallback, useEffect, useState } from "react";
 import {
   matchVoiceIntent,
   shouldUseLLMFallback,
 } from "@/lib/voice-intent-matcher";
 import { classifyVoiceIntent } from "@/lib/api-client";
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+type SRInstance = any; // Vendor-prefixed SpeechRecognition lacks stable TS types
 
 interface UseVoiceCommandsOptions {
   onNextStep: () => void;
@@ -17,6 +20,8 @@ interface UseVoiceCommandsOptions {
 
 const LLM_THROTTLE_MS = 2500;
 
+export type VoiceStatus = "off" | "starting" | "listening" | "unavailable";
+
 export function useVoiceCommands({
   onNextStep,
   onFinish,
@@ -25,9 +30,10 @@ export function useVoiceCommands({
   useLLMFallback = false,
   useFuzzy = true,
 }: UseVoiceCommandsOptions) {
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
   const transcriptRef = useRef<string>("");
-  const isActiveRef = useRef(false);
+  const [isListening, setIsListening] = useState(false);
+  const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
+
   const onNextStepRef = useRef(onNextStep);
   const onFinishRef = useRef(onFinish);
   const onPreviousStepRef = useRef(onPreviousStep);
@@ -37,42 +43,70 @@ export function useVoiceCommands({
   useEffect(() => { onFinishRef.current = onFinish; }, [onFinish]);
   useEffect(() => { onPreviousStepRef.current = onPreviousStep; }, [onPreviousStep]);
 
-  const start = useCallback(() => {
-    if (!enabled) return;
-    const SpeechRecognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+  useEffect(() => {
+    if (!enabled) {
+      setIsListening(false);
+      return;
+    }
 
-    if (!SpeechRecognition) return;
+    if (typeof window !== "undefined" && !window.isSecureContext) {
+      setUnavailableReason("Voice commands require localhost or HTTPS. Open http://localhost:3000 instead.");
+      console.warn("[VoiceCommands] Blocked: page is not a secure context. Use http://localhost:3000");
+      return;
+    }
 
-    const recognition = new SpeechRecognition();
+    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!SR) {
+      setUnavailableReason("SpeechRecognition not supported in this browser.");
+      return;
+    }
+
+    let active = true;
+    let stepTranscript = "";
+    const recognition: SRInstance = new SR();
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "en-US";
 
+    recognition.onaudiostart = () => setIsListening(true);
+
     recognition.onend = () => {
-      if (isActiveRef.current) {
+      if (active) {
         try { recognition.start(); } catch {}
       }
     };
 
-    let stepTranscript = "";
+    recognition.onerror = (e: { error: string }) => {
+      if (
+        e.error === "not-allowed" ||
+        e.error === "service-not-available" ||
+        e.error === "audio-capture"
+      ) {
+        console.warn("[VoiceCommands]", e.error);
+        setIsListening(false);
+        active = false;
+      }
+    };
 
     const runMatcher = (check: string, hasFinal: boolean) => {
       const words = check.trim().split(/\s+/).filter(Boolean);
       if (words.length < 1) return;
       if (!hasFinal && words.length < 2) return;
 
-      let intent = matchVoiceIntent(check, { useFuzzy });
+      const intent = matchVoiceIntent(check, { useFuzzy });
 
       if (!intent && useLLMFallback && shouldUseLLMFallback(check)) {
         const now = Date.now();
         if (now - lastLLMCallRef.current >= LLM_THROTTLE_MS) {
           lastLLMCallRef.current = now;
-          classifyVoiceIntent(check).then((apiIntent) => {
-            if (apiIntent === "none") return;
-            if (apiIntent === "next") onNextStepRef.current();
-            else if (apiIntent === "prev") onPreviousStepRef.current?.();
-            else if (apiIntent === "finish") onFinishRef.current();
-          }).catch(() => {});
+          classifyVoiceIntent(check)
+            .then((apiIntent) => {
+              if (apiIntent === "none") return;
+              if (apiIntent === "next") onNextStepRef.current();
+              else if (apiIntent === "prev") onPreviousStepRef.current?.();
+              else if (apiIntent === "finish") onFinishRef.current();
+            })
+            .catch(() => {});
           return;
         }
       }
@@ -87,7 +121,7 @@ export function useVoiceCommands({
       transcriptRef.current = "";
     };
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
+    recognition.onresult = (event: any) => {
       let interim = "";
       let final = "";
       let hasFinal = false;
@@ -109,16 +143,20 @@ export function useVoiceCommands({
       if (check) runMatcher(check, hasFinal);
     };
 
-    recognitionRef.current = recognition;
-    isActiveRef.current = true;
-    try { recognition.start(); } catch {}
-  }, [enabled, useLLMFallback, useFuzzy]);
+    // Small delay so React Strict Mode's first-pass cleanup finishes before
+    // we call start(). Chrome only allows one SpeechRecognition at a time.
+    const timer = setTimeout(() => {
+      if (!active) return;
+      try { recognition.start(); } catch {}
+    }, 120);
 
-  const stop = useCallback(() => {
-    isActiveRef.current = false;
-    try { recognitionRef.current?.stop(); } catch {}
-    recognitionRef.current = null;
-  }, []);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      try { recognition.stop(); } catch {}
+      setIsListening(false);
+    };
+  }, [enabled, useFuzzy, useLLMFallback]);
 
   const snapshotTranscript = useCallback((): string => {
     const t = transcriptRef.current.trim();
@@ -126,5 +164,13 @@ export function useVoiceCommands({
     return t;
   }, []);
 
-  return { start, stop, snapshotTranscript };
+  const status: VoiceStatus = unavailableReason
+    ? "unavailable"
+    : !enabled
+      ? "off"
+      : isListening
+        ? "listening"
+        : "starting";
+
+  return { isListening, snapshotTranscript, status, unavailableReason };
 }
