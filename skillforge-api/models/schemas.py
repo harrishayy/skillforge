@@ -87,6 +87,10 @@ class StepInstructionRequest(BaseModel):
     step_id: str
 
 
+class VoiceIntentRequest(BaseModel):
+    transcript: str
+
+
 # ─── Response Models ──────────────────────────────────────────────────────────
 
 class AnnotationResponse(BaseModel):

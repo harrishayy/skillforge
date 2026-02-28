@@ -8,6 +8,7 @@ import { VideoWithOverlay } from "@/components/player/VideoWithOverlay";
 import { StepProgressBar } from "@/components/player/StepProgressBar";
 import { CopilotPanel } from "@/components/chat/CopilotPanel";
 import { useCopilotChat } from "@/hooks/useCopilotChat";
+import { useVoiceCommands } from "@/hooks/useVoiceCommands";
 import { usePlayerStore } from "@/store/player-store";
 import { Spinner } from "@/components/ui/Spinner";
 import { Button } from "@/components/ui/Button";
@@ -61,6 +62,36 @@ export default function LearnPage() {
     },
     [setCurrentStepIndex, setIsPausedAtStepEnd]
   );
+
+  const handleVoiceNextStep = useCallback(() => {
+    const idx = usePlayerStore.getState().currentStepIndex;
+    if (!workflow || idx >= workflow.steps.length - 1) return;
+    setCurrentStepIndex(idx + 1);
+    setIsPausedAtStepEnd(false);
+    handleStepChange(idx + 1);
+  }, [workflow, handleStepChange, setCurrentStepIndex, setIsPausedAtStepEnd]);
+
+  const handleVoicePrevStep = useCallback(() => {
+    const idx = usePlayerStore.getState().currentStepIndex;
+    if (!workflow || idx <= 0) return;
+    setCurrentStepIndex(idx - 1);
+    setIsPausedAtStepEnd(false);
+    handleStepChange(idx - 1);
+  }, [workflow, handleStepChange, setCurrentStepIndex, setIsPausedAtStepEnd]);
+
+  const voice = useVoiceCommands({
+    onNextStep: handleVoiceNextStep,
+    onPreviousStep: handleVoicePrevStep,
+    onFinish: () => {},
+    enabled: !!workflow,
+  });
+
+  useEffect(() => {
+    if (workflow) {
+      voice.start();
+      return () => voice.stop();
+    }
+  }, [workflow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading) {
     return (

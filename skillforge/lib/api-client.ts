@@ -165,4 +165,16 @@ export async function getStepInstruction(
   return data.instruction;
 }
 
+// ─── Voice intent (LLM fallback) ────────────────────────────────────────────
+
+export type VoiceIntentResult = "next" | "prev" | "finish" | "none";
+
+export async function classifyVoiceIntent(transcript: string): Promise<VoiceIntentResult> {
+  const data = await apiFetch<{ intent: VoiceIntentResult }>("/api/voice/intent", {
+    method: "POST",
+    body: JSON.stringify({ transcript }),
+  });
+  return data.intent;
+}
+
 export { ApiError };

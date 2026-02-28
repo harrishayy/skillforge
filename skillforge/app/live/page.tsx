@@ -9,6 +9,7 @@ import { useMicLevel } from "@/hooks/useMicLevel";
 import { useLiveDetect, type DetectMode, type DetectionResult } from "@/hooks/useLiveDetect";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
 import { useDoubleTapDetection } from "@/hooks/useDoubleTapDetection";
+import { useVoiceCommands } from "@/hooks/useVoiceCommands";
 import { computePinchState } from "@/lib/pinch-detection";
 import { CameraFeed } from "@/components/camera/CameraFeed";
 import { DetectorSidebar } from "@/components/live-detect/DetectorSidebar";
@@ -88,19 +89,35 @@ export default function LiveDetectPage() {
 
   const pinchState = computePinchState(result?.hands ?? null);
 
+  const lastSkipRewindAtRef = useRef<number>(0);
+  const SKIP_REWIND_COOLDOWN_MS = 1000;
+
   const skipForward = useCallback(() => {
+    const now = Date.now();
+    if (now - lastSkipRewindAtRef.current < SKIP_REWIND_COOLDOWN_MS) return;
+    lastSkipRewindAtRef.current = now;
     // Placeholder: wire to next step when integrated (e.g. learn page)
-    console.log("Skip forward (next step)");
+    console.log("Skipping step");
   }, []);
   const skipBackward = useCallback(() => {
+    const now = Date.now();
+    if (now - lastSkipRewindAtRef.current < SKIP_REWIND_COOLDOWN_MS) return;
+    lastSkipRewindAtRef.current = now;
     // Placeholder: wire to previous step when integrated (e.g. learn page)
-    console.log("Skip backward (previous step)");
+    console.log("Rewinding step");
   }, []);
 
   useDoubleTapDetection(
     isActive && modes.has("hands") ? result?.hands ?? null : null,
     { onSkipForward: skipForward, onSkipBackward: skipBackward }
   );
+
+  const voice = useVoiceCommands({
+    onNextStep: skipForward,
+    onPreviousStep: skipBackward,
+    onFinish: () => {},
+    enabled: isActive,
+  });
 
   const renderLoop = useCallback(() => {
     const video = videoRef.current;
@@ -205,6 +222,14 @@ export default function LiveDetectPage() {
     await start();
     startMic();
   };
+
+  useEffect(() => {
+    if (isActive) {
+      voice.start();
+    } else {
+      voice.stop();
+    }
+  }, [isActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleStop = () => {
     stop();
