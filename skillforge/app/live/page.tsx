@@ -66,12 +66,28 @@ export default function LiveDetectPage() {
   const [remoteSessionId, setRemoteSessionId] = useState<string | null>(null);
   const [showQrModal, setShowQrModal] = useState(false);
   const [remoteDimensions, setRemoteDimensions] = useState<{ w: number; h: number } | null>(null);
+  const [focusReticle, setFocusReticle] = useState<{ left: number; top: number } | null>(null);
+  const focusReticleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const toggleOverlayPanel = useCallback((panel: keyof OverlayPanels) => {
     setOverlayPanels((prev) => ({ ...prev, [panel]: !prev[panel] }));
   }, []);
 
-  const { videoRef, isActive, error, start, stop, switchCamera, facingMode } = useCameraStream();
+  const cameraOnlyConstraints: MediaTrackConstraints = isCameraOnlyMode
+    ? {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 30 },
+        facingMode: { ideal: "environment" },
+        focusMode: "continuous",
+        exposureMode: "continuous",
+        whiteBalanceMode: "continuous",
+      }
+    : {};
+
+  const { videoRef, stream, isActive, error, start, stop, switchCamera, facingMode } = useCameraStream({
+    constraints: cameraOnlyConstraints,
+  });
   const { connectionStatus: arConnectionStatus, lastAckTs: arLastAckTs } = useARStream({
     videoRef,
     enabled: cameraSource === "local" && arStreamEnabled && isActive,
@@ -88,8 +104,69 @@ export default function LiveDetectPage() {
     sessionId: isCameraOnlyMode ? sessionParam : null,
     host: isCameraOnlyMode ? hostParam ?? undefined : undefined,
     enabled: isCameraOnlyMode,
-    targetFps: 12,
+    targetFps: 24,
   });
+
+  useEffect(() => {
+    return () => {
+      if (focusReticleTimeoutRef.current) {
+        clearTimeout(focusReticleTimeoutRef.current);
+        focusReticleTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isCameraOnlyMode) return;
+    const lock = () => {
+      try {
+        if (typeof screen !== "undefined" && screen.orientation?.lock) {
+          screen.orientation.lock("landscape").catch(() => {});
+        }
+      } catch {
+        // ignore
+      }
+    };
+    lock();
+    return () => {
+      try {
+        if (typeof screen !== "undefined" && screen.orientation?.unlock) {
+          screen.orientation.unlock();
+        }
+      } catch {
+        // ignore
+      }
+    };
+  }, [isCameraOnlyMode]);
+
+  const handleTapToFocus = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!isCameraOnlyMode || cameraSource === "remote" || !stream || !videoRef.current) return;
+      const video = videoRef.current;
+      const rect = video.getBoundingClientRect();
+      const nx = (e.clientX - rect.left) / rect.width;
+      const ny = (e.clientY - rect.top) / rect.height;
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        try {
+          track
+            .applyConstraints({
+              advanced: [{ pointsOfInterest: [{ x: nx, y: ny }] } as MediaTrackConstraintSet],
+            })
+            .catch(() => {});
+        } catch {
+          // ignore
+        }
+      }
+      if (focusReticleTimeoutRef.current) clearTimeout(focusReticleTimeoutRef.current);
+      setFocusReticle({ left: e.clientX - rect.left, top: e.clientY - rect.top });
+      focusReticleTimeoutRef.current = setTimeout(() => {
+        focusReticleTimeoutRef.current = null;
+        setFocusReticle(null);
+      }, 800);
+    },
+    [isCameraOnlyMode, cameraSource, stream]
+  );
 
   const toggleMode = (mode: DetectMode) => {
     setModes((prev) => {
@@ -741,12 +818,18 @@ export default function LiveDetectPage() {
                       ? "relative w-full h-full"
                       : "relative rounded-2xl overflow-hidden bg-black aspect-video shadow-2xl shadow-black/50"
                   }
+                  onClick={isCameraOnlyMode && cameraSource === "local" ? handleTapToFocus : undefined}
+                  style={
+                    isCameraOnlyMode && cameraSource === "local"
+                      ? { cursor: "pointer" }
+                      : undefined
+                  }
                 >
                   {cameraSource === "remote" ? (
                     <canvas
                       ref={remoteCanvasRef}
-                      width={640}
-                      height={480}
+                      width={1920}
+                      height={1080}
                       className="w-full h-full object-contain bg-black"
                       style={{ display: "block" }}
                     />
@@ -763,6 +846,17 @@ export default function LiveDetectPage() {
                     ref={canvasRef}
                     className="absolute inset-0 w-full h-full pointer-events-none"
                   />
+                  {focusReticle && (
+                    <div
+                      className="absolute w-10 h-10 border-2 border-white rounded-full pointer-events-none animate-pulse"
+                      style={{
+                        left: focusReticle.left - 20,
+                        top: focusReticle.top - 20,
+                        boxShadow: "0 0 0 2px rgba(0,0,0,0.5)",
+                      }}
+                      aria-hidden
+                    />
+                  )}
 
                   {/* Normal-mode badges (immersive has its own floating badges) */}
                   {!immersiveActive && (

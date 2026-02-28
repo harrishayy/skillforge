@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CAMERA_ROOM_WS } from "@/lib/constants";
 
-const CAPTURE_WIDTH = 640;
-const CAPTURE_HEIGHT = 480;
-const JPEG_QUALITY = 0.75;
+const CAPTURE_WIDTH = 1920;
+const CAPTURE_HEIGHT = 1080;
+const JPEG_QUALITY = 0.7;
 
 export type CameraRoomProducerStatus = "connecting" | "open" | "closed" | "error";
 
@@ -23,14 +23,14 @@ interface UseCameraRoomProducerReturn {
 
 /**
  * When enabled, connects to the camera room WebSocket as producer, sends role,
- * then streams frames from the given video ref at 640×480.
+ * then streams frames from the given video ref at 1920×1080 (1080p).
  */
 export function useCameraRoomProducer({
   videoRef,
   sessionId,
   host,
   enabled,
-  targetFps = 12,
+  targetFps = 24,
 }: UseCameraRoomProducerOptions): UseCameraRoomProducerReturn {
   const [connectionStatus, setConnectionStatus] =
     useState<CameraRoomProducerStatus>("closed");
@@ -55,7 +55,22 @@ export function useCameraRoomProducer({
     canvas.height = CAPTURE_HEIGHT;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.drawImage(video, 0, 0, CAPTURE_WIDTH, CAPTURE_HEIGHT);
+    // Phone camera feed is often 90° rotated; rotate -90° so it displays correctly on the laptop.
+    ctx.save();
+    ctx.translate(0, CAPTURE_HEIGHT);
+    ctx.rotate(-Math.PI / 2);
+    ctx.drawImage(
+      video,
+      0,
+      0,
+      video.videoWidth,
+      video.videoHeight,
+      0,
+      0,
+      CAPTURE_HEIGHT,
+      CAPTURE_WIDTH
+    );
+    ctx.restore();
     const dataUrl = canvas.toDataURL("image/jpeg", JPEG_QUALITY);
     const base64 = dataUrl.split(",")[1];
     if (!base64) return;
