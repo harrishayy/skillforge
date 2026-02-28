@@ -3,6 +3,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useWorkflowStore, selectedStep } from "@/store/workflow-store";
 import { msToTimestamp } from "@/lib/video-utils";
 import { Button } from "@/components/ui/Button";
+import { Spinner } from "@/components/ui/Spinner";
 import { SectionModal } from "@/components/ui/SectionModal";
 
 type ModalSection = "notes" | "transcript" | "description" | "regenerate" | "segments" | "rerun" | null;
@@ -201,6 +202,7 @@ export function StepDetailPanel() {
             style={{ backgroundColor: "#111", border: "1px solid #333", color: "var(--sf-white)", minHeight: 120 }}
           />
           <Button size="sm" onClick={handleRegenerate} disabled={isRegenerating}>
+            {isRegenerating && <Spinner className="w-3.5 h-3.5" />}
             {isRegenerating ? "Regenerating..." : "Regenerate Step"}
           </Button>
           <p className="text-xs" style={{ color: "rgba(255,255,255,0.3)" }}>
@@ -344,6 +346,7 @@ export function StepDetailPanel() {
             onClick={handleRerunPipeline}
             disabled={isRerunning || (!rerunClaude && !rerunNemotron && !rerunSam3)}
           >
+            {isRerunning && <Spinner className="w-3.5 h-3.5" />}
             {isRerunning ? "Running Pipeline..." : "Re-run Pipeline"}
           </Button>
         </div>
@@ -393,7 +396,11 @@ function SectionCard({
         <span style={{ color: accentColor }}>{icon}</span>
         <span className="text-[10px] font-bold" style={{ color: accentColor }}>{label}</span>
         {badge && (
-          <span className="text-[9px] ml-auto px-1.5 py-0.5 rounded-full" style={{ backgroundColor: `${accentColor}25`, color: accentColor }}>
+          <span className="text-[9px] ml-auto px-1.5 py-0.5 rounded-full flex items-center gap-1" style={{ backgroundColor: `${accentColor}25`, color: accentColor }}>
+            <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
             {badge}
           </span>
         )}

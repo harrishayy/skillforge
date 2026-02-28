@@ -114,6 +114,9 @@ async def run_hardware_pipeline(
 
             title, description, ai_summary = await _generate_step_metadata(
                 sd["transcript"], step_num, sd["note"],
+                total_steps=total_steps,
+                workflow_title=wf_title,
+                workflow_description=wf_description,
             )
 
             step_id = new_id()
@@ -348,6 +351,9 @@ async def _generate_step_metadata(
     transcript: str,
     step_number: int,
     note: str = "",
+    total_steps: int = 0,
+    workflow_title: str = "",
+    workflow_description: str = "",
 ) -> tuple[str, str, str]:
     """
     Use Claude to generate a concise title, imperative description, and
@@ -369,20 +375,45 @@ async def _generate_step_metadata(
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
 
-        user_content = f"Step {step_number} transcript: \"{transcript}\""
+        user_content = ""
+        if workflow_title:
+            user_content += f'Workflow: "{workflow_title}"'
+            if workflow_description:
+                user_content += f"\nWorkflow description: {workflow_description}"
+            user_content += "\n\n"
+        if total_steps > 0:
+            user_content += f"This is step {step_number} of {total_steps}.\n"
+        user_content += f'Expert transcript (speech-to-text, may contain errors): "{transcript}"'
         if note.strip():
-            user_content += f"\nExpert note: \"{note.strip()}\""
+            user_content += f'\nExpert note (manually typed, reliable): "{note.strip()}"'
         user_content += "\n\nGenerate the title, description, and summary JSON."
 
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=400,
+            max_tokens=500,
             system=(
-                "You generate concise step metadata for a tutorial. "
-                "Reply ONLY with valid JSON: {\"title\": \"...\", \"description\": \"...\", \"summary\": \"...\"}\n"
-                "Title: max 8 words, no step number prefix.\n"
-                "Description: direct imperative instruction starting with a verb.\n"
-                "Summary: 1-2 sentence overview of what happens in this step, combining the transcript context and any expert notes."
+                "You generate step metadata for a hands-on tutorial/workflow. "
+                "The input comes from an expert recording themselves performing a task. "
+                "The transcript is from speech-to-text and may contain ASR artifacts "
+                "(misheard words, missing punctuation, filler words like 'um', 'uh', 'so'). "
+                "Expert notes, when present, are typed manually and should be treated as more reliable than the transcript.\n\n"
+                "Reply ONLY with valid JSON (no markdown fences):\n"
+                '{"title": "...", "description": "...", "summary": "..."}\n\n'
+                "TITLE rules:\n"
+                "- Max 8 words. No step number prefix (e.g. NOT 'Step 1: ...').\n"
+                "- Use a clear noun phrase or short verb phrase that names the action.\n"
+                "- Focus on WHAT is being done, not HOW (e.g. 'Attach the ground wire' not 'Use pliers to grab wire').\n"
+                "- If the transcript is too vague to extract a meaningful title, use the expert note or workflow context.\n\n"
+                "DESCRIPTION rules:\n"
+                "- 1-2 sentences, imperative mood, starting with a verb.\n"
+                "- Written for the trainee: tell them exactly what to do and any critical details (tool, location, direction, force).\n"
+                "- Include safety callouts if the expert mentions them.\n"
+                "- Do NOT parrot the transcript verbatim — clean up, clarify, and distill.\n\n"
+                "SUMMARY rules:\n"
+                "- 1-3 sentences combining ALL available context (transcript + notes + workflow context).\n"
+                "- Objective narration of what the expert does and why.\n"
+                "- Mention specific tools, parts, or settings referenced by the expert.\n"
+                "- If the transcript is very short or unclear, say so briefly rather than inventing detail."
             ),
             messages=[{
                 "role": "user",
@@ -397,11 +428,18 @@ async def _generate_step_metadata(
         if not json_match:
             raise ValueError(f"No JSON object in Claude response: {text[:200]}")
         data = json.loads(json_match.group())
-        return (
-            data.get("title", f"Step {step_number}"),
-            data.get("description", transcript.strip()),
-            data.get("summary", ""),
-        )
+
+        title = (data.get("title") or "").strip()
+        description = (data.get("description") or "").strip()
+        summary = (data.get("summary") or "").strip()
+
+        if not title or len(title) < 3:
+            title = f"Step {step_number}"
+        if not description:
+            description = transcript.strip() or f"Perform step {step_number}"
+
+        return (title, description, summary)
+
     except Exception as e:
         print(f"[HardwarePipeline] Claude metadata generation failed: {e}")
         title = transcript.strip()[:60] or f"Step {step_number}"

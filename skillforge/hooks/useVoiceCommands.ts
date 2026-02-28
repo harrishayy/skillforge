@@ -44,6 +44,7 @@ export function useVoiceCommands({
   audioStream = null,
 }: UseVoiceCommandsOptions) {
   const transcriptRef = useRef<string>("");
+  const stepTranscriptRef = useRef<string>("");
   const [isListening, setIsListening] = useState(false);
   const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
   const [fallbackActive, setFallbackActive] = useState(false);
@@ -69,7 +70,7 @@ export function useVoiceCommands({
     }
 
     let active = true;
-    let stepTranscript = "";
+    stepTranscriptRef.current = "";
 
     // ── Shared intent matcher (used by both modes) ─────────────────────────
     const runMatcher = (check: string, hasFinal: boolean) => {
@@ -105,14 +106,14 @@ export function useVoiceCommands({
       else if (intent === "prev") onPreviousStepRef.current?.();
       else if (intent === "finish") onFinishRef.current();
 
-      stepTranscript = "";
+      stepTranscriptRef.current = "";
       transcriptRef.current = "";
     };
 
     // ── Server ASR mode (Brev-hosted Parakeet CTC 1.1B) ───────────────────
     if (effectiveSource === "server") {
       if (!audioStream || !audioStream.active) {
-        setUnavailableReason(null);
+        setUnavailableReason("No audio stream available for server transcription");
         return;
       }
       setUnavailableReason(null);
@@ -140,8 +141,8 @@ export function useVoiceCommands({
               const transcript = await transcribeAudio(blob);
               asrFailCountRef.current = 0;
               if (!active || !transcript) return;
-              stepTranscript += transcript + " ";
-              transcriptRef.current = stepTranscript;
+              stepTranscriptRef.current += transcript + " ";
+              transcriptRef.current = stepTranscriptRef.current;
               runMatcher(transcript, true);
             } catch {
               asrFailCountRef.current += 1;
@@ -232,12 +233,12 @@ export function useVoiceCommands({
         const isFinal = event.results[i].isFinal;
         if (isFinal) {
           final += text + " ";
-          stepTranscript += text + " ";
+          stepTranscriptRef.current += text + " ";
           hasFinal = true;
         }
       }
 
-      transcriptRef.current = stepTranscript;
+      transcriptRef.current = stepTranscriptRef.current;
 
       if (hasFinal) runMatcher(final.trim(), true);
     };
@@ -258,6 +259,7 @@ export function useVoiceCommands({
   const snapshotTranscript = useCallback((): string => {
     const t = transcriptRef.current.trim();
     transcriptRef.current = "";
+    stepTranscriptRef.current = "";
     return t;
   }, []);
 
