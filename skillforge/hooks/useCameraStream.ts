@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 interface UseCameraStreamOptions {
   /** Video constraints passed to getUserMedia */
   constraints?: MediaTrackConstraints;
+  /** Also request microphone access (needed for voice commands). Defaults to true. */
+  audio?: boolean;
 }
 
 interface UseCameraStreamReturn {
@@ -29,7 +31,7 @@ export function useCameraStream(
   const [isActive, setIsActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { constraints = {} } = options;
+  const { constraints = {}, audio = true } = options;
 
   // Attach stream after DOM update (video element only exists when isActive=true)
   useEffect(() => {
@@ -41,16 +43,25 @@ export function useCameraStream(
   const start = useCallback(async () => {
     setError(null);
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 }, ...constraints },
-        audio: false,
-      });
+      let mediaStream: MediaStream;
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 }, ...constraints },
+          audio: audio ? { echoCancellation: true, noiseSuppression: true } : false,
+        });
+      } catch {
+        // If audio+video fails, fall back to video-only
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 }, ...constraints },
+          audio: false,
+        });
+      }
       setStream(mediaStream);
       setIsActive(true);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Camera access denied");
     }
-  }, [constraints]);
+  }, [constraints, audio]);
 
   const stop = useCallback(() => {
     stream?.getTracks().forEach((t) => t.stop());

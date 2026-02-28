@@ -4,7 +4,6 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { useWebcamRecorder } from "@/hooks/useWebcamRecorder";
-import { useMicStream } from "@/hooks/useMicStream";
 import { useVoiceCommands } from "@/hooks/useVoiceCommands";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
 import type { MPResult } from "@/hooks/useMediaPipeDetect";
@@ -82,9 +81,6 @@ export default function RecordingSessionPage() {
   }, []);
 
   const [micEnabled, setMicEnabled] = useState(true);
-  // Single mic owner — shared between the recorder and SpeechRecognition so
-  // they don't open competing getUserMedia calls (audio-capture conflict on macOS).
-  const { stream: micStream } = useMicStream();
   const webcamRecorder = useWebcamRecorder();
   const snapshotTranscriptRef = useRef<() => string>(() => "");
 
@@ -422,15 +418,12 @@ export default function RecordingSessionPage() {
   const hasStartedRef = useRef(false);
 
   useEffect(() => {
-    // Wait for both config and the shared mic stream before starting.
-    // micStream may take a moment if the browser shows a permission prompt.
-    if (!config || !micStream || hasStartedRef.current) return;
+    if (!config || hasStartedRef.current) return;
     hasStartedRef.current = true;
 
     (async () => {
-      // Pass the shared mic stream so the recorder doesn't open a second getUserMedia,
-      // which would conflict with SpeechRecognition's internal audio capture.
-      const stream = await webcamRecorder.start(micStream);
+      // Single getUserMedia call for both camera + mic (one permission prompt).
+      const stream = await webcamRecorder.start();
       if (!stream) {
         setStartError("Could not access camera. Check permissions and try again.");
         return;
@@ -454,7 +447,7 @@ export default function RecordingSessionPage() {
 
       fetchStepPrompt(1, []);
     })();
-  }, [config, micStream]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [config]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---------------------------------------------------------------------------
   // Exit (abandon recording)
@@ -514,7 +507,7 @@ export default function RecordingSessionPage() {
             ) : (
               <>
                 <Spinner className="w-10 h-10 mx-auto mb-4 text-white" />
-                <p className="text-sm text-white/60">Starting camera...</p>
+                <p className="text-sm text-white/60">Starting camera &amp; microphone...</p>
               </>
             )}
           </div>

@@ -8,6 +8,7 @@ export interface WebcamRecorderState {
   durationMs: number;
   videoBlob: Blob | null;
   stream: MediaStream | null;
+  audioStream: MediaStream | null;
   error: string | null;
 }
 
@@ -18,6 +19,7 @@ export function useWebcamRecorder() {
     durationMs: 0,
     videoBlob: null,
     stream: null,
+    audioStream: null,
     error: null,
   });
 
@@ -54,39 +56,38 @@ export function useWebcamRecorder() {
     mediaRecorderRef.current = recorder;
   }, []);
 
-  const start = useCallback(async (externalAudioStream?: MediaStream): Promise<MediaStream | null> => {
+  const start = useCallback(async (): Promise<MediaStream | null> => {
     try {
-      let stream: MediaStream;
       const videoConstraints = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+      const audioConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
 
-      if (externalAudioStream) {
-        // Mic is already owned by useMicStream — only request video here.
-        // This prevents the dual-getUserMedia conflict with SpeechRecognition on macOS/Chrome.
+      let stream: MediaStream;
+      let hasAudio = false;
+
+      try {
+        // Single getUserMedia for both camera + mic → one browser permission prompt.
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraints,
+          audio: audioConstraints,
+        });
+        hasAudio = stream.getAudioTracks().length > 0;
+      } catch {
+        // If audio+video fails, try video-only so recording can still proceed.
         stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
-      } else {
-        // No shared mic provided — fall back to requesting audio ourselves.
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: videoConstraints,
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-            },
-          });
-        } catch {
-          stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
-        }
       }
 
-      // Build recording stream: video from camera + audio from shared mic (or own audio tracks).
-      const audioTracks = externalAudioStream
-        ? externalAudioStream.getAudioTracks()
-        : stream.getAudioTracks();
       const recordingStream = new MediaStream([
         ...stream.getVideoTracks(),
-        ...audioTracks,
+        ...stream.getAudioTracks(),
       ]);
+
+      // Expose a standalone audio stream so SpeechRecognition can reference it
+      // for diagnostics. SpeechRecognition uses its own internal mic capture,
+      // but having audio tracks in the same getUserMedia call avoids the
+      // dual-capture conflict on macOS/Chrome.
+      const audioStream = hasAudio
+        ? new MediaStream(stream.getAudioTracks())
+        : null;
 
       mimeTypeRef.current = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
         ? "video/webm;codecs=vp9"
@@ -108,6 +109,7 @@ export function useWebcamRecorder() {
         isRecording: true,
         isPaused: false,
         stream,
+        audioStream,
         error: null,
         videoBlob: null,
         durationMs: 0,
@@ -121,10 +123,6 @@ export function useWebcamRecorder() {
     }
   }, [_startRecorderOnStream]);
 
-  /**
-   * Fully stop recording and release the camera.
-   * Returns a Promise that resolves with the final video Blob.
-   */
   const stop = useCallback((): Promise<Blob> => {
     return new Promise((resolve, reject) => {
       const recorder = mediaRecorderRef.current;
@@ -139,15 +137,10 @@ export function useWebcamRecorder() {
       streamRef.current = null;
       recordingStreamRef.current = null;
       if (timerRef.current) clearInterval(timerRef.current);
-      setState((s) => ({ ...s, isRecording: false, isPaused: false }));
+      setState((s) => ({ ...s, isRecording: false, isPaused: false, audioStream: null }));
     });
   }, []);
 
-  /**
-   * Finalize the current segment as a Blob and immediately restart
-   * recording on the same camera stream (no visible interruption).
-   * Used to capture per-step video segments without stopping the camera.
-   */
   const snapshot = useCallback((): Promise<Blob> => {
     return new Promise((resolve, reject) => {
       const recorder = mediaRecorderRef.current;
