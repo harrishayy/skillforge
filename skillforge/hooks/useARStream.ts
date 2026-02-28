@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AR_STREAM_WS } from "@/lib/constants";
+import { showErrorToast } from "@/store/toast-store";
 import type { ARPoseMessage, ARServerMessage } from "@/types/ar-stream";
 
 const CAPTURE_WIDTH = 640;
@@ -38,6 +39,7 @@ export function useARStream({
   const wsRef = useRef<WebSocket | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const hasToastedRef = useRef(false);
 
   const captureAndSend = useCallback(() => {
     const video = videoRef.current;
@@ -111,6 +113,10 @@ export function useARStream({
     };
 
     ws.onerror = () => {
+      if (!hasToastedRef.current) {
+        hasToastedRef.current = true;
+        showErrorToast("AR stream WebSocket connection failed");
+      }
       setConnectionStatus("error");
     };
 

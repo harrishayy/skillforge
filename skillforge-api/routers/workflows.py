@@ -1,8 +1,14 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from models.database import fetchone, fetchall, execute, new_id, now_ms
 from models.schemas import WorkflowUpdateRequest, WorkflowDetailResponse, WorkflowListResponse
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
+
+
+def _bool_published(wf: dict) -> dict:
+    """Convert the integer published column to a Python bool."""
+    wf["published"] = bool(wf.get("published", 0))
+    return wf
 
 
 async def _get_full_workflow(workflow_id: str) -> dict:
@@ -21,29 +27,40 @@ async def _get_full_workflow(workflow_id: str) -> dict:
         click_targets = await fetchall(
             "SELECT * FROM click_targets WHERE step_id=?", (step["id"],)
         )
-        # Convert is_primary int to bool
         for ct in click_targets:
             ct["is_primary"] = bool(ct["is_primary"])
-        steps.append({**step, "annotations": annotations, "click_targets": click_targets})
+        frames_raw = await fetchall(
+            "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms", (step["id"],)
+        )
+        frames = [
+            {**f, "is_key_frame": bool(f.get("is_key_frame", 0))}
+            for f in frames_raw
+        ]
+        steps.append({**step, "annotations": annotations, "click_targets": click_targets, "frames": frames})
 
-    # thumbnail = first keyframe
     thumbnail = steps[0]["key_frame_path"] if steps else None
-    return {**wf, "steps": steps, "thumbnail_path": thumbnail}
+    return _bool_published({**wf, "steps": steps, "thumbnail_path": thumbnail})
 
 
 @router.get("")
-async def list_workflows():
-    rows = await fetchall("SELECT * FROM workflows ORDER BY created_at DESC")
+async def list_workflows(published_only: bool = Query(False)):
+    if published_only:
+        rows = await fetchall(
+            "SELECT * FROM workflows WHERE published=1 AND status='ready' ORDER BY created_at DESC"
+        )
+    else:
+        rows = await fetchall("SELECT * FROM workflows ORDER BY created_at DESC")
+
     summaries = []
     for wf in rows:
         first_step = await fetchone(
             "SELECT key_frame_path FROM steps WHERE workflow_id=? ORDER BY step_number LIMIT 1",
             (wf["id"],),
         )
-        summaries.append({
+        summaries.append(_bool_published({
             **wf,
             "thumbnail_path": first_step["key_frame_path"] if first_step else None,
-        })
+        }))
     return {"workflows": summaries}
 
 
@@ -63,6 +80,8 @@ async def update_workflow(workflow_id: str, body: WorkflowUpdateRequest):
         updates["title"] = body.title
     if body.description is not None:
         updates["description"] = body.description
+    if body.published is not None:
+        updates["published"] = int(body.published)
 
     if updates:
         set_clause = ", ".join(f"{k}=?" for k in updates)
@@ -71,6 +90,32 @@ async def update_workflow(workflow_id: str, body: WorkflowUpdateRequest):
             (*updates.values(), now_ms(), workflow_id),
         )
 
+    return await _get_full_workflow(workflow_id)
+
+
+@router.post("/{workflow_id}/publish")
+async def publish_workflow(workflow_id: str):
+    wf = await fetchone("SELECT id, status FROM workflows WHERE id=?", (workflow_id,))
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    if wf["status"] != "ready":
+        raise HTTPException(400, "Only ready workflows can be published")
+    await execute(
+        "UPDATE workflows SET published=1, updated_at=? WHERE id=?",
+        (now_ms(), workflow_id),
+    )
+    return await _get_full_workflow(workflow_id)
+
+
+@router.post("/{workflow_id}/unpublish")
+async def unpublish_workflow(workflow_id: str):
+    wf = await fetchone("SELECT id FROM workflows WHERE id=?", (workflow_id,))
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    await execute(
+        "UPDATE workflows SET published=0, updated_at=? WHERE id=?",
+        (now_ms(), workflow_id),
+    )
     return await _get_full_workflow(workflow_id)
 
 

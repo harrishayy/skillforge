@@ -5,6 +5,7 @@ import {
   shouldUseLLMFallback,
 } from "@/lib/voice-intent-matcher";
 import { classifyVoiceIntent } from "@/lib/api-client";
+import { showErrorToast } from "@/store/toast-store";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type SRInstance = any; // Vendor-prefixed SpeechRecognition lacks stable TS types
@@ -84,7 +85,7 @@ export function useVoiceCommands({
         e.error === "service-not-available" ||
         e.error === "audio-capture"
       ) {
-        console.warn("[VoiceCommands]", e.error);
+        showErrorToast(`Voice recognition error: ${e.error}`);
         setIsListening(false);
         active = false;
       }
@@ -108,7 +109,7 @@ export function useVoiceCommands({
               else if (apiIntent === "prev") onPreviousStepRef.current?.();
               else if (apiIntent === "finish") onFinishRef.current();
             })
-            .catch(() => {});
+            .catch((err: unknown) => showErrorToast(err));
           return;
         }
       }

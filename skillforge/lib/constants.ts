@@ -6,16 +6,11 @@ export const PIPELINE_WS = (workflowId: string) =>
 
 export const UPLOADS_BASE = `${API_BASE}/uploads`;
 
-/**
- * Resolve a frame or video path to a full URL.
- * - If the path is already an absolute URL (R2 / CDN), return it unchanged.
- * - Otherwise prepend the API base to serve from the local /uploads static mount.
- */
 export const frameUrl = (path: string): string =>
-  path.startsWith("http") ? path : `${API_BASE}/${path}`;
+  `${API_BASE}/${path}`;
 
 export const videoUrl = (path: string): string =>
-  path.startsWith("http") ? path : `${API_BASE}/${path}`;
+  `${API_BASE}/${path}`;
 
 export const PHYSICAL_PIPELINE_WS = (workflowId: string) =>
   `${WS_BASE}/ws/pipeline/${workflowId}`;

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { HandLandmarker, ObjectDetector } from "@mediapipe/tasks-vision";
 import type { HandData, YoloDetection } from "./useLiveDetect";
+import { showErrorToast } from "@/store/toast-store";
 
 const WASM_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const HAND_MODEL =
@@ -92,7 +93,9 @@ export function useMediaPipeDetect({
       })
       .catch((e: unknown) => {
         if (!cancelled) {
-          setMpError(e instanceof Error ? e.message : "MediaPipe hand model failed to load");
+          const msg = e instanceof Error ? e.message : "MediaPipe hand model failed to load";
+          showErrorToast(`MediaPipe hand model: ${msg}`);
+          setMpError(msg);
           setMpLoading(false);
         }
       });
@@ -129,7 +132,9 @@ export function useMediaPipeDetect({
       })
       .catch((e: unknown) => {
         if (!cancelled) {
-          setMpError(e instanceof Error ? e.message : "MediaPipe object model failed to load");
+          const msg = e instanceof Error ? e.message : "MediaPipe object model failed to load";
+          showErrorToast(`MediaPipe object model: ${msg}`);
+          setMpError(msg);
           setMpLoading(false);
         }
       });

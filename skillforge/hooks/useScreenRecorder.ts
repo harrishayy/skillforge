@@ -1,5 +1,6 @@
 "use client";
 import { useState, useRef, useCallback } from "react";
+import { showErrorToast } from "@/store/toast-store";
 
 export interface ScreenRecorderState {
   isRecording: boolean;
@@ -76,6 +77,7 @@ export function useScreenRecorder() {
       };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Screen capture denied";
+      showErrorToast(`Screen capture error: ${msg}`);
       setState((s) => ({ ...s, error: msg }));
     }
   }, []);

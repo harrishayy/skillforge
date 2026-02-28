@@ -63,6 +63,7 @@ async def upload_step_videos(
     title: str = Form(...),
     initial_description: Optional[str] = Form(None),
     step_transcripts_json: Optional[str] = Form(None),
+    step_notes_json: Optional[str] = Form(None),
 ):
     """
     Accept per-step video segments from hardware (webcam) guided recording.
@@ -78,6 +79,13 @@ async def upload_step_videos(
     if step_transcripts_json:
         try:
             step_transcripts = json.loads(step_transcripts_json)
+        except Exception:
+            pass
+
+    step_notes: list[str] = []
+    if step_notes_json:
+        try:
+            step_notes = json.loads(step_notes_json)
         except Exception:
             pass
 
@@ -106,6 +114,7 @@ async def upload_step_videos(
         workflow_id=workflow_id,
         step_video_paths=step_video_paths,
         step_transcripts=step_transcripts,
+        step_notes=step_notes,
     )
 
     return {"workflow_id": workflow_id, "status": "processing"}

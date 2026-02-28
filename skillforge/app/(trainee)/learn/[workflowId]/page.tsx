@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import type { Workflow } from "@/types";
 import { getWorkflow, getStepInstruction } from "@/lib/api-client";
+import { showErrorToast } from "@/store/toast-store";
 import { VideoWithOverlay } from "@/components/player/VideoWithOverlay";
 import { StepProgressBar } from "@/components/player/StepProgressBar";
 import { CopilotPanel } from "@/components/chat/CopilotPanel";
@@ -36,7 +37,7 @@ export default function LearnPage() {
     reset();
     getWorkflow(workflowId)
       .then(setWorkflow)
-      .catch((e) => setError(e.message))
+      .catch((e) => { showErrorToast(e); setError(e.message); })
       .finally(() => setIsLoading(false));
   }, [workflowId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -50,7 +51,9 @@ export default function LearnPage() {
       try {
         const instruction = await getStepInstruction(workflowId, step.id);
         setCurrentInstruction(instruction);
-      } catch {}
+      } catch (err) {
+        showErrorToast(err);
+      }
     },
     [workflow, workflowId, setCurrentInstruction, setIsPausedAtStepEnd]
   );

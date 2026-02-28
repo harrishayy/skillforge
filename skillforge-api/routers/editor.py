@@ -139,8 +139,6 @@ async def regenerate_step(step_id: str, body: RegenerateStepRequest):
     """Re-run Claude on a single step with optional additional context."""
     import os, json, anthropic
     from pathlib import Path
-    from services.video_processor import extract_frames
-    from services.yolo_detector import detect_ui_elements
 
     step = await fetchone("SELECT * FROM steps WHERE id=?", (step_id,))
     if not step:
@@ -150,23 +148,8 @@ async def regenerate_step(step_id: str, body: RegenerateStepRequest):
     if not wf:
         raise HTTPException(404, "Workflow not found")
 
-    # Delete existing annotations and click targets for this step
     await execute("DELETE FROM annotations WHERE step_id=?", (step_id,))
     await execute("DELETE FROM click_targets WHERE step_id=?", (step_id,))
-
-    # Get YOLO detections for the key frame
-    yolo_info = []
-    kf_path = step.get("key_frame_path", "")
-    if kf_path:
-        abs_kf = kf_path if kf_path.startswith("http") else str(Path(__file__).parent.parent / kf_path)
-        try:
-            detections = await detect_ui_elements(abs_kf)
-            yolo_info = [
-                {"class": d.get("class"), "bbox": [d.get("bbox_x"), d.get("bbox_y"), d.get("bbox_width"), d.get("bbox_height")], "conf": round(d.get("confidence", 0), 2)}
-                for d in detections[:10]
-            ]
-        except Exception:
-            pass
 
     context_line = f'Additional context from expert: "{body.additional_context}"' if body.additional_context else ""
     user_msg = (
@@ -175,7 +158,6 @@ async def regenerate_step(step_id: str, body: RegenerateStepRequest):
         f"Current title: \"{step['title']}\"\n"
         f"Current description: \"{step.get('description', '')}\"\n"
         f"Time range: {step['start_ms']}ms – {step['end_ms']}ms\n"
-        f"YOLO detections on key frame: {json.dumps(yolo_info)}\n"
         f"{context_line}\n\n"
         "Create an improved version of this step by calling create_workflow_step. "
         "Use a concise title (max 8 words) and a direct imperative description. "
@@ -272,44 +254,77 @@ async def regenerate_step(step_id: str, body: RegenerateStepRequest):
     return {"step": await _get_step(step_id)}
 
 
-# ─── Review: Segment point ───────────────────────────────────────────────────
+# ─── Review: Auto-segment with step context ─────────────────────────────────
 
-@router.post("/api/steps/{step_id}/segment-point")
-async def segment_point_on_frame(step_id: str, body: SegmentPointRequest):
-    """Click-to-segment: run SAM3 at a point on the step's key frame."""
+@router.post("/api/steps/{step_id}/auto-segment")
+async def auto_segment_step(step_id: str):
+    """Run SAM3 text-prompted segmentation using step context as the prompt."""
     from pathlib import Path
-    from services.sam3_service import segment_point as sam3_segment_point
+    from services.sam3_service import segment_with_context
 
     step = await fetchone("SELECT * FROM steps WHERE id=?", (step_id,))
     if not step:
         raise HTTPException(404, "Step not found")
 
-    wf = await fetchone("SELECT * FROM workflows WHERE id=?", (step["workflow_id"],))
-    if not wf:
-        raise HTTPException(404, "Workflow not found")
-
-    # Resolve the key frame to read its bytes
     kf_path = step.get("key_frame_path", "")
     if not kf_path:
         raise HTTPException(400, "Step has no key frame")
 
-    if kf_path.startswith("http"):
-        import httpx
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(kf_path)
-            resp.raise_for_status()
-            frame_bytes = resp.content
-    else:
-        abs_path = Path(__file__).parent.parent / kf_path
-        if not abs_path.exists():
-            raise HTTPException(404, "Key frame file not found")
-        frame_bytes = abs_path.read_bytes()
+    frame_bytes = await _read_frame_bytes(kf_path)
+    result = await segment_with_context(
+        frame_bytes,
+        title=step.get("title", ""),
+        description=step.get("description", ""),
+        transcript=step.get("ai_description", ""),
+    )
+
+    segments = result["segments"] if result else []
+    return {"segments": segments, "frame_path": kf_path}
+
+
+# ─── Review: Segment point (add/remove toggle) ──────────────────────────────
+
+@router.post("/api/steps/{step_id}/segment-point")
+async def segment_point_on_frame(step_id: str, body: SegmentPointRequest):
+    """Click-to-segment with add/remove toggle on the step's key frame."""
+    from pathlib import Path
+    from services.sam3_service import (
+        segment_point as sam3_segment_point,
+        toggle_segment,
+    )
+
+    step = await fetchone("SELECT * FROM steps WHERE id=?", (step_id,))
+    if not step:
+        raise HTTPException(404, "Step not found")
+
+    kf_path = step.get("key_frame_path", "")
+    if not kf_path:
+        raise HTTPException(400, "Step has no key frame")
+
+    frame_bytes = await _read_frame_bytes(kf_path)
+
+    if body.existing_segments:
+        result = await toggle_segment(frame_bytes, body.x, body.y, body.existing_segments)
+        return {
+            "segments": result["segments"],
+            "removed_index": result["removed_index"],
+            "frame_path": kf_path,
+        }
 
     result = await sam3_segment_point(frame_bytes, body.x, body.y)
     if not result:
         return {"segments": [], "frame_path": kf_path}
 
     return {"segments": result["segments"], "frame_path": kf_path}
+
+
+async def _read_frame_bytes(kf_path: str) -> bytes:
+    """Read key frame bytes from a local path."""
+    from pathlib import Path
+    abs_path = Path(__file__).parent.parent / kf_path
+    if not abs_path.exists():
+        raise HTTPException(404, "Key frame file not found")
+    return abs_path.read_bytes()
 
 
 # ─── Review: Re-record step ──────────────────────────────────────────────────
@@ -325,7 +340,6 @@ async def re_record_step(
     import shutil
     from pathlib import Path
     from services.video_processor import extract_frames
-    from services.yolo_detector import detect_ui_elements
 
     wf = await fetchone("SELECT * FROM workflows WHERE id=?", (workflow_id,))
     if not wf:
@@ -335,56 +349,37 @@ async def re_record_step(
     if not step:
         raise HTTPException(404, "Step not found")
 
-    # Save the uploaded video segment
     uploads_dir = Path(__file__).parent.parent / "uploads" / workflow_id / "refilm"
     uploads_dir.mkdir(parents=True, exist_ok=True)
     segment_path = uploads_dir / f"step_{step['step_number']}.webm"
     with open(segment_path, "wb") as f:
         shutil.copyfileobj(video.file, f)
 
-    # Extract frames from the new segment
-    frames = await extract_frames(str(segment_path), workflow_id, prefix=f"refilm_s{step['step_number']}_")
+    frames = await extract_frames(str(segment_path), workflow_id)
     if not frames:
         raise HTTPException(500, "Failed to extract frames from re-filmed segment")
 
-    # Pick the middle frame as the new key frame
     mid_idx = len(frames) // 2
     key_frame = frames[mid_idx]
     key_frame_path = key_frame.get("relative_path", "")
 
-    # Delete old annotations and click targets
     await execute("DELETE FROM annotations WHERE step_id=?", (step_id,))
     await execute("DELETE FROM click_targets WHERE step_id=?", (step_id,))
 
-    # Update the step with the new key frame
     ts = now_ms()
     await execute(
         "UPDATE steps SET key_frame_path=?, updated_at=? WHERE id=?",
         (key_frame_path, ts, step_id),
     )
 
-    # Run YOLO on the new key frame
-    yolo_detections = []
-    try:
-        yolo_detections = await detect_ui_elements(key_frame["path"])
-    except Exception:
-        pass
-
-    # Run a quick Claude regeneration for annotations
     import json, anthropic
     from services.claude_orchestrator import ORCHESTRATOR_TOOLS
-
-    yolo_info = [
-        {"class": d.get("class"), "bbox": [d.get("bbox_x"), d.get("bbox_y"), d.get("bbox_width"), d.get("bbox_height")]}
-        for d in yolo_detections[:10]
-    ]
 
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     user_msg = (
         f"Re-filmed step {step['step_number']} of workflow \"{wf['title']}\".\n"
         f"Original title: \"{step['title']}\"\n"
-        f"Original description: \"{step.get('description', '')}\"\n"
-        f"YOLO detections: {json.dumps(yolo_info)}\n\n"
+        f"Original description: \"{step.get('description', '')}\"\n\n"
         "Create annotations and click targets for this re-filmed step. "
         "Keep the same title and description unless they clearly don't match."
     )
@@ -457,7 +452,7 @@ async def analyze_frame_on_demand(workflow_id: str, body: AnalyzeFrameRequest):
     import os
     from pathlib import Path
     from services.nemotron_client import analyze_frame
-    from services.yolo_detector import detect_ui_elements
+    from services.sam3_service import segment_with_context
     from services.video_processor import extract_frames
 
     wf = await fetchone("SELECT * FROM workflows WHERE id=?", (workflow_id,))
@@ -468,18 +463,27 @@ async def analyze_frame_on_demand(workflow_id: str, body: AnalyzeFrameRequest):
     if not video_path.exists():
         raise HTTPException(404, "Video file not found")
 
-    # Extract just this one frame
     frames = await extract_frames(str(video_path), workflow_id)
     target = min(frames, key=lambda f: abs(f["timestamp_ms"] - body.timestamp_ms))
 
     nim_key = os.environ.get("NVIDIA_NIM_API_KEY", "")
     vl_result = await analyze_frame(target["path"], wf["mode"], nim_key)
-    yolo = await detect_ui_elements(target["path"]) if wf["mode"] == "software" else []
+
+    sam3_segments = []
+    try:
+        frame_bytes = Path(target["path"]).read_bytes()
+        sam_result = await segment_with_context(
+            frame_bytes, wf.get("title", ""), wf.get("description", ""),
+        )
+        if sam_result:
+            sam3_segments = sam_result["segments"]
+    except Exception:
+        pass
 
     return {
         "frame_path": target["relative_path"],
         "nemotron_analysis": vl_result,
-        "yolo_detections": yolo,
+        "sam3_segments": sam3_segments,
     }
 
 
