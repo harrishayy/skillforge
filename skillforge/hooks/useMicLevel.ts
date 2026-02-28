@@ -18,7 +18,14 @@ export function useMicLevel(): UseMicLevelReturn {
 
   const startMic = useCallback(async () => {
     try {
-      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
       const ctx = new AudioContext();
       const source = ctx.createMediaStreamSource(micStream);
       const analyser = ctx.createAnalyser();
