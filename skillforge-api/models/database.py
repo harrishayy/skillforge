@@ -41,6 +41,8 @@ _CREATE_STATEMENTS = [
     description     TEXT,
     start_ms        BIGINT NOT NULL,
     end_ms          BIGINT NOT NULL,
+    workflow_start_ms BIGINT DEFAULT 0,
+    workflow_end_ms   BIGINT DEFAULT 0,
     key_frame_path  TEXT,
     video_path      TEXT,
     ai_description  TEXT,
@@ -84,14 +86,15 @@ _CREATE_STATEMENTS = [
     frame_path      TEXT
 )""",
     """CREATE TABLE IF NOT EXISTS step_frames (
-    id                 TEXT PRIMARY KEY,
-    step_id            TEXT NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
-    timestamp_ms       BIGINT NOT NULL,
-    frame_path         TEXT NOT NULL,
-    is_key_frame       INTEGER DEFAULT 0,
-    object_detected    INTEGER DEFAULT 0,
-    object_description TEXT,
-    created_at         BIGINT NOT NULL
+    id                    TEXT PRIMARY KEY,
+    step_id               TEXT NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
+    timestamp_ms          BIGINT NOT NULL,
+    frame_path            TEXT NOT NULL,
+    is_key_frame          INTEGER DEFAULT 0,
+    object_detected       INTEGER DEFAULT 0,
+    object_description    TEXT,
+    segmented_frame_path  TEXT,
+    created_at            BIGINT NOT NULL
 )""",
     """CREATE TABLE IF NOT EXISTS pipeline_logs (
     id          TEXT PRIMARY KEY,
@@ -173,12 +176,15 @@ async def _run_migrations(conn):
         "ALTER TABLE step_frames ADD COLUMN IF NOT EXISTS object_description TEXT",
         "ALTER TABLE click_targets ADD COLUMN IF NOT EXISTS mask_path TEXT",
         "ALTER TABLE click_targets ADD COLUMN IF NOT EXISTS frame_path TEXT",
+        "ALTER TABLE steps ADD COLUMN IF NOT EXISTS workflow_start_ms BIGINT DEFAULT 0",
+        "ALTER TABLE steps ADD COLUMN IF NOT EXISTS workflow_end_ms BIGINT DEFAULT 0",
+        "ALTER TABLE step_frames ADD COLUMN IF NOT EXISTS segmented_frame_path TEXT",
     ]
     for sql in migrations:
         try:
             await conn.execute(sql)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[DB] Migration skipped ({sql[:60]}...): {e} — this is expected if the column already exists", flush=True)
 
 
 # ── Query helpers ──────────────────────────────────────────────────────────────

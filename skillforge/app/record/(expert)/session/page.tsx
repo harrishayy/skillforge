@@ -12,6 +12,7 @@ import { computePinchState } from "@/lib/pinch-detection";
 import { renderHandLandmarks } from "@/lib/annotation-renderer";
 import { uploadStepVideos, getGuidedStepPrompt } from "@/lib/api-client";
 import { showErrorToast } from "@/store/toast-store";
+import type { PipelineLogEvent, PipelineStage } from "@/types";
 import * as stepStorage from "@/lib/step-storage";
 import { PinchIndicator } from "@/components/live-detect/PinchIndicator";
 import { PipelineStatus } from "@/components/recording/PipelineStatus";
@@ -43,6 +44,14 @@ export default function RecordingSessionPage() {
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadLogs, setUploadLogs] = useState<PipelineLogEvent[]>([]);
+
+  const pushUploadLog = useCallback((stage: PipelineStage, message: string) => {
+    setUploadLogs((prev) => [
+      ...prev,
+      { type: "pipeline_log", stage, message, progress: 0, timestamp: Date.now() },
+    ]);
+  }, []);
 
   // Step tracking
   const [currentStepNumber, setCurrentStepNumber] = useState(1);
@@ -94,7 +103,7 @@ export default function RecordingSessionPage() {
     const video = videoRef.current;
     if (video && webcamRecorder.stream) {
       video.srcObject = webcamRecorder.stream;
-      video.play().catch(() => {});
+      video.play().catch((err: unknown) => console.warn("[Session] Video autoplay blocked by browser policy:", err));
     }
   }, [webcamRecorder.stream]);
 
@@ -111,11 +120,12 @@ export default function RecordingSessionPage() {
       configLoadedRef.current = true;
       sessionStorage.removeItem("sf-recording-config");
       // New session — clear any stale recovery data
-      stepStorage.clearSession().catch(() => {});
+      stepStorage.clearSession().catch((err: unknown) => console.warn("[Session] Failed to clear previous session from IndexedDB:", err));
       try {
         const parsed: RecordingConfig = JSON.parse(raw);
         setConfig(parsed);
-      } catch {
+      } catch (err) {
+        console.warn("[Session] Failed to parse recording config JSON — redirecting to setup:", err);
         router.replace("/record/setup");
       }
       return;
@@ -129,7 +139,8 @@ export default function RecordingSessionPage() {
       } else {
         router.replace("/record/setup");
       }
-    }).catch(() => {
+    }).catch((err: unknown) => {
+      console.warn("[Session] Recovery data check failed — redirecting to setup:", err);
       router.replace("/record/setup");
     });
   }, [router]);
@@ -191,7 +202,10 @@ export default function RecordingSessionPage() {
         transcript,
         note: stepNotesRef.current[prevStepNum] ?? "",
         durationMs,
-      }).catch((e) => console.warn("[StepStorage] Failed to save step:", e));
+      }).catch((e) => {
+        console.warn("[StepStorage] Failed to save step:", e);
+        showErrorToast("Failed to save step to local storage. If the browser's storage is full, try clearing site data.");
+      });
 
       const nextStep = prevStepNum + 1;
       stepStartTimeRef.current = snapshotTime;
@@ -225,25 +239,41 @@ export default function RecordingSessionPage() {
     const transcript = snapshotTranscriptRef.current();
     stepTranscriptsRef.current.push(transcript);
 
+    console.log("[FinishRecording] Confirmed — transitioning to uploading state");
+    setUploadLogs([]);
+    setUploadError(null);
     setSessionState("uploading");
 
     try {
+      pushUploadLog("upload", "Stopping recorder and packaging video...");
+      console.log("[FinishRecording] Stopping webcam recorder...");
       const finalBlob = await webcamRecorder.stop();
+      console.log(`[FinishRecording] Final blob: ${(finalBlob.size / 1024).toFixed(0)} KB`);
       stepVideosRef.current.push({ stepNumber: currentStepNumber, blob: finalBlob });
 
-      // Persist final step to IndexedDB before upload attempt
+      pushUploadLog("upload", "Saving step locally as backup...");
+      console.log("[FinishRecording] Persisting final step to IndexedDB...");
       await stepStorage.saveStep({
         stepNumber: currentStepNumber,
         blob: finalBlob,
         transcript,
         note: stepNotesRef.current[currentStepNumber] ?? "",
         durationMs: 0,
-      }).catch(() => {});
+      }).catch((e) => {
+        console.warn("[FinishRecording] IndexedDB save failed:", e);
+        showErrorToast("Failed to persist recording backup. Upload may not be recoverable if it fails.");
+      });
 
       const cfg = configRef.current;
       const notesArr = stepVideosRef.current.map(
         (sv) => stepNotesRef.current[sv.stepNumber] ?? ""
       );
+      const totalMB = stepVideosRef.current.reduce((s, v) => s + v.blob.size, 0) / 1024 / 1024;
+      pushUploadLog(
+        "upload",
+        `Uploading ${stepVideosRef.current.length} step video(s) (${totalMB.toFixed(1)} MB)...`
+      );
+      console.log(`[FinishRecording] Uploading ${stepVideosRef.current.length} step video(s)...`);
       const result = await uploadStepVideos({
         stepVideos: stepVideosRef.current.map((sv) => sv.blob),
         title: cfg?.title ?? "Untitled",
@@ -252,20 +282,25 @@ export default function RecordingSessionPage() {
         stepNotes: notesArr,
       });
 
-      // Upload succeeded — clear IndexedDB
-      await stepStorage.clearSession().catch(() => {});
+      pushUploadLog("upload", "Upload complete — starting AI pipeline...");
+      console.log("[FinishRecording] Upload succeeded, workflow_id:", result.workflow_id);
+      await stepStorage.clearSession().catch((err: unknown) => console.warn("[FinishRecording] Post-upload IndexedDB cleanup failed:", err));
 
       setWorkflowId(result.workflow_id);
       setSessionState("processing");
     } catch (err) {
-      showErrorToast(err);
+      console.error("[FinishRecording] Failed:", err);
       const msg = err instanceof Error ? err.message : "Unknown error";
+      pushUploadLog("error", msg);
+      showErrorToast(err);
       setUploadError(msg);
     }
-  }, [webcamRecorder, currentStepNumber]);
+  }, [webcamRecorder, currentStepNumber, pushUploadLog]);
 
   const retryUpload = useCallback(async () => {
+    console.log("[RetryUpload] Retrying upload...");
     setUploadError(null);
+    setUploadLogs([]);
     try {
       let videos: Blob[];
       let transcripts: string[];
@@ -274,7 +309,8 @@ export default function RecordingSessionPage() {
       let description: string | undefined;
 
       if (stepVideosRef.current.length > 0) {
-        // In-memory data available (normal flow)
+        console.log("[RetryUpload] Using in-memory data");
+        pushUploadLog("upload", "Retrying with in-memory data...");
         videos = stepVideosRef.current.map((sv) => sv.blob);
         transcripts = stepTranscriptsRef.current;
         notes = stepVideosRef.current.map(
@@ -284,16 +320,21 @@ export default function RecordingSessionPage() {
         title = cfg?.title ?? "Untitled";
         description = cfg?.description;
       } else {
-        // Recovery path — read from IndexedDB
+        console.log("[RetryUpload] Reading from IndexedDB (recovery path)");
+        pushUploadLog("upload", "Recovering saved steps from local storage...");
         const [meta, savedSteps] = await Promise.all([
           stepStorage.getSessionMeta(),
           stepStorage.getAllSteps(),
         ]);
         if (!meta || savedSteps.length === 0) {
+          console.warn("[RetryUpload] No recovery data found, redirecting to setup");
+          showErrorToast("No saved recording data found. Starting fresh.");
           await stepStorage.clearSession();
           router.replace("/record/setup");
           return;
         }
+        console.log(`[RetryUpload] Recovered ${savedSteps.length} step(s) from IndexedDB`);
+        pushUploadLog("upload", `Recovered ${savedSteps.length} step(s)`);
         videos = savedSteps.map((s) => s.blob);
         transcripts = savedSteps.map((s) => s.transcript);
         notes = savedSteps.map((s) => s.note);
@@ -301,6 +342,9 @@ export default function RecordingSessionPage() {
         description = meta.description;
       }
 
+      const totalMB = videos.reduce((s, b) => s + b.size, 0) / 1024 / 1024;
+      pushUploadLog("upload", `Uploading ${videos.length} step video(s) (${totalMB.toFixed(1)} MB)...`);
+      console.log(`[RetryUpload] Uploading ${videos.length} step video(s)...`);
       const result = await uploadStepVideos({
         stepVideos: videos,
         title,
@@ -308,32 +352,45 @@ export default function RecordingSessionPage() {
         stepTranscripts: transcripts,
         stepNotes: notes,
       });
-      await stepStorage.clearSession().catch(() => {});
+      pushUploadLog("upload", "Upload complete — starting AI pipeline...");
+      console.log("[RetryUpload] Success, workflow_id:", result.workflow_id);
+      await stepStorage.clearSession().catch((err: unknown) => console.warn("[RetryUpload] Post-upload IndexedDB cleanup failed:", err));
       setWorkflowId(result.workflow_id);
       setSessionState("processing");
     } catch (err) {
-      showErrorToast(err);
+      console.error("[RetryUpload] Failed:", err);
       const msg = err instanceof Error ? err.message : "Unknown error";
+      pushUploadLog("error", msg);
+      showErrorToast(err);
       setUploadError(msg);
     }
-  }, [router]);
+  }, [router, pushUploadLog]);
 
   // ---------------------------------------------------------------------------
   // Recovery: upload saved steps from IndexedDB after a crash
   // ---------------------------------------------------------------------------
   const handleRecoveryUpload = useCallback(async () => {
+    console.log("[RecoveryUpload] Starting recovery upload from IndexedDB...");
+    setUploadLogs([]);
+    setUploadError(null);
     setSessionState("uploading");
     try {
+      pushUploadLog("upload", "Recovering saved steps from local storage...");
       const [meta, savedSteps] = await Promise.all([
         stepStorage.getSessionMeta(),
         stepStorage.getAllSteps(),
       ]);
       if (!meta || savedSteps.length === 0) {
+        console.warn("[RecoveryUpload] No recovery data found, redirecting to setup");
+        showErrorToast("No saved recording data found. Starting fresh.");
         await stepStorage.clearSession();
         router.replace("/record/setup");
         return;
       }
 
+      const totalMB = savedSteps.reduce((s, v) => s + v.blob.size, 0) / 1024 / 1024;
+      pushUploadLog("upload", `Recovered ${savedSteps.length} step(s) — uploading (${totalMB.toFixed(1)} MB)...`);
+      console.log(`[RecoveryUpload] Recovered ${savedSteps.length} step(s), uploading...`);
       const result = await uploadStepVideos({
         stepVideos: savedSteps.map((s) => s.blob),
         title: meta.title,
@@ -342,18 +399,22 @@ export default function RecordingSessionPage() {
         stepNotes: savedSteps.map((s) => s.note),
       });
 
-      await stepStorage.clearSession().catch(() => {});
+      pushUploadLog("upload", "Upload complete — starting AI pipeline...");
+      console.log("[RecoveryUpload] Success, workflow_id:", result.workflow_id);
+      await stepStorage.clearSession().catch((err: unknown) => console.warn("[RecoveryUpload] Post-upload IndexedDB cleanup failed:", err));
       setWorkflowId(result.workflow_id);
       setSessionState("processing");
     } catch (err) {
-      showErrorToast(err);
+      console.error("[RecoveryUpload] Failed:", err);
       const msg = err instanceof Error ? err.message : "Unknown error";
+      pushUploadLog("error", msg);
+      showErrorToast(err);
       setUploadError(msg);
     }
-  }, [router]);
+  }, [router, pushUploadLog]);
 
   const handleRecoveryDiscard = useCallback(async () => {
-    await stepStorage.clearSession().catch(() => {});
+    await stepStorage.clearSession().catch((err: unknown) => console.warn("[Session] Failed to clear session on discard:", err));
     router.replace("/record/setup");
   }, [router]);
 
@@ -449,7 +510,7 @@ export default function RecordingSessionPage() {
           title: cfg.title,
           description: cfg.description,
           createdAt: Date.now(),
-        }).catch(() => {});
+        }).catch((err: unknown) => console.warn("[Session] Failed to save session metadata to IndexedDB:", err));
       }
 
       fetchStepPrompt(1, []);
@@ -460,8 +521,8 @@ export default function RecordingSessionPage() {
   // Exit (abandon recording)
   // ---------------------------------------------------------------------------
   const handleExit = useCallback(() => {
-    webcamRecorder.stop().catch(() => {});
-    stepStorage.clearSession().catch(() => {});
+    webcamRecorder.stop().catch((err: unknown) => console.warn("[Session] Webcam recorder stop failed during exit:", err));
+    stepStorage.clearSession().catch((err: unknown) => console.warn("[Session] IndexedDB cleanup failed during exit:", err));
     router.push("/record/setup");
   }, [webcamRecorder, router]);
 
@@ -558,50 +619,17 @@ export default function RecordingSessionPage() {
         </div>
       )}
 
-      {/* Uploading overlay */}
-      {sessionState === "uploading" && (
-        <div className="absolute inset-0 z-50 bg-black flex items-center justify-center">
-          {uploadError ? (
-            <div className="text-center max-w-md px-6">
-              <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-red-500/20 flex items-center justify-center">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </div>
-              <h2 className="font-black text-xl text-white mb-2">Upload Failed</h2>
-              <p className="text-sm text-white/50 mb-6">{uploadError}</p>
-              <div className="flex gap-3 justify-center">
-                <button
-                  onClick={retryUpload}
-                  className="text-sm font-bold px-5 py-2.5 rounded-xl transition-colors"
-                  style={{ backgroundColor: "var(--sf-purple)", color: "var(--sf-black)" }}
-                >
-                  Retry Upload
-                </button>
-                <button
-                  onClick={() => router.push("/record/setup")}
-                  className="text-sm font-bold px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white transition-colors"
-                >
-                  Back to Setup
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="text-center">
-              <Spinner className="w-10 h-10 mx-auto mb-4 text-purple-400" />
-              <h2 className="font-black text-xl text-white mb-2">Uploading...</h2>
-              <p className="text-sm text-white/50">Sending your recording to the AI pipeline</p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Processing overlay */}
-      {sessionState === "processing" && workflowId && (
+      {/* Unified uploading + processing overlay */}
+      {(sessionState === "uploading" || sessionState === "processing") && (
         <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: "var(--sf-white)" }}>
           <div className="w-full max-w-xl px-4">
-            <PipelineStatus workflowId={workflowId} />
+            <PipelineStatus
+              workflowId={workflowId}
+              initialLogs={uploadLogs}
+              uploadError={uploadError}
+              onRetry={retryUpload}
+              onBack={() => router.push("/record/setup")}
+            />
           </div>
         </div>
       )}

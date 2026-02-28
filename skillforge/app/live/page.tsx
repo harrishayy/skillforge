@@ -120,10 +120,10 @@ export default function LiveDetectPage() {
     const lock = () => {
       try {
         if (typeof screen !== "undefined" && screen.orientation?.lock) {
-          screen.orientation.lock("landscape").catch(() => {});
+          screen.orientation.lock("landscape").catch((err: unknown) => console.warn("[Live] Screen orientation lock not supported on this device:", err));
         }
-      } catch {
-        // ignore
+      } catch (err) {
+        console.warn("[Live] Screen orientation lock API unavailable:", err);
       }
     };
     lock();
@@ -132,8 +132,8 @@ export default function LiveDetectPage() {
         if (typeof screen !== "undefined" && screen.orientation?.unlock) {
           screen.orientation.unlock();
         }
-      } catch {
-        // ignore
+      } catch (err) {
+        console.warn("[Live] Screen orientation unlock failed:", err);
       }
     };
   }, [isCameraOnlyMode]);
@@ -152,9 +152,9 @@ export default function LiveDetectPage() {
             .applyConstraints({
               advanced: [{ pointsOfInterest: [{ x: nx, y: ny }] } as MediaTrackConstraintSet],
             })
-            .catch(() => {});
-        } catch {
-          // ignore
+            .catch((err: unknown) => console.warn("[Live] Camera focus constraints not supported:", err));
+        } catch (err) {
+          console.warn("[Live] Failed to apply tap-to-focus constraints:", err);
         }
       }
       if (focusReticleTimeoutRef.current) clearTimeout(focusReticleTimeoutRef.current);

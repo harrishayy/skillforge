@@ -109,7 +109,8 @@ def _duration_via_pyav(video_path: str) -> int | None:
             return dur_ms
         container.close()
         return None
-    except Exception:
+    except Exception as e:
+        print(f"[VideoProcessor] PyAV duration extraction failed for {video_path}: {e}", flush=True)
         return None
 
 
@@ -126,5 +127,6 @@ def _duration_via_ffprobe(video_path: str) -> int | None:
         info = json.loads(result.stdout)
         seconds = float(info["format"]["duration"])
         return int(seconds * 1000)
-    except Exception:
+    except Exception as e:
+        print(f"[VideoProcessor] ffprobe duration extraction failed for {video_path}: {e}", flush=True)
         return None

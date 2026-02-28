@@ -31,7 +31,7 @@ const nextConfig: NextConfig = {
       },
       {
         source: "/ws/:path*",
-        destination: "http://localhost:8001/ws/:path*",
+        destination: "http://localhost:8000/ws/:path*",
       },
     ];
   },

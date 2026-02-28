@@ -160,6 +160,8 @@ class StepResponse(BaseModel):
     description: Optional[str] = None
     start_ms: int
     end_ms: int
+    workflow_start_ms: int = 0
+    workflow_end_ms: int = 0
     key_frame_path: Optional[str] = None
     video_path: Optional[str] = None
     ai_description: Optional[str] = None

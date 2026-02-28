@@ -33,7 +33,9 @@ async function apiFetch<T>(
     try {
       const body = await res.json();
       message = body.detail ?? body.error ?? message;
-    } catch {}
+    } catch (parseErr) {
+      console.warn("[API] Could not parse error response body:", parseErr);
+    }
     throw new ApiError(res.status, message);
   }
 
@@ -91,6 +93,8 @@ export async function uploadRecording(formData: FormData): Promise<{
   return res.json();
 }
 
+const UPLOAD_TIMEOUT_MS = 120_000;
+
 export async function uploadStepVideos(opts: {
   stepVideos: Blob[];
   title: string;
@@ -98,8 +102,15 @@ export async function uploadStepVideos(opts: {
   stepTranscripts?: string[];
   stepNotes?: string[];
 }): Promise<{ workflow_id: string; status: string }> {
+  const totalBytes = opts.stepVideos.reduce((sum, b) => sum + b.size, 0);
+  console.log(
+    `[uploadStepVideos] Starting upload: ${opts.stepVideos.length} step(s), ` +
+    `${(totalBytes / 1024 / 1024).toFixed(1)} MB total, title="${opts.title}"`
+  );
+
   const formData = new FormData();
   opts.stepVideos.forEach((blob, i) => {
+    console.log(`[uploadStepVideos] step_${i + 1}.webm — ${(blob.size / 1024).toFixed(0)} KB`);
     formData.append("step_videos", blob, `step_${i + 1}.webm`);
   });
   formData.append("title", opts.title);
@@ -113,15 +124,39 @@ export async function uploadStepVideos(opts: {
     formData.append("step_notes_json", JSON.stringify(opts.stepNotes));
   }
 
-  const res = await fetch(`${API_BASE}/api/workflows/upload-steps`, {
-    method: "POST",
-    body: formData,
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, body.detail ?? "Upload failed");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    console.error(`[uploadStepVideos] Aborting — exceeded ${UPLOAD_TIMEOUT_MS / 1000}s timeout`);
+    controller.abort();
+  }, UPLOAD_TIMEOUT_MS);
+
+  try {
+    console.log(`[uploadStepVideos] POST ${API_BASE}/api/workflows/upload-steps`);
+    const res = await fetch(`${API_BASE}/api/workflows/upload-steps`, {
+      method: "POST",
+      body: formData,
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      console.error(`[uploadStepVideos] Server error ${res.status}:`, body);
+      throw new ApiError(res.status, body.detail ?? "Upload failed");
+    }
+    const result = await res.json();
+    console.log("[uploadStepVideos] Success:", result);
+    return result;
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(
+        `Upload timed out after ${UPLOAD_TIMEOUT_MS / 1000}s. ` +
+        `Check your network connection or try again.`
+      );
+    }
+    throw err;
   }
-  return res.json();
 }
 
 export async function getGuidedStepPrompt(

@@ -60,8 +60,8 @@ export function useARStream({
     if (!base64) return;
     try {
       wsRef.current.send(JSON.stringify({ type: "frame", data: base64, ts: Date.now() }));
-    } catch {
-      // send failed
+    } catch (err) {
+      console.warn("[ARStream] WebSocket send failed — connection may have dropped:", err);
     }
   }, [videoRef]);
 
@@ -98,8 +98,8 @@ export function useARStream({
         } else if (msg.type === "ack") {
           setLastAckTs(Date.now());
         }
-      } catch {
-        // ignore parse errors
+      } catch (err) {
+        console.warn("[ARStream] Malformed WebSocket message:", err);
       }
     };
 

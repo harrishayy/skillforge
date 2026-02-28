@@ -12,6 +12,7 @@ Each step arrives as its own video file. The pipeline:
 Called as a FastAPI BackgroundTask from routers/recording.py (upload-steps endpoint).
 """
 import os
+import re
 import json
 from pathlib import Path
 from models.database import execute, new_id, now_ms
@@ -106,6 +107,7 @@ async def run_hardware_pipeline(
         await _log(workflow_id, "claude_decompose", "Generating step titles and annotations...", 40)
 
         steps_created = 0
+        workflow_offset_ms = 0
         for sd in step_data:
             step_num = sd["step_number"]
             pct = 40 + int((step_num / total_steps) * 15)
@@ -118,21 +120,26 @@ async def run_hardware_pipeline(
             ts = now_ms()
             key_frame_path = sd["key_frame"]["relative_path"] if sd["key_frame"] else None
 
+            wf_start = workflow_offset_ms
+            wf_end = workflow_offset_ms + sd["duration_ms"]
+
             await execute(
                 """INSERT INTO steps
                    (id, workflow_id, step_number, title, description,
-                    start_ms, end_ms, key_frame_path, video_path,
+                    start_ms, end_ms, workflow_start_ms, workflow_end_ms,
+                    key_frame_path, video_path,
                     ai_description, transcript, note,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     step_id, workflow_id, step_num, title, description,
-                    0, sd["duration_ms"],
+                    0, sd["duration_ms"], wf_start, wf_end,
                     key_frame_path, sd["relative_video_path"],
                     ai_summary, sd["transcript"], sd["note"],
                     ts, ts,
                 ),
             )
+            workflow_offset_ms = wf_end
             steps_created += 1
 
             # Store all extracted frames in step_frames table
@@ -198,12 +205,18 @@ async def run_hardware_pipeline(
 
                     # Store SAM3 segmentation results as click_targets (with mask files)
                     import base64 as b64mod
+                    from services.sam3_service import generate_segmented_image
+
                     masks_dir = UPLOADS_DIR / workflow_id / "masks" / step_id
                     masks_dir.mkdir(parents=True, exist_ok=True)
 
+                    seg_by_frame: dict[str, list[dict]] = {}
                     for seg_result in analysis["segmentations"]:
                         seg_frame_abs = seg_result.get("frame_path", "")
                         seg_frame_rel = str(Path(seg_frame_abs).relative_to(UPLOADS_DIR.parent)) if seg_frame_abs else None
+
+                        if seg_frame_abs:
+                            seg_by_frame.setdefault(seg_frame_abs, []).extend(seg_result["segments"])
 
                         for seg in seg_result["segments"]:
                             bbox = seg.get("bbox", [0, 0, 0, 0])
@@ -233,6 +246,24 @@ async def run_hardware_pipeline(
                                 ),
                             )
 
+                    # Generate pre-rendered segmented images for each positive frame
+                    seg_dir = UPLOADS_DIR / workflow_id / "segmented" / step_id
+                    obj_label = key_obj.get("key_object", "")
+                    for frame_abs, segs in seg_by_frame.items():
+                        fid = frame_id_map.get(frame_abs)
+                        if not fid or not segs:
+                            continue
+                        out_file = seg_dir / f"{fid}.jpg"
+                        result_path = generate_segmented_image(
+                            frame_abs, segs, str(out_file), label=obj_label,
+                        )
+                        if result_path:
+                            seg_rel = str(Path(result_path).relative_to(UPLOADS_DIR.parent))
+                            await execute(
+                                "UPDATE step_frames SET segmented_frame_path=? WHERE id=?",
+                                (seg_rel, fid),
+                            )
+
                     pos = analysis["positive_frame_count"]
                     tot = analysis["total_frame_count"]
                     await _log(
@@ -258,6 +289,8 @@ async def run_hardware_pipeline(
                     "description": description,
                     "start_ms": 0,
                     "end_ms": sd["duration_ms"],
+                    "workflow_start_ms": wf_start,
+                    "workflow_end_ms": wf_end,
                     "key_frame_path": key_frame_path,
                     "video_path": sd["relative_video_path"],
                 },
@@ -342,7 +375,7 @@ async def _generate_step_metadata(
         user_content += "\n\nGenerate the title, description, and summary JSON."
 
         response = client.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model="claude-sonnet-4-20250514",
             max_tokens=400,
             system=(
                 "You generate concise step metadata for a tutorial. "
@@ -358,7 +391,12 @@ async def _generate_step_metadata(
         )
 
         text = response.content[0].text.strip()
-        data = json.loads(text)
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        json_match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not json_match:
+            raise ValueError(f"No JSON object in Claude response: {text[:200]}")
+        data = json.loads(json_match.group())
         return (
             data.get("title", f"Step {step_number}"),
             data.get("description", transcript.strip()),

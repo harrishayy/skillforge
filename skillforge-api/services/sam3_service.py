@@ -9,11 +9,15 @@ objects matching a text concept prompt.  Supports:
   - Toggle (add/remove) segmentation for interactive refinement
 """
 
+import io
 import os
 import re
 import time
 import base64
+from pathlib import Path
+
 import httpx
+from PIL import Image, ImageDraw, ImageFont
 
 
 SAM3_URL = os.environ.get("SAM3_URL", "")
@@ -215,6 +219,81 @@ async def segment_box(
 
     except Exception as e:
         print(f"[SAM3] Box segmentation failed: {e}")
+        return None
+
+
+# ── Pre-rendered segmented image generation ──────────────────────────────────
+
+_OVERLAY_COLORS = [
+    (0, 255, 128),    # green
+    (0, 200, 255),    # cyan
+    (255, 100, 255),  # magenta
+    (255, 200, 0),    # yellow
+]
+_OVERLAY_ALPHA = 140  # ~55% of 255
+
+
+def generate_segmented_image(
+    frame_path: str,
+    segments: list[dict],
+    output_path: str,
+    label: str = "",
+) -> str | None:
+    """
+    Composite SAM3 mask overlays onto an original frame and save as JPEG.
+
+    Each segment dict must have 'mask_base64' (base64-encoded PNG mask),
+    'bbox' [x1, y1, x2, y2] (normalised 0-1), and 'score' (float).
+
+    Returns the output_path on success, or None on failure.
+    """
+    try:
+        frame = Image.open(frame_path).convert("RGBA")
+        w, h = frame.size
+
+        for i, seg in enumerate(segments):
+            mask_b64 = seg.get("mask_base64")
+            bbox = seg.get("bbox", [0, 0, 0, 0])
+            score = seg.get("score", 0)
+            if not mask_b64:
+                continue
+
+            mask_bytes = base64.b64decode(mask_b64)
+            mask_img = Image.open(io.BytesIO(mask_bytes)).convert("L").resize((w, h))
+
+            color = _OVERLAY_COLORS[i % len(_OVERLAY_COLORS)]
+            color_layer = Image.new("RGBA", (w, h), (*color, 0))
+            alpha = mask_img.point(lambda p: min(p, _OVERLAY_ALPHA) if p > 20 else 0)
+            color_layer.putalpha(alpha)
+            frame = Image.alpha_composite(frame, color_layer)
+
+            draw = ImageDraw.Draw(frame)
+            bx1 = int(bbox[0] * w)
+            by1 = int(bbox[1] * h)
+            bx2 = int(bbox[2] * w)
+            by2 = int(bbox[3] * h)
+            draw.rectangle([bx1, by1, bx2, by2], outline=(*color, 220), width=2)
+
+            if label or score:
+                txt = f"{label} {score:.0%}".strip() if label else f"{score:.0%}"
+                try:
+                    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+                except OSError:
+                    font = ImageFont.load_default()
+                tbbox = draw.textbbox((0, 0), txt, font=font)
+                tw, th = tbbox[2] - tbbox[0], tbbox[3] - tbbox[1]
+                label_y = max(by1 - th - 6, 0)
+                draw.rectangle([bx1, label_y, bx1 + tw + 8, label_y + th + 4], fill=(*color, 200))
+                draw.text((bx1 + 4, label_y + 2), txt, fill=(255, 255, 255, 255), font=font)
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        rgb = frame.convert("RGB")
+        rgb.save(output_path, "JPEG", quality=92)
+        print(f"[SAM3] Saved segmented image → {output_path}", flush=True)
+        return output_path
+
+    except Exception as e:
+        print(f"[SAM3] Failed to generate segmented image: {e}", flush=True)
         return None
 
 

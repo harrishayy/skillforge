@@ -34,15 +34,15 @@ async def upload_step_videos(
     if step_transcripts_json:
         try:
             step_transcripts = json.loads(step_transcripts_json)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Recording] Failed to parse step_transcripts_json: {e} — transcripts will be empty", flush=True)
 
     step_notes: list[str] = []
     if step_notes_json:
         try:
             step_notes = json.loads(step_notes_json)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Recording] Failed to parse step_notes_json: {e} — notes will be empty", flush=True)
 
     workflow_video_dir = UPLOAD_DIR / workflow_id
     workflow_video_dir.mkdir(parents=True, exist_ok=True)

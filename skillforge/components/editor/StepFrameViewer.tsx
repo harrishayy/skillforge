@@ -2,15 +2,6 @@
 import { useRef, useCallback, useState, useEffect } from "react";
 import { useWorkflowStore, selectedStep } from "@/store/workflow-store";
 import { frameUrl, videoUrl } from "@/lib/constants";
-import type { ClickTarget } from "@/types";
-
-const MASK_COLORS = [
-  "rgba(0, 255, 128, 0.45)",
-  "rgba(0, 200, 255, 0.45)",
-  "rgba(255, 100, 255, 0.45)",
-  "rgba(255, 200, 0, 0.45)",
-];
-const MASK_STROKE = ["#00FF80", "#00C8FF", "#FF64FF", "#FFC800"];
 
 type ViewTab = "frames" | "video";
 
@@ -26,8 +17,9 @@ export function StepFrameViewer() {
   } = store;
 
   const imgRef = useRef<HTMLImageElement>(null);
-  const maskCanvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [tab, setTab] = useState<ViewTab>("frames");
+  const [showSegmented, setShowSegmented] = useState(true);
 
   const segments = step ? segmentsByStep[step.id] ?? [] : [];
   const isSegmenting = step ? segmentingStepId === step.id : false;
@@ -36,16 +28,19 @@ export function StepFrameViewer() {
     ? activeFramePath[step.id] ?? step.key_frame_path
     : null;
 
-  const clickTargets = step?.click_targets ?? [];
+  const currentFrame = step?.frames?.find((f) => f.frame_path === currentFramePath);
+  const hasSegmentedView = !!(currentFrame?.object_detected && currentFrame?.segmented_frame_path);
 
-  // Redraw masks when click_targets or current frame changes
+  const displayFramePath =
+    showSegmented && hasSegmentedView
+      ? currentFrame!.segmented_frame_path!
+      : currentFramePath;
+
   useEffect(() => {
-    if (!step) return;
-    const timer = setTimeout(() => {
-      drawMasks(imgRef.current, maskCanvasRef.current, clickTargets, currentFramePath);
-    }, 50);
-    return () => clearTimeout(timer);
-  }, [clickTargets, currentFramePath, step]);
+    if (tab !== "video" || !videoRef.current) return;
+    videoRef.current.currentTime = 0;
+    videoRef.current.play().catch((err: unknown) => console.warn("[StepFrameViewer] Video autoplay blocked:", err));
+  }, [tab, step?.id]);
 
   const handleFrameClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -104,11 +99,14 @@ export function StepFrameViewer() {
                 <div className="flex gap-1.5 pb-1">
                   {detectedFrames.map((f) => {
                     const isActive = currentFramePath === f.frame_path;
+                    const thumbSrc = f.segmented_frame_path
+                      ? frameUrl(f.segmented_frame_path)
+                      : frameUrl(f.frame_path);
                     return (
                       <button
                         key={f.id}
                         onClick={() => setActiveFrame(step.id, f.frame_path)}
-                        className="shrink-0 rounded-md overflow-hidden transition-all"
+                        className="relative shrink-0 rounded-md overflow-hidden transition-all"
                         style={{
                           width: 72,
                           height: 48,
@@ -119,11 +117,17 @@ export function StepFrameViewer() {
                         }}
                       >
                         <img
-                          src={frameUrl(f.frame_path)}
+                          src={thumbSrc}
                           alt={`Frame ${f.timestamp_ms}ms`}
                           className="w-full h-full object-cover"
                           draggable={false}
                         />
+                        <span
+                          className="absolute top-0.5 right-0.5 text-[7px] font-bold px-1 rounded"
+                          style={{ backgroundColor: "rgba(0,0,0,0.7)", color: "var(--sf-lime)" }}
+                        >
+                          SAM3
+                        </span>
                       </button>
                     );
                   })}
@@ -158,11 +162,15 @@ export function StepFrameViewer() {
                   <div className="flex gap-1.5 pb-1">
                     {frames.map((f) => {
                       const isActive = currentFramePath === f.frame_path;
+                      const thumbSrc =
+                        f.object_detected && f.segmented_frame_path
+                          ? frameUrl(f.segmented_frame_path)
+                          : frameUrl(f.frame_path);
                       return (
                         <button
                           key={f.id}
                           onClick={() => setActiveFrame(step.id, f.frame_path)}
-                          className="shrink-0 rounded-md overflow-hidden transition-all"
+                          className="relative shrink-0 rounded-md overflow-hidden transition-all"
                           style={{
                             width: 64,
                             height: 42,
@@ -177,11 +185,19 @@ export function StepFrameViewer() {
                           }}
                         >
                           <img
-                            src={frameUrl(f.frame_path)}
+                            src={thumbSrc}
                             alt={`Frame ${f.timestamp_ms}ms`}
                             className="w-full h-full object-cover"
                             draggable={false}
                           />
+                          {f.object_detected && (
+                            <span
+                              className="absolute top-0 right-0 text-[6px] font-bold px-0.5 rounded-bl"
+                              style={{ backgroundColor: "rgba(0,0,0,0.7)", color: "var(--sf-lime)" }}
+                            >
+                              SAM3
+                            </span>
+                          )}
                         </button>
                       );
                     })}
@@ -191,22 +207,16 @@ export function StepFrameViewer() {
             </div>
           )}
 
-          {/* Frame viewer with SAM3 mask overlay */}
+          {/* Frame viewer — pre-rendered segmented image */}
           <div className="relative flex-1 flex items-center justify-center overflow-hidden rounded-xl" style={{ backgroundColor: "#111" }}>
-            {currentFramePath ? (
+            {displayFramePath ? (
               <div className="relative cursor-crosshair" onClick={handleFrameClick}>
                 <img
                   ref={imgRef}
-                  src={frameUrl(currentFramePath)}
+                  src={frameUrl(displayFramePath)}
                   alt={`Step ${step.step_number} frame`}
                   className="max-w-full max-h-[55vh] rounded-lg object-contain"
                   draggable={false}
-                  onLoad={() => drawMasks(imgRef.current, maskCanvasRef.current, step.click_targets, currentFramePath)}
-                />
-
-                <canvas
-                  ref={maskCanvasRef}
-                  className="absolute top-0 left-0 pointer-events-none rounded-lg"
                 />
 
                 {/* Manual SAM3 segment overlays (click-to-segment) */}
@@ -240,11 +250,29 @@ export function StepFrameViewer() {
               </div>
             )}
 
-            <div
-              className="absolute bottom-3 left-3 text-[10px] font-medium px-2 py-1 rounded-md"
-              style={{ backgroundColor: "rgba(0,0,0,0.7)", color: "#888" }}
-            >
-              Click on frame to add SAM3 segmentation
+            {/* Bottom bar: hint + segmented/original toggle */}
+            <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between">
+              <div
+                className="text-[10px] font-medium px-2 py-1 rounded-md"
+                style={{ backgroundColor: "rgba(0,0,0,0.7)", color: "#888" }}
+              >
+                Click on frame to add SAM3 segmentation
+              </div>
+              {hasSegmentedView && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowSegmented((v) => !v);
+                  }}
+                  className="text-[10px] font-bold px-2 py-1 rounded-md transition-colors"
+                  style={{
+                    backgroundColor: showSegmented ? "var(--sf-lime)" : "rgba(255,255,255,0.1)",
+                    color: showSegmented ? "var(--sf-black)" : "#888",
+                  }}
+                >
+                  {showSegmented ? "Segmented" : "Original"}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -253,9 +281,12 @@ export function StepFrameViewer() {
         <div className="flex-1 flex items-center justify-center overflow-hidden rounded-xl" style={{ backgroundColor: "#111" }}>
           {step.video_path ? (
             <video
+              ref={videoRef}
               key={step.video_path}
               src={videoUrl(step.video_path)}
               controls
+              autoPlay
+              muted
               className="max-w-full max-h-[60vh] rounded-lg"
             />
           ) : (
@@ -265,102 +296,6 @@ export function StepFrameViewer() {
       )}
     </div>
   );
-}
-
-/**
- * Renders SAM3 segmentation masks onto a canvas overlaid on the frame image.
- * Uses the same mask-to-alpha technique as the live detection page:
- * loads mask PNG, uses grayscale values as alpha, composites with a color fill.
- */
-async function drawMasks(
-  img: HTMLImageElement | null,
-  canvas: HTMLCanvasElement | null,
-  clickTargets: ClickTarget[],
-  currentFramePath: string | null,
-) {
-  if (!img || !canvas) return;
-
-  const w = img.clientWidth;
-  const h = img.clientHeight;
-  canvas.width = w;
-  canvas.height = h;
-  canvas.style.width = `${w}px`;
-  canvas.style.height = `${h}px`;
-
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  ctx.clearRect(0, 0, w, h);
-
-  const masksToRender = clickTargets.filter(
-    (ct) => ct.mask_path && (!ct.frame_path || !currentFramePath || ct.frame_path === currentFramePath),
-  );
-  if (masksToRender.length === 0) return;
-
-  for (let i = 0; i < masksToRender.length; i++) {
-    const ct = masksToRender[i];
-    try {
-      const maskImg = new Image();
-      maskImg.crossOrigin = "anonymous";
-      await new Promise<void>((resolve, reject) => {
-        maskImg.onload = () => resolve();
-        maskImg.onerror = () => reject();
-        maskImg.src = frameUrl(ct.mask_path!);
-      });
-
-      // Convert grayscale mask to alpha channel
-      const oc = document.createElement("canvas");
-      oc.width = w;
-      oc.height = h;
-      const octx = oc.getContext("2d")!;
-      octx.drawImage(maskImg, 0, 0, w, h);
-      const imgData = octx.getImageData(0, 0, w, h);
-      const d = imgData.data;
-      for (let j = 0; j < d.length; j += 4) {
-        d[j + 3] = d[j]; // grayscale → alpha
-      }
-      octx.putImageData(imgData, 0, 0);
-
-      // Composite colored mask onto main canvas
-      octx.globalCompositeOperation = "source-in";
-      octx.fillStyle = MASK_COLORS[i % MASK_COLORS.length];
-      octx.fillRect(0, 0, w, h);
-
-      ctx.save();
-      ctx.globalAlpha = 0.55;
-      ctx.drawImage(oc, 0, 0);
-      ctx.restore();
-
-      // Draw bounding box + label
-      const bx = (ct.bbox_x / 100) * w;
-      const by = (ct.bbox_y / 100) * h;
-      const bw = (ct.bbox_width / 100) * w;
-      const bh = (ct.bbox_height / 100) * h;
-      const stroke = MASK_STROKE[i % MASK_STROKE.length];
-
-      ctx.save();
-      ctx.shadowColor = stroke;
-      ctx.shadowBlur = 6;
-      ctx.strokeStyle = stroke;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(bx, by, bw, bh);
-      ctx.shadowBlur = 0;
-
-      if (ct.element_text) {
-        const label = `${ct.element_text} ${ct.confidence != null ? Math.round(ct.confidence * 100) + "%" : ""}`;
-        ctx.font = "bold 12px system-ui";
-        const tw = ctx.measureText(label).width;
-        ctx.fillStyle = stroke;
-        ctx.globalAlpha = 0.85;
-        ctx.fillRect(bx, by - 20, tw + 10, 20);
-        ctx.fillStyle = "#fff";
-        ctx.globalAlpha = 1;
-        ctx.fillText(label, bx + 5, by - 5);
-      }
-      ctx.restore();
-    } catch {
-      // mask failed to load — skip
-    }
-  }
 }
 
 function TabButton({

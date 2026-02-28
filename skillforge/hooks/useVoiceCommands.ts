@@ -160,6 +160,7 @@ export function useVoiceCommands({
           setIsListening(true);
         } catch (err) {
           console.warn("[ASR] MediaRecorder failed:", err);
+          showErrorToast("Voice recording failed. Your browser may not support MediaRecorder.");
           setUnavailableReason("MediaRecorder not supported for audio");
         }
       };
@@ -178,7 +179,7 @@ export function useVoiceCommands({
         active = false;
         clearInterval(timer);
         if (currentRecorder?.state === "recording") {
-          try { currentRecorder.stop(); } catch { /* cleanup */ }
+          try { currentRecorder.stop(); } catch (err) { console.warn("[ASR] Cleanup: MediaRecorder.stop() failed:", err); }
         }
         setIsListening(false);
       };
@@ -188,6 +189,7 @@ export function useVoiceCommands({
     if (typeof window !== "undefined" && !window.isSecureContext) {
       setUnavailableReason("Voice commands require localhost or HTTPS. Open http://localhost:3000 instead.");
       console.warn("[VoiceCommands] Blocked: page is not a secure context. Use http://localhost:3000");
+      showErrorToast("Voice commands unavailable — HTTPS is required. Use ngrok for secure access or open http://localhost:3000.");
       return;
     }
 
@@ -206,7 +208,7 @@ export function useVoiceCommands({
 
     recognition.onend = () => {
       if (active) {
-        try { recognition.start(); } catch {}
+        try { recognition.start(); } catch (err) { console.warn("[VoiceCommands] SpeechRecognition restart failed:", err); }
       }
     };
 
@@ -242,13 +244,13 @@ export function useVoiceCommands({
 
     const timer = setTimeout(() => {
       if (!active) return;
-      try { recognition.start(); } catch {}
+      try { recognition.start(); } catch (err) { console.warn("[VoiceCommands] SpeechRecognition initial start failed:", err); }
     }, 120);
 
     return () => {
       active = false;
       clearTimeout(timer);
-      try { recognition.stop(); } catch {}
+      try { recognition.stop(); } catch (err) { console.warn("[VoiceCommands] SpeechRecognition cleanup stop failed:", err); }
       setIsListening(false);
     };
   }, [enabled, useFuzzy, useLLMFallback, effectiveSource, audioStream, fallbackActive]);

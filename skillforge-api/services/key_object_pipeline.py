@@ -9,6 +9,7 @@ Multi-agent key object detection and segmentation pipeline.
 Called by: services/hardware_pipeline.py after step metadata is generated.
 """
 import os
+import re
 import json
 import anthropic
 
@@ -64,7 +65,7 @@ async def identify_key_object(
         user_content += "\n\nIdentify the key object and return the JSON."
 
         response = client.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model="claude-sonnet-4-20250514",
             max_tokens=300,
             system=(
                 "You identify the single most important physical object or element a trainee "
@@ -78,7 +79,12 @@ async def identify_key_object(
         )
 
         text = response.content[0].text.strip()
-        data = json.loads(text)
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        json_match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not json_match:
+            raise ValueError(f"No JSON object found in Claude response: {text[:200]}")
+        data = json.loads(json_match.group())
         print(f'[KeyObjectPipeline] Claude identified: "{data.get("key_object", "?")}" → SAM3 prompt: "{data.get("sam3_prompt", "?")}"', flush=True)
         return {
             "key_object": data.get("key_object", step_title),

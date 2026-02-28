@@ -21,7 +21,8 @@ async def broadcast(workflow_id: str, event: dict):
     for ws in _connections.get(workflow_id, set()):
         try:
             await ws.send_text(json.dumps(event))
-        except Exception:
+        except Exception as e:
+            print(f"[WS] Broadcast to client failed (workflow {workflow_id}): {e}", flush=True)
             dead.add(ws)
     for ws in dead:
         unregister(workflow_id, ws)

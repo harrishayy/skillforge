@@ -446,15 +446,25 @@ async def rerun_step_pipeline(step_id: str, body: RerunPipelineRequest):
     # Agent 3: SAM3 — re-segment positive frames
     if body.run_sam3:
         import base64 as b64mod, shutil
+        from services.sam3_service import generate_segmented_image
 
-        # Clean up old masks
-        old_cts = await fetchall("SELECT mask_path FROM click_targets WHERE step_id=?", (step_id,))
+        # Clean up old masks and segmented images
         await execute("DELETE FROM click_targets WHERE step_id=?", (step_id,))
 
         masks_dir = uploads_dir / "uploads" / step["workflow_id"] / "masks" / step_id
         if masks_dir.exists():
             shutil.rmtree(masks_dir)
         masks_dir.mkdir(parents=True, exist_ok=True)
+
+        seg_dir = uploads_dir / "uploads" / step["workflow_id"] / "segmented" / step_id
+        if seg_dir.exists():
+            shutil.rmtree(seg_dir)
+
+        # Clear old segmented_frame_path values
+        await execute(
+            "UPDATE step_frames SET segmented_frame_path=NULL WHERE step_id=?",
+            (step_id,),
+        )
 
         refreshed_frames = await fetchall(
             "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms",
@@ -465,14 +475,22 @@ async def rerun_step_pipeline(step_id: str, body: RerunPipelineRequest):
             for f in refreshed_frames
             if f.get("object_detected")
         ]
+        frame_id_by_abs = {
+            str(uploads_dir / f["frame_path"]): f["id"]
+            for f in refreshed_frames
+        }
 
         if positive_frames:
             sam3_prompt = key_object.get("sam3_prompt", step.get("sam3_prompt", ""))
             segmentations = await segment_positive_frames(positive_frames, sam3_prompt)
 
+            seg_by_frame: dict[str, list[dict]] = {}
             for seg_result in segmentations:
                 seg_frame_abs = seg_result.get("frame_path", "")
                 seg_frame_rel = str(Path(seg_frame_abs).relative_to(uploads_dir)) if seg_frame_abs else None
+
+                if seg_frame_abs:
+                    seg_by_frame.setdefault(seg_frame_abs, []).extend(seg_result["segments"])
 
                 for seg in seg_result["segments"]:
                     bbox = seg.get("bbox", [0, 0, 0, 0])
@@ -500,6 +518,23 @@ async def rerun_step_pipeline(step_id: str, body: RerunPipelineRequest):
                             "left_click", seg.get("score", 0), 0,
                             mask_path, seg_frame_rel,
                         ),
+                    )
+
+            # Generate pre-rendered segmented images
+            obj_label = key_object.get("key_object", "")
+            for frame_abs, segs in seg_by_frame.items():
+                fid = frame_id_by_abs.get(frame_abs)
+                if not fid or not segs:
+                    continue
+                out_file = seg_dir / f"{fid}.jpg"
+                result_path = generate_segmented_image(
+                    frame_abs, segs, str(out_file), label=obj_label,
+                )
+                if result_path:
+                    seg_rel = str(Path(result_path).relative_to(uploads_dir))
+                    await execute(
+                        "UPDATE step_frames SET segmented_frame_path=? WHERE id=?",
+                        (seg_rel, fid),
                     )
 
     return await _get_step_with_frames(step_id)

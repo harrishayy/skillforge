@@ -5,11 +5,13 @@ export type WorkflowStatus = "processing" | "ready" | "failed";
 export type AnnotationType = "bounding_box" | "arrow" | "highlight" | "text_label";
 export type InputEventType = "click" | "keypress" | "scroll" | "drag";
 export type PipelineStage =
+  | "upload"
   | "frame_extraction"
   | "nemotron_vl"
   | "yolo"
   | "mediapipe"
   | "claude_decompose"
+  | "storage"
   | "complete"
   | "error";
 
@@ -57,6 +59,7 @@ export interface StepFrame {
   is_key_frame: boolean;
   object_detected: boolean;
   object_description?: string;
+  segmented_frame_path?: string;
 }
 
 export interface Step {
@@ -67,6 +70,8 @@ export interface Step {
   description?: string;
   start_ms: number;
   end_ms: number;
+  workflow_start_ms: number;
+  workflow_end_ms: number;
   key_frame_path?: string;
   video_path?: string;
   ai_description?: string;

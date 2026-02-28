@@ -33,7 +33,7 @@ async def get_step_prompt(body: StepPromptRequest) -> dict:
     )
 
     response = client.messages.create(
-        model="claude-3-5-haiku-20241022",
+        model="claude-sonnet-4-20250514",
         max_tokens=60,
         system=(
             "You are a concise recording coach helping a subject-matter expert record a tutorial. "

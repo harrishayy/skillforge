@@ -1,6 +1,7 @@
 import type { Step } from "@/types";
 
-export function msToTimestamp(ms: number): string {
+export function msToTimestamp(ms: number | null | undefined): string {
+  if (ms == null || isNaN(ms)) return "0:00";
   const total = Math.floor(ms / 1000);
   const m = Math.floor(total / 60);
   const s = total % 60;

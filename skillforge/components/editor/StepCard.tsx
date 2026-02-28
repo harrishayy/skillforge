@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { Step } from "@/types";
 import { useWorkflowStore } from "@/store/workflow-store";
 import { msToTimestamp } from "@/lib/video-utils";
@@ -14,6 +14,10 @@ export function StepCard({ step, isSelected, onSelect }: StepCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(step.title);
   const { saveStep } = useWorkflowStore();
+
+  useEffect(() => {
+    if (!isEditing) setTitle(step.title);
+  }, [step.title, isEditing]);
 
   const handleSaveTitle = async () => {
     setIsEditing(false);
@@ -57,10 +61,16 @@ export function StepCard({ step, isSelected, onSelect }: StepCardProps) {
           </span>
         )}
       </div>
-      <div className="flex items-center gap-2 text-xs ml-8" style={{ color: "#555" }}>
-        <span>{msToTimestamp(step.start_ms)}</span>
-        <span>→</span>
-        <span>{msToTimestamp(step.end_ms)}</span>
+      <div className="flex items-center gap-2 text-xs ml-8" style={{ color: "#666" }}>
+        {(step.workflow_start_ms > 0 || step.workflow_end_ms > 0) ? (
+          <>
+            <span className="font-mono" style={{ color: "#777" }}>{msToTimestamp(step.workflow_start_ms)}</span>
+            <span style={{ color: "#555" }}>→</span>
+            <span className="font-mono" style={{ color: "#777" }}>{msToTimestamp(step.workflow_end_ms)}</span>
+          </>
+        ) : step.end_ms > 0 ? (
+          <span className="font-mono" style={{ color: "#777" }}>{msToTimestamp(step.end_ms)}</span>
+        ) : null}
         <span className="ml-auto">{step.annotations.length} ann.</span>
       </div>
     </div>
