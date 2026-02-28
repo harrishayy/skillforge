@@ -51,30 +51,38 @@ export function useWebcamRecorder() {
     mediaRecorderRef.current = recorder;
   }, []);
 
-  const start = useCallback(async (): Promise<MediaStream | null> => {
+  const start = useCallback(async (externalAudioStream?: MediaStream): Promise<MediaStream | null> => {
     try {
       let stream: MediaStream;
       const videoConstraints = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
 
-      // Request video + audio for recording. Audio captures speech during steps;
-      // the same mic feeds voice commands (SpeechRecognition) and the video file.
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: videoConstraints,
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
-      } catch {
+      if (externalAudioStream) {
+        // Mic is already owned by useMicStream — only request video here.
+        // This prevents the dual-getUserMedia conflict with SpeechRecognition on macOS/Chrome.
         stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+      } else {
+        // No shared mic provided — fall back to requesting audio ourselves.
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: videoConstraints,
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          });
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+        }
       }
 
-      // Record video + audio (full stream) so saved videos include speech.
+      // Build recording stream: video from camera + audio from shared mic (or own audio tracks).
+      const audioTracks = externalAudioStream
+        ? externalAudioStream.getAudioTracks()
+        : stream.getAudioTracks();
       const recordingStream = new MediaStream([
         ...stream.getVideoTracks(),
-        ...stream.getAudioTracks(),
+        ...audioTracks,
       ]);
 
       mimeTypeRef.current = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
