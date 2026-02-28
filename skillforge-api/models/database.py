@@ -79,7 +79,9 @@ _CREATE_STATEMENTS = [
     bbox_height     REAL NOT NULL,
     action          TEXT DEFAULT 'left_click',
     confidence      REAL,
-    is_primary      INTEGER DEFAULT 0
+    is_primary      INTEGER DEFAULT 0,
+    mask_path       TEXT,
+    frame_path      TEXT
 )""",
     """CREATE TABLE IF NOT EXISTS step_frames (
     id                 TEXT PRIMARY KEY,
@@ -162,6 +164,8 @@ async def _run_migrations(conn):
         "ALTER TABLE pipeline_logs ALTER COLUMN created_at TYPE BIGINT",
         "ALTER TABLE step_frames ADD COLUMN IF NOT EXISTS object_detected INTEGER DEFAULT 0",
         "ALTER TABLE step_frames ADD COLUMN IF NOT EXISTS object_description TEXT",
+        "ALTER TABLE click_targets ADD COLUMN IF NOT EXISTS mask_path TEXT",
+        "ALTER TABLE click_targets ADD COLUMN IF NOT EXISTS frame_path TEXT",
     ]
     for sql in migrations:
         try:

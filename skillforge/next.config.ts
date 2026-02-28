@@ -5,6 +5,8 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: [
     "https://phytocidal-unsquabbling-joshua.ngrok-free.dev",
     "phytocidal-unsquabbling-joshua.ngrok-free.dev",
+    "https://gaynell-thalloid-layton.ngrok-free.dev",
+    "gaynell-thalloid-layton.ngrok-free.dev",
     "http://192.168.114.254:3000",
     "https://192.168.114.254:3000",
     "192.168.114.254",

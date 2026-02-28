@@ -64,7 +64,7 @@ async def identify_key_object(
         user_content += "\n\nIdentify the key object and return the JSON."
 
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-3-5-haiku-20241022",
             max_tokens=300,
             system=(
                 "You identify the single most important physical object or element a trainee "
@@ -88,8 +88,11 @@ async def identify_key_object(
             "sam3_prompt": data.get("sam3_prompt", data.get("key_object", step_title)),
         }
 
+    except anthropic.AuthenticationError as e:
+        print(f"[KeyObjectPipeline] Claude auth failed — check ANTHROPIC_API_KEY: {e}", flush=True)
+        return _fallback_key_object(step_title)
     except Exception as e:
-        print(f"[KeyObjectPipeline] Claude key object identification failed: {e}", flush=True)
+        print(f"[KeyObjectPipeline] Claude key object identification failed ({type(e).__name__}): {e}", flush=True)
         return _fallback_key_object(step_title)
 
 

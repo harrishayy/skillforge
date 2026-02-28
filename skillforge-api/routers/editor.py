@@ -7,6 +7,7 @@ from models.schemas import (
     ClickTargetCreateRequest,
     RegenerateStepRequest,
     SegmentPointRequest,
+    RerunPipelineRequest,
 )
 
 router = APIRouter(tags=["editor"])
@@ -369,6 +370,141 @@ async def segment_point_on_frame(step_id: str, body: SegmentPointRequest):
     return {"segments": result["segments"], "frame_path": kf_path}
 
 
+# ─── Review: Rerun multi-agent pipeline for a single step ────────────────────
+
+@router.post("/api/steps/{step_id}/rerun-pipeline")
+async def rerun_step_pipeline(step_id: str, body: RerunPipelineRequest):
+    """Re-run configurable agents (Claude / Nemotron / SAM3) for a single step."""
+    from pathlib import Path
+    from services.key_object_pipeline import (
+        identify_key_object,
+        scan_frames_for_object,
+        segment_positive_frames,
+    )
+
+    step = await fetchone("SELECT * FROM steps WHERE id=?", (step_id,))
+    if not step:
+        raise HTTPException(404, "Step not found")
+
+    wf = await fetchone("SELECT * FROM workflows WHERE id=?", (step["workflow_id"],))
+    wf_title = wf["title"] if wf else ""
+    wf_description = wf.get("description", "") if wf else ""
+
+    frames = await fetchall(
+        "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms",
+        (step_id,),
+    )
+    if not frames:
+        raise HTTPException(400, "Step has no frames")
+
+    uploads_dir = Path(__file__).parent.parent
+    frame_paths = [str(uploads_dir / f["frame_path"]) for f in frames]
+    frame_id_by_path = {str(uploads_dir / f["frame_path"]): f["id"] for f in frames}
+
+    key_object = None
+
+    # Agent 1: Claude — re-identify key object
+    if body.run_claude:
+        key_object = await identify_key_object(
+            step_title=step.get("title", ""),
+            step_description=step.get("description", ""),
+            transcript=step.get("transcript", ""),
+            note=step.get("note", ""),
+            workflow_title=wf_title,
+            workflow_description=wf_description,
+        )
+        sam3_prompt = key_object.get("sam3_prompt", "")
+        if sam3_prompt:
+            await execute(
+                "UPDATE steps SET sam3_prompt=?, updated_at=? WHERE id=?",
+                (sam3_prompt, now_ms(), step_id),
+            )
+
+    # Build key_object from existing data if Claude was skipped
+    if key_object is None:
+        key_object = {
+            "key_object": step.get("title", "object"),
+            "object_type": "other",
+            "visual_cues": "",
+            "action": "",
+            "sam3_prompt": step.get("sam3_prompt", step.get("title", "object")),
+        }
+
+    # Agent 2: Nemotron — re-scan frames for object presence
+    if body.run_nemotron:
+        frame_detections = await scan_frames_for_object(
+            frame_paths, key_object,
+        )
+        for detection in frame_detections:
+            fid = frame_id_by_path.get(detection["frame_path"])
+            if fid:
+                await execute(
+                    "UPDATE step_frames SET object_detected=?, object_description=? WHERE id=?",
+                    (1 if detection["present"] else 0, detection.get("description", ""), fid),
+                )
+
+    # Agent 3: SAM3 — re-segment positive frames
+    if body.run_sam3:
+        import base64 as b64mod, shutil
+
+        # Clean up old masks
+        old_cts = await fetchall("SELECT mask_path FROM click_targets WHERE step_id=?", (step_id,))
+        await execute("DELETE FROM click_targets WHERE step_id=?", (step_id,))
+
+        masks_dir = uploads_dir / "uploads" / step["workflow_id"] / "masks" / step_id
+        if masks_dir.exists():
+            shutil.rmtree(masks_dir)
+        masks_dir.mkdir(parents=True, exist_ok=True)
+
+        refreshed_frames = await fetchall(
+            "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms",
+            (step_id,),
+        )
+        positive_frames = [
+            {"frame_path": str(uploads_dir / f["frame_path"])}
+            for f in refreshed_frames
+            if f.get("object_detected")
+        ]
+
+        if positive_frames:
+            sam3_prompt = key_object.get("sam3_prompt", step.get("sam3_prompt", ""))
+            segmentations = await segment_positive_frames(positive_frames, sam3_prompt)
+
+            for seg_result in segmentations:
+                seg_frame_abs = seg_result.get("frame_path", "")
+                seg_frame_rel = str(Path(seg_frame_abs).relative_to(uploads_dir)) if seg_frame_abs else None
+
+                for seg in seg_result["segments"]:
+                    bbox = seg.get("bbox", [0, 0, 0, 0])
+                    ct_id = new_id()
+
+                    mask_path = None
+                    mask_b64 = seg.get("mask_base64")
+                    if mask_b64:
+                        mask_file = masks_dir / f"{ct_id}.png"
+                        mask_file.write_bytes(b64mod.b64decode(mask_b64))
+                        mask_path = str(mask_file.relative_to(uploads_dir))
+
+                    await execute(
+                        """INSERT INTO click_targets
+                           (id, step_id, element_text, element_type,
+                            bbox_x, bbox_y, bbox_width, bbox_height,
+                            action, confidence, is_primary, mask_path, frame_path)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            ct_id, step_id,
+                            key_object.get("key_object", step.get("title", "")),
+                            key_object.get("object_type", "other"),
+                            bbox[0] * 100, bbox[1] * 100,
+                            (bbox[2] - bbox[0]) * 100, (bbox[3] - bbox[1]) * 100,
+                            "left_click", seg.get("score", 0), 0,
+                            mask_path, seg_frame_rel,
+                        ),
+                    )
+
+    return await _get_step_with_frames(step_id)
+
+
 async def _read_frame_bytes(kf_path: str) -> bytes:
     """Read key frame bytes from a local path."""
     from pathlib import Path
@@ -504,3 +640,16 @@ async def _get_step(step_id: str) -> dict:
     for ct in click_targets:
         ct["is_primary"] = bool(ct["is_primary"])
     return {**step, "annotations": annotations, "click_targets": click_targets}
+
+
+async def _get_step_with_frames(step_id: str) -> dict:
+    step = await _get_step(step_id)
+    frames = await fetchall(
+        "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms",
+        (step_id,),
+    )
+    for f in frames:
+        f["is_key_frame"] = bool(f.get("is_key_frame", 0))
+        f["object_detected"] = bool(f.get("object_detected", 0))
+    step["frames"] = frames
+    return step

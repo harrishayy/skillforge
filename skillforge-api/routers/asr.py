@@ -76,7 +76,16 @@ async def transcribe_audio(audio: UploadFile = File(...)) -> dict:
 
     except httpx.HTTPStatusError as e:
         print(f"[ASR] ✗ ASR error {e.response.status_code}: {e.response.text}", flush=True)
-        return {"transcript": ""}
+        raise HTTPException(
+            status_code=502,
+            detail=f"ASR upstream error {e.response.status_code}",
+        )
+    except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+        print(f"[ASR] ✗ ASR unreachable at {asr_url}: {e}", flush=True)
+        raise HTTPException(
+            status_code=503,
+            detail=f"ASR server unreachable at {asr_url}",
+        )
     except Exception as e:
         print(f"[ASR] ✗ {e}", flush=True)
-        return {"transcript": ""}
+        raise HTTPException(status_code=503, detail=str(e))

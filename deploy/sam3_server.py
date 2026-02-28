@@ -63,13 +63,17 @@ async def segment(
     image: UploadFile = File(...),
     text: str = Form(default=""),
     box: str = Form(default=""),
+    point: str = Form(default=""),
+    label: int = Form(default=1),
 ):
     """
     Segment objects in an image using SAM 3.
 
-    Accepts either:
-      - text: concept prompt (e.g. "yellow school bus")
-      - box:  normalized coords "x1,y1,x2,y2" for interactive segmentation
+    Accepts one of:
+      - text:  concept prompt (e.g. "yellow school bus")
+      - box:   normalized coords "x1,y1,x2,y2" for box-prompted segmentation
+      - point: normalized coords "x,y" for click-to-segment
+               label=1 (foreground, default) or label=0 (background)
 
     Returns JSON: { masks: [base64-png, …], boxes: [[x1,y1,x2,y2], …], scores: [float, …] }
     """
@@ -80,19 +84,28 @@ async def segment(
 
     image_bytes = await image.read()
     pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    w, h = pil_image.size
     inference_state = _processor.set_image(pil_image)
 
     if text:
         output = _processor.set_text_prompt(state=inference_state, prompt=text)
+    elif point:
+        coords = [float(v) for v in point.split(",")]
+        point_pixels = torch.tensor([[coords[0] * w, coords[1] * h]])
+        point_labels = torch.tensor([label])
+        output = _processor.set_point_prompt(
+            state=inference_state,
+            points=point_pixels,
+            labels=point_labels,
+        )
     elif box:
         coords = [float(v) for v in box.split(",")]
-        w, h = pil_image.size
         box_pixels = [[coords[0] * w, coords[1] * h, coords[2] * w, coords[3] * h]]
         output = _processor.set_box_prompt(
             state=inference_state, boxes=torch.tensor(box_pixels)
         )
     else:
-        return {"error": "Provide either 'text' or 'box' parameter"}
+        return {"error": "Provide 'text', 'point', or 'box' parameter"}
 
     masks = output["masks"]    # [N, 1, H, W]
     boxes = output["boxes"]    # [N, 4]
@@ -108,8 +121,6 @@ async def segment(
 
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
-    # Normalize boxes back to 0-1 range relative to image dimensions
-    w, h = pil_image.size
     norm_boxes = []
     for b in boxes.cpu().tolist():
         norm_boxes.append([b[0] / w, b[1] / h, b[2] / w, b[3] / h])

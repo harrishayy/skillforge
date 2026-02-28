@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { getWorkflow, publishWorkflow, unpublishWorkflow } from "@/lib/api-client";
@@ -9,6 +9,7 @@ import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { StepList } from "@/components/editor/StepList";
 import { StepFrameViewer } from "@/components/editor/StepFrameViewer";
 import { StepDetailPanel } from "@/components/editor/StepDetailPanel";
+import { PipelineStatus } from "@/components/recording/PipelineStatus";
 import { Spinner } from "@/components/ui/Spinner";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -60,6 +61,15 @@ export default function EditorPage() {
       .finally(() => setIsLoading(false));
   }, [workflowId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const handlePipelineComplete = useCallback(() => {
+    getWorkflow(workflowId)
+      .then((wf) => {
+        setWorkflow(wf);
+        if (wf.steps.length > 0 && !selectedStepId) selectStep(wf.steps[0].id);
+      })
+      .catch((e) => { showErrorToast(e); setError(e.message); });
+  }, [workflowId, selectedStepId, setWorkflow, selectStep]);
+
   if (isLoading) {
     return (
       <div className="h-screen flex items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
@@ -77,6 +87,14 @@ export default function EditorPage() {
             <Button variant="secondary">Back to Workflows</Button>
           </Link>
         </div>
+      </div>
+    );
+  }
+
+  if (workflow.status === "processing") {
+    return (
+      <div className="h-screen flex flex-col items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
+        <PipelineStatus workflowId={workflowId} onComplete={handlePipelineComplete} />
       </div>
     );
   }

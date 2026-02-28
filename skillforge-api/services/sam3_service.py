@@ -110,21 +110,63 @@ async def segment_point(
     frame_bytes: bytes,
     x: float,
     y: float,
-    radius: float = 0.05,
+    label: int = 1,
 ) -> dict | None:
     """
-    Segment the object at a specific point by creating a small bounding box
-    around (x, y) and delegating to segment_box.
+    Segment the object at a specific click coordinate using SAM 3's native
+    point prompt — true click-to-segment, not a bounding-box approximation.
 
     Args:
         x, y: Normalized coordinates (0-1) of the click point.
-        radius: Half-size of the bounding box in normalized coords.
+        label: 1 = foreground (segment the object here), 0 = background (exclude).
     """
-    x1 = max(0.0, x - radius)
-    y1 = max(0.0, y - radius)
-    x2 = min(1.0, x + radius)
-    y2 = min(1.0, y + radius)
-    return await segment_box(frame_bytes, [x1, y1, x2, y2])
+    if not SAM3_URL:
+        return None
+
+    try:
+        t0 = time.perf_counter()
+        point_str = f"{x},{y}"
+
+        client = _get_client()
+        resp = await client.post(
+            f"{SAM3_URL}/segment",
+            files={"image": ("frame.jpg", frame_bytes, "image/jpeg")},
+            data={"point": point_str, "label": str(label)},
+        )
+        resp.raise_for_status()
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+        data = resp.json()
+        if "error" in data:
+            print(f"[SAM3] ✗ Point segmentation error: {data['error']}", flush=True)
+            return None
+
+        results = []
+        for mask_b64, box, score in zip(
+            data.get("masks", []),
+            data.get("boxes", []),
+            data.get("scores", []),
+        ):
+            results.append({
+                "mask_base64": mask_b64,
+                "bbox": box,
+                "score": score,
+            })
+
+        if results:
+            print(f"[SAM3] ✓ Point ({x:.2f}, {y:.2f}) — {len(results)} mask(s) in {elapsed_ms}ms", flush=True)
+
+        return {"segments": results} if results else None
+
+    except httpx.ConnectError:
+        print(f"[SAM3] ✗ Connection refused — is the server running at {SAM3_URL}?", flush=True)
+        return None
+    except httpx.TimeoutException:
+        print(f"[SAM3] ✗ Point segmentation timed out (30s limit)", flush=True)
+        return None
+    except Exception as e:
+        print(f"[SAM3] ✗ Point segmentation failed: {e}", flush=True)
+        return None
 
 
 async def segment_box(

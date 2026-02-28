@@ -196,17 +196,32 @@ async def run_hardware_pipeline(
                                 ),
                             )
 
-                    # Store SAM3 segmentation results as click_targets
+                    # Store SAM3 segmentation results as click_targets (with mask files)
+                    import base64 as b64mod
+                    masks_dir = UPLOADS_DIR / workflow_id / "masks" / step_id
+                    masks_dir.mkdir(parents=True, exist_ok=True)
+
                     for seg_result in analysis["segmentations"]:
+                        seg_frame_abs = seg_result.get("frame_path", "")
+                        seg_frame_rel = str(Path(seg_frame_abs).relative_to(UPLOADS_DIR.parent)) if seg_frame_abs else None
+
                         for seg in seg_result["segments"]:
                             bbox = seg.get("bbox", [0, 0, 0, 0])
                             ct_id = new_id()
+
+                            mask_path = None
+                            mask_b64 = seg.get("mask_base64")
+                            if mask_b64:
+                                mask_file = masks_dir / f"{ct_id}.png"
+                                mask_file.write_bytes(b64mod.b64decode(mask_b64))
+                                mask_path = str(mask_file.relative_to(UPLOADS_DIR.parent))
+
                             await execute(
                                 """INSERT INTO click_targets
                                    (id, step_id, element_text, element_type,
                                     bbox_x, bbox_y, bbox_width, bbox_height,
-                                    action, confidence, is_primary)
-                                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                                    action, confidence, is_primary, mask_path, frame_path)
+                                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                 (
                                     ct_id, step_id,
                                     key_obj.get("key_object", title),
@@ -214,6 +229,7 @@ async def run_hardware_pipeline(
                                     bbox[0] * 100, bbox[1] * 100,
                                     (bbox[2] - bbox[0]) * 100, (bbox[3] - bbox[1]) * 100,
                                     "left_click", seg.get("score", 0), 0,
+                                    mask_path, seg_frame_rel,
                                 ),
                             )
 
@@ -326,7 +342,7 @@ async def _generate_step_metadata(
         user_content += "\n\nGenerate the title, description, and summary JSON."
 
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-3-5-haiku-20241022",
             max_tokens=400,
             system=(
                 "You generate concise step metadata for a tutorial. "

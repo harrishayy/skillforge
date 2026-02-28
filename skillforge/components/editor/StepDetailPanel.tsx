@@ -2,10 +2,9 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useWorkflowStore, selectedStep } from "@/store/workflow-store";
 import { Button } from "@/components/ui/Button";
-import { Spinner } from "@/components/ui/Spinner";
 import { SectionModal } from "@/components/ui/SectionModal";
 
-type ModalSection = "notes" | "transcript" | "summary" | "segments" | "targets" | null;
+type ModalSection = "notes" | "transcript" | "description" | "regenerate" | "segments" | "rerun" | null;
 
 export function StepDetailPanel() {
   const store = useWorkflowStore();
@@ -14,14 +13,19 @@ export function StepDetailPanel() {
     segmentsByStep,
     segmentingStepId,
     regeneratingStepId,
+    rerunningStepId,
     saveStep,
     removeSegment,
     clearSegments,
     regenerate,
+    rerunPipeline,
   } = store;
 
   const [additionalContext, setAdditionalContext] = useState("");
   const [openModal, setOpenModal] = useState<ModalSection>(null);
+  const [rerunClaude, setRerunClaude] = useState(true);
+  const [rerunNemotron, setRerunNemotron] = useState(true);
+  const [rerunSam3, setRerunSam3] = useState(true);
 
   const closeModal = useCallback(() => setOpenModal(null), []);
 
@@ -34,10 +38,19 @@ export function StepDetailPanel() {
   const segments = segmentsByStep[step.id] ?? [];
   const isSegmenting = segmentingStepId === step.id;
   const isRegenerating = regeneratingStepId === step.id;
+  const isRerunning = rerunningStepId === step.id;
 
   const handleRegenerate = () => {
     regenerate(step.id, additionalContext);
     setAdditionalContext("");
+  };
+
+  const handleRerunPipeline = () => {
+    rerunPipeline(step.id, {
+      run_claude: rerunClaude,
+      run_nemotron: rerunNemotron,
+      run_sam3: rerunSam3,
+    });
   };
 
   return (
@@ -48,24 +61,18 @@ export function StepDetailPanel() {
         <p className="text-sm font-medium" style={{ color: "var(--sf-white)" }}>{step.title}</p>
       </div>
 
-      {/* Description */}
-      <div>
-        <label className="block text-xs font-bold mb-1" style={{ color: "#666" }}>Description</label>
-        <textarea
-          defaultValue={step.description ?? ""}
-          key={`desc-${step.id}`}
-          rows={2}
-          placeholder="Add instructions for the trainee..."
-          className="w-full rounded-lg px-3 py-2 text-sm outline-none resize-none"
-          style={{ backgroundColor: "#111", border: "1px solid #333", color: "var(--sf-white)" }}
-          onBlur={async (e) => {
-            await saveStep(step.id, { description: e.target.value });
-          }}
-        />
-      </div>
-
       {/* Clickable section cards */}
       <div className="space-y-2">
+        {/* Description card */}
+        <SectionCard
+          label="DESCRIPTION"
+          accentColor="var(--sf-white)"
+          icon={<DescriptionIcon />}
+          preview={step.description?.trim() || "No description — click to add"}
+          hasContent={!!step.description?.trim()}
+          onClick={() => setOpenModal("description")}
+        />
+
         {/* Notes card */}
         <SectionCard
           label="NOTES"
@@ -86,16 +93,6 @@ export function StepDetailPanel() {
           onClick={() => setOpenModal("transcript")}
         />
 
-        {/* AI Summary card */}
-        <SectionCard
-          label="AI SUMMARY"
-          accentColor="var(--sf-purple)"
-          icon={<BotIcon />}
-          preview={step.ai_description?.trim() || "No summary available"}
-          hasContent={!!step.ai_description?.trim()}
-          onClick={() => setOpenModal("summary")}
-        />
-
         {/* Segments card */}
         <SectionCard
           label={`SAM3 SEGMENTS (${segments.length})`}
@@ -111,45 +108,73 @@ export function StepDetailPanel() {
           badge={isSegmenting ? "Segmenting..." : undefined}
         />
 
-        {/* Click targets card */}
+        {/* Redo Analysis card */}
         <SectionCard
-          label={`CLICK TARGETS (${step.click_targets.length})`}
-          accentColor="var(--sf-lime)"
-          icon={<TargetIcon />}
+          label="REDO ANALYSIS"
+          accentColor="var(--sf-orange)"
+          icon={<RefreshIcon />}
           preview={
-            step.click_targets.length > 0
-              ? `${step.click_targets.length} target${step.click_targets.length > 1 ? "s" : ""} detected`
-              : "No click targets detected"
+            isRerunning
+              ? "Re-running pipeline..."
+              : "Re-run the multi-agent pipeline for this step"
           }
-          hasContent={step.click_targets.length > 0}
-          onClick={() => setOpenModal("targets")}
+          hasContent={false}
+          onClick={() => setOpenModal("rerun")}
+          badge={isRerunning ? "Running..." : undefined}
         />
       </div>
 
-      {/* Regenerate (always visible inline) */}
-      <div className="rounded-lg p-3 space-y-2" style={{ backgroundColor: "#0d0d1a", border: "1px solid rgba(122,120,255,0.3)" }}>
-        <label className="block text-[10px] font-bold" style={{ color: "var(--sf-purple)" }}>
-          Regenerate with context
-          {isRegenerating && (
-            <span className="ml-2 font-normal" style={{ color: "var(--sf-purple)" }}>
-              <Spinner className="w-3 h-3 inline" /> Regenerating...
-            </span>
-          )}
-        </label>
-        <textarea
-          value={additionalContext}
-          onChange={(e) => setAdditionalContext(e.target.value)}
-          placeholder="Add extra context to improve AI output..."
-          rows={2}
-          className="w-full rounded-md px-2.5 py-2 text-xs outline-none resize-none"
-          style={{ backgroundColor: "#111", border: "1px solid #333", color: "var(--sf-white)" }}
+      {/* Regenerate card */}
+      <div className="space-y-2">
+        <SectionCard
+          label="REGENERATE WITH CONTEXT"
+          accentColor="var(--sf-purple)"
+          icon={<BotIcon />}
+          preview={isRegenerating ? "Regenerating..." : "Add context to improve AI output"}
+          hasContent={!!additionalContext.trim()}
+          onClick={() => setOpenModal("regenerate")}
+          badge={isRegenerating ? "Regenerating..." : undefined}
         />
-        <Button size="sm" onClick={handleRegenerate} disabled={isRegenerating}>
-          {isRegenerating ? "Regenerating..." : "Regenerate Step"}
-        </Button>
       </div>
 
       {/* ── Modals ────────────────────────────────────────────── */}
+
+      {/* Description modal */}
+      <SectionModal
+        open={openModal === "description"}
+        onClose={closeModal}
+        title={`Step ${step.step_number} — Description`}
+        accentColor="var(--sf-white)"
+        icon={<DescriptionIcon />}
+      >
+        <DescriptionSectionExpanded stepId={step.id} description={step.description} saveStep={saveStep} />
+      </SectionModal>
+
+      {/* Regenerate modal */}
+      <SectionModal
+        open={openModal === "regenerate"}
+        onClose={closeModal}
+        title={`Step ${step.step_number} — Regenerate with Context`}
+        accentColor="var(--sf-purple)"
+        icon={<BotIcon />}
+      >
+        <div className="space-y-3">
+          <textarea
+            value={additionalContext}
+            onChange={(e) => setAdditionalContext(e.target.value)}
+            placeholder="Add extra context to improve AI output..."
+            rows={5}
+            className="w-full rounded-lg px-4 py-3 text-sm outline-none resize-y leading-relaxed"
+            style={{ backgroundColor: "#111", border: "1px solid #333", color: "var(--sf-white)", minHeight: 120 }}
+          />
+          <Button size="sm" onClick={handleRegenerate} disabled={isRegenerating}>
+            {isRegenerating ? "Regenerating..." : "Regenerate Step"}
+          </Button>
+          <p className="text-xs" style={{ color: "rgba(255,255,255,0.3)" }}>
+            Provide additional context to refine the AI-generated description and analysis for this step.
+          </p>
+        </div>
+      </SectionModal>
 
       {/* Notes modal */}
       <SectionModal
@@ -179,23 +204,6 @@ export function StepDetailPanel() {
         )}
       </SectionModal>
 
-      {/* AI Summary modal */}
-      <SectionModal
-        open={openModal === "summary"}
-        onClose={closeModal}
-        title={`Step ${step.step_number} — AI Summary`}
-        accentColor="var(--sf-purple)"
-        icon={<BotIcon />}
-      >
-        {step.ai_description?.trim() ? (
-          <p className="text-sm leading-relaxed whitespace-pre-wrap" style={{ color: "#ccc" }}>
-            {step.ai_description}
-          </p>
-        ) : (
-          <p className="text-sm" style={{ color: "#555" }}>No AI summary available for this step.</p>
-        )}
-      </SectionModal>
-
       {/* Segments modal */}
       <SectionModal
         open={openModal === "segments"}
@@ -205,7 +213,6 @@ export function StepDetailPanel() {
         icon={<GridIcon />}
       >
         <div className="space-y-2">
-          {/* SAM3 prompt used for segmentation (read-only) */}
           {step.sam3_prompt && (
             <div className="rounded-lg px-3.5 py-2.5" style={{ backgroundColor: "rgba(255,196,18,0.06)", border: "1px solid rgba(255,196,18,0.15)" }}>
               <label className="block text-[10px] font-bold mb-1" style={{ color: "var(--sf-yellow)" }}>
@@ -262,53 +269,53 @@ export function StepDetailPanel() {
         </div>
       </SectionModal>
 
-      {/* Click targets modal */}
+      {/* Redo Analysis modal */}
       <SectionModal
-        open={openModal === "targets"}
+        open={openModal === "rerun"}
         onClose={closeModal}
-        title={`Step ${step.step_number} — Click Targets`}
-        accentColor="var(--sf-lime)"
-        icon={<TargetIcon />}
+        title={`Step ${step.step_number} — Redo Analysis`}
+        accentColor="var(--sf-orange)"
+        icon={<RefreshIcon />}
       >
-        {step.click_targets.length > 0 ? (
+        <div className="space-y-4">
+          <p className="text-xs" style={{ color: "#888" }}>
+            Select which agents to re-run for this step. Later agents depend on earlier ones.
+          </p>
+
           <div className="space-y-2">
-            {step.click_targets.map((ct) => (
-              <div
-                key={ct.id}
-                className="flex items-center gap-3 rounded-lg px-4 py-3"
-                style={{ backgroundColor: "#111", border: "1px solid #222" }}
-              >
-                <span
-                  className="text-sm shrink-0"
-                  style={{ color: ct.is_primary ? "var(--sf-lime)" : "#555" }}
-                >
-                  {ct.is_primary ? "★" : "○"}
-                </span>
-                <div>
-                  <p className="text-sm" style={{ color: "#aaa" }}>
-                    {ct.element_text ?? ct.element_type ?? "element"}
-                  </p>
-                  {ct.confidence != null && (
-                    <p className="text-xs" style={{ color: "#555" }}>
-                      {(ct.confidence * 100).toFixed(0)}% confidence · {ct.action}
-                    </p>
-                  )}
-                </div>
-                {ct.is_primary && (
-                  <span
-                    className="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-full"
-                    style={{ backgroundColor: "rgba(190,242,100,0.12)", color: "var(--sf-lime)" }}
-                  >
-                    Primary
-                  </span>
-                )}
-              </div>
-            ))}
+            <AgentCheckbox
+              label="Claude — Key Object Identification"
+              description="Re-identify the key object from step context (title, transcript, notes)"
+              checked={rerunClaude}
+              onChange={setRerunClaude}
+              accentColor="var(--sf-purple)"
+            />
+            <AgentCheckbox
+              label="Nemotron VL — Frame Scanning"
+              description="Re-scan all frames for the key object presence"
+              checked={rerunNemotron}
+              onChange={setRerunNemotron}
+              accentColor="var(--sf-yellow)"
+            />
+            <AgentCheckbox
+              label="SAM3 — Segmentation"
+              description="Re-segment the key object in detected frames"
+              checked={rerunSam3}
+              onChange={setRerunSam3}
+              accentColor="var(--sf-lime)"
+            />
           </div>
-        ) : (
-          <p className="text-sm" style={{ color: "#555" }}>No click targets detected for this step.</p>
-        )}
+
+          <Button
+            size="sm"
+            onClick={handleRerunPipeline}
+            disabled={isRerunning || (!rerunClaude && !rerunNemotron && !rerunSam3)}
+          >
+            {isRerunning ? "Running Pipeline..." : "Re-run Pipeline"}
+          </Button>
+        </div>
       </SectionModal>
+
     </div>
   );
 }
@@ -377,6 +384,47 @@ function SectionCard({
   );
 }
 
+/* ── Description Expanded (editable in modal) ────────────────── */
+
+function DescriptionSectionExpanded({
+  stepId,
+  description,
+  saveStep,
+}: {
+  stepId: string;
+  description?: string;
+  saveStep: (id: string, fields: { description?: string }) => Promise<void>;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.value = description ?? "";
+      textareaRef.current.focus();
+    }
+  }, [stepId, description]);
+
+  return (
+    <div>
+      <textarea
+        ref={textareaRef}
+        defaultValue={description ?? ""}
+        key={stepId}
+        rows={8}
+        placeholder="Add instructions for the trainee..."
+        className="w-full rounded-lg px-4 py-3 text-sm outline-none resize-y leading-relaxed"
+        style={{ backgroundColor: "#111", border: "1px solid #333", color: "var(--sf-white)", minHeight: 160 }}
+        onBlur={async (e) => {
+          await saveStep(stepId, { description: e.target.value });
+        }}
+      />
+      <p className="text-xs mt-2" style={{ color: "rgba(255,255,255,0.3)" }}>
+        This description is shown to trainees. Changes are saved automatically.
+      </p>
+    </div>
+  );
+}
+
 /* ── Notes Expanded (editable in modal) ───────────────────────── */
 
 function NotesSectionExpanded({
@@ -419,6 +467,18 @@ function NotesSectionExpanded({
 }
 
 /* ── Icons ─────────────────────────────────────────────────────── */
+
+function DescriptionIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" />
+      <line x1="16" y1="17" x2="8" y2="17" />
+      <line x1="10" y1="9" x2="8" y2="9" />
+    </svg>
+  );
+}
 
 function PenIcon() {
   return (
@@ -463,12 +523,63 @@ function GridIcon() {
   );
 }
 
-function TargetIcon() {
+function RefreshIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <circle cx="12" cy="12" r="6" />
-      <circle cx="12" cy="12" r="2" />
+      <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+      <path d="M16 16h5v5" />
     </svg>
   );
 }
+
+/* ── Agent Checkbox ──────────────────────────────────────────── */
+
+function AgentCheckbox({
+  label,
+  description,
+  checked,
+  onChange,
+  accentColor,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  accentColor: string;
+}) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      className="w-full flex items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-all"
+      style={{
+        backgroundColor: checked ? `${accentColor}10` : "#111",
+        border: `1px solid ${checked ? `${accentColor}30` : "#222"}`,
+      }}
+    >
+      <div
+        className="mt-0.5 w-4 h-4 rounded shrink-0 flex items-center justify-center transition-all"
+        style={{
+          backgroundColor: checked ? accentColor : "transparent",
+          border: `2px solid ${checked ? accentColor : "#444"}`,
+        }}
+      >
+        {checked && (
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--sf-black)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+        )}
+      </div>
+      <div>
+        <p className="text-xs font-bold" style={{ color: checked ? accentColor : "#888" }}>
+          {label}
+        </p>
+        <p className="text-[10px] mt-0.5" style={{ color: "#555" }}>
+          {description}
+        </p>
+      </div>
+    </button>
+  );
+}
+

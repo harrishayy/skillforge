@@ -222,6 +222,28 @@ export async function segmentPoint(
   });
 }
 
+// ─── Rerun Pipeline ──────────────────────────────────────────────────────────
+
+export interface RerunPipelineOptions {
+  run_claude?: boolean;
+  run_nemotron?: boolean;
+  run_sam3?: boolean;
+}
+
+export async function rerunStepPipeline(
+  stepId: string,
+  options: RerunPipelineOptions = {}
+): Promise<Step> {
+  return apiFetch<Step>(`/api/steps/${stepId}/rerun-pipeline`, {
+    method: "POST",
+    body: JSON.stringify({
+      run_claude: options.run_claude ?? true,
+      run_nemotron: options.run_nemotron ?? true,
+      run_sam3: options.run_sam3 ?? true,
+    }),
+  });
+}
+
 // ─── Copilot ──────────────────────────────────────────────────────────────────
 
 export async function getStepInstruction(

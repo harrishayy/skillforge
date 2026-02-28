@@ -364,8 +364,7 @@ export default function RecordingSessionPage() {
     onNextStep: handleNextStep,
     onFinish: handleFinishRequest,
     enabled: micEnabled && (sessionState === "recording" || sessionState === "confirming_finish"),
-    transcriptionSource: "server",
-    audioStream: webcamRecorder.audioStream,
+    transcriptionSource: "browser",
   });
 
   snapshotTranscriptRef.current = voice.snapshotTranscript;
@@ -685,6 +684,24 @@ export default function RecordingSessionPage() {
                 ? voice.isListening ? "Listening" : "Starting..."
                 : "Muted"}
           </button>
+
+          {/* Voice fallback / error badge */}
+          {voice.fallbackActive && (
+            <span
+              className="text-[10px] font-medium px-2 py-0.5 rounded-full"
+              style={{ backgroundColor: "rgba(245,158,11,0.25)", color: "var(--sf-yellow)" }}
+            >
+              Browser fallback
+            </span>
+          )}
+          {voice.status === "unavailable" && voice.unavailableReason && (
+            <span
+              className="text-[10px] font-medium px-2 py-0.5 rounded-full max-w-[200px] truncate"
+              style={{ backgroundColor: "rgba(239,68,68,0.2)", color: "rgba(239,68,68,0.8)" }}
+            >
+              {voice.unavailableReason}
+            </span>
+          )}
 
           {/* Pinch indicator */}
           {handData && (

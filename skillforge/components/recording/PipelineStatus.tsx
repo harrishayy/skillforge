@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import type { PipelineEvent, PipelineLogEvent } from "@/types";
@@ -8,6 +8,7 @@ import { ProgressBar } from "@/components/ui/ProgressBar";
 
 interface PipelineStatusProps {
   workflowId: string;
+  onComplete?: () => void;
 }
 
 const STAGE_LABELS: Record<string, string> = {
@@ -21,11 +22,16 @@ const STAGE_LABELS: Record<string, string> = {
   error: "Error",
 };
 
-export function PipelineStatus({ workflowId }: PipelineStatusProps) {
+export function PipelineStatus({ workflowId, onComplete }: PipelineStatusProps) {
   const router = useRouter();
   const [logs, setLogs] = useState<PipelineLogEvent[]>([]);
   const [progress, setProgress] = useState(0);
   const [isDone, setIsDone] = useState(false);
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logs]);
 
   useWorkflowSocket(workflowId, (event: PipelineEvent) => {
     if (event.type === "pipeline_log") {
@@ -47,7 +53,10 @@ export function PipelineStatus({ workflowId }: PipelineStatusProps) {
     if (event.type === "complete") {
       setProgress(100);
       setIsDone(true);
-      setTimeout(() => { router.push(`/editor/${workflowId}`); }, 1500);
+      setTimeout(() => {
+        if (onComplete) onComplete();
+        else router.push(`/editor/${workflowId}`);
+      }, 1500);
     }
     if (event.type === "error") {
       setLogs((prev) => [
@@ -105,6 +114,7 @@ export function PipelineStatus({ workflowId }: PipelineStatusProps) {
             </motion.div>
           ))}
         </AnimatePresence>
+        <div ref={logsEndRef} />
       </div>
     </div>
   );

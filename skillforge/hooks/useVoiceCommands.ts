@@ -29,6 +29,7 @@ interface UseVoiceCommandsOptions {
 
 const LLM_THROTTLE_MS = 2500;
 const CHUNK_DURATION_MS = 2000;
+const ASR_FAIL_THRESHOLD = 3;
 
 export type VoiceStatus = "off" | "starting" | "listening" | "unavailable";
 
@@ -45,6 +46,8 @@ export function useVoiceCommands({
   const transcriptRef = useRef<string>("");
   const [isListening, setIsListening] = useState(false);
   const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
+  const [fallbackActive, setFallbackActive] = useState(false);
+  const asrFailCountRef = useRef(0);
 
   const onNextStepRef = useRef(onNextStep);
   const onFinishRef = useRef(onFinish);
@@ -56,6 +59,8 @@ export function useVoiceCommands({
   useEffect(() => { onNextStepRef.current = onNextStep; }, [onNextStep]);
   useEffect(() => { onFinishRef.current = onFinish; }, [onFinish]);
   useEffect(() => { onPreviousStepRef.current = onPreviousStep; }, [onPreviousStep]);
+
+  const effectiveSource = fallbackActive ? "browser" : transcriptionSource;
 
   useEffect(() => {
     if (!enabled) {
@@ -105,7 +110,7 @@ export function useVoiceCommands({
     };
 
     // ── Server ASR mode (Brev-hosted Parakeet CTC 1.1B) ───────────────────
-    if (transcriptionSource === "server") {
+    if (effectiveSource === "server") {
       if (!audioStream || !audioStream.active) {
         setUnavailableReason(null);
         return;
@@ -133,12 +138,20 @@ export function useVoiceCommands({
             const blob = new Blob(chunks, { type: mimeType });
             try {
               const transcript = await transcribeAudio(blob);
+              asrFailCountRef.current = 0;
               if (!active || !transcript) return;
               stepTranscript += transcript + " ";
               transcriptRef.current = stepTranscript;
               runMatcher(transcript, true);
             } catch {
-              // Individual chunk failures are non-fatal; next chunk will retry
+              asrFailCountRef.current += 1;
+              if (asrFailCountRef.current >= ASR_FAIL_THRESHOLD && active) {
+                console.warn(
+                  `[ASR] ${ASR_FAIL_THRESHOLD} consecutive failures — falling back to browser Speech API`,
+                );
+                showErrorToast("Server ASR unavailable, switching to browser speech recognition");
+                setFallbackActive(true);
+              }
             }
           };
 
@@ -238,7 +251,7 @@ export function useVoiceCommands({
       try { recognition.stop(); } catch {}
       setIsListening(false);
     };
-  }, [enabled, useFuzzy, useLLMFallback, transcriptionSource, audioStream]);
+  }, [enabled, useFuzzy, useLLMFallback, effectiveSource, audioStream, fallbackActive]);
 
   const snapshotTranscript = useCallback((): string => {
     const t = transcriptRef.current.trim();
@@ -254,5 +267,5 @@ export function useVoiceCommands({
         ? "listening"
         : "starting";
 
-  return { isListening, snapshotTranscript, status, unavailableReason };
+  return { isListening, snapshotTranscript, status, unavailableReason, fallbackActive };
 }

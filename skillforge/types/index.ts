@@ -45,6 +45,8 @@ export interface ClickTarget {
   action: string;
   confidence?: number;
   is_primary: boolean;
+  mask_path?: string;
+  frame_path?: string;
 }
 
 export interface StepFrame {
