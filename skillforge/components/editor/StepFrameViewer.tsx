@@ -2,6 +2,7 @@
 import { useRef, useCallback, useState, useEffect } from "react";
 import { useWorkflowStore, selectedStep } from "@/store/workflow-store";
 import { frameUrl, videoUrl } from "@/lib/constants";
+import { StepVideoOverlay } from "@/components/player/StepVideoOverlay";
 
 type ViewTab = "frames" | "video";
 
@@ -17,7 +18,7 @@ export function StepFrameViewer() {
   } = store;
 
   const imgRef = useRef<HTMLImageElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const [tab, setTab] = useState<ViewTab>("frames");
   const [showSegmented, setShowSegmented] = useState(true);
 
@@ -280,15 +281,18 @@ export function StepFrameViewer() {
         /* Video tab */
         <div className="flex-1 flex items-center justify-center overflow-hidden rounded-xl" style={{ backgroundColor: "#111" }}>
           {step.video_path ? (
-            <video
-              ref={videoRef}
-              key={step.video_path}
-              src={videoUrl(step.video_path)}
-              controls
-              autoPlay
-              muted
-              className="max-w-full max-h-[60vh] rounded-lg"
-            />
+            <div className="relative">
+              <video
+                ref={videoRef}
+                key={step.video_path}
+                src={videoUrl(step.video_path)}
+                controls
+                autoPlay
+                muted
+                className="max-w-full max-h-[60vh] rounded-lg"
+              />
+              <StepVideoOverlay videoRef={videoRef} step={step} />
+            </div>
           ) : (
             <div className="text-sm" style={{ color: "#444" }}>No video available</div>
           )}

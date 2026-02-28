@@ -187,16 +187,40 @@ export function renderClickTargets(
 
     if (ct.is_primary) {
       ctx.save();
-      ctx.strokeStyle = "#10B981"; // green
+      ctx.strokeStyle = "#10B981";
       ctx.lineWidth = 3 + pulse * 2;
       ctx.globalAlpha = 0.7 + pulse * 0.3;
       ctx.setLineDash([]);
       ctx.strokeRect(x, y, bw, bh);
 
-      // Pulsing fill
       ctx.fillStyle = "#10B981";
       ctx.globalAlpha = 0.08 + pulse * 0.07;
       ctx.fillRect(x, y, bw, bh);
+      ctx.restore();
+    } else {
+      ctx.save();
+      const lime = "#BEF264";
+      ctx.strokeStyle = lime;
+      ctx.lineWidth = 2 + pulse * 1.5;
+      ctx.globalAlpha = 0.6 + pulse * 0.3;
+      ctx.setLineDash([]);
+      ctx.strokeRect(x, y, bw, bh);
+
+      ctx.fillStyle = lime;
+      ctx.globalAlpha = 0.06 + pulse * 0.06;
+      ctx.fillRect(x, y, bw, bh);
+
+      if (ct.element_text) {
+        const fontSize = Math.max(11, canvasWidth * 0.012);
+        ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+        ctx.globalAlpha = 0.9;
+        const textW = ctx.measureText(ct.element_text).width;
+        const pad = 4;
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.fillRect(x, y - fontSize - pad * 2, textW + pad * 2, fontSize + pad * 2);
+        ctx.fillStyle = lime;
+        ctx.fillText(ct.element_text, x + pad, y - pad);
+      }
       ctx.restore();
     }
   }

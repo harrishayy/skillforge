@@ -61,25 +61,23 @@ export function StepDetailPanel() {
       <div>
         <label className="block text-xs font-bold mb-1" style={{ color: "#666" }}>Step {step.step_number}</label>
         <EditableTitle stepId={step.id} title={step.title} saveStep={saveStep} />
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
-          {(step.workflow_start_ms > 0 || step.workflow_end_ms > 0) && (
+        {step.end_ms > 0 && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
             <div className="flex items-center gap-1.5">
               <ClockIcon />
               <span className="text-xs font-mono" style={{ color: "#888" }}>
-                {msToTimestamp(step.workflow_start_ms)}
+                {msToTimestamp(step.start_ms)}
               </span>
               <span className="text-[10px]" style={{ color: "#555" }}>→</span>
               <span className="text-xs font-mono" style={{ color: "#888" }}>
-                {msToTimestamp(step.workflow_end_ms)}
+                {msToTimestamp(step.end_ms)}
               </span>
             </div>
-          )}
-          {step.end_ms > 0 && (
             <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: "#1a1a1a", color: "#777" }}>
-              {msToTimestamp(step.end_ms)} long
+              {msToTimestamp(step.end_ms - step.start_ms)} long
             </span>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Clickable section cards */}
@@ -137,7 +135,7 @@ export function StepDetailPanel() {
           preview={
             isRerunning
               ? "Re-running pipeline..."
-              : "Re-run the multi-agent pipeline for this step"
+              : "Re-run the multi-agent pipeline — video overlay updates automatically"
           }
           hasContent={false}
           onClick={() => setOpenModal("rerun")}
@@ -334,7 +332,7 @@ export function StepDetailPanel() {
             />
             <AgentCheckbox
               label="SAM3 — Segmentation"
-              description="Re-segment the key object in detected frames"
+              description="Re-segment the key object in detected frames and update video overlay"
               checked={rerunSam3}
               onChange={setRerunSam3}
               accentColor="var(--sf-lime)"
@@ -349,6 +347,9 @@ export function StepDetailPanel() {
             {isRerunning && <Spinner className="w-3.5 h-3.5" />}
             {isRerunning ? "Running Pipeline..." : "Re-run Pipeline"}
           </Button>
+          <p className="text-xs" style={{ color: "rgba(255,255,255,0.3)" }}>
+            The segmentation overlay on the Video tab updates automatically once the pipeline finishes.
+          </p>
         </div>
       </SectionModal>
 

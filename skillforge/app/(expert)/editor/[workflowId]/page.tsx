@@ -72,7 +72,7 @@ export default function EditorPage() {
 
   if (isLoading) {
     return (
-      <div className="h-screen flex items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
+      <div className="h-full flex items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
         <span style={{ color: "var(--sf-purple)" }}><Spinner className="w-8 h-8" /></span>
       </div>
     );
@@ -80,7 +80,7 @@ export default function EditorPage() {
 
   if (error || !workflow) {
     return (
-      <div className="h-screen flex items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
+      <div className="h-full flex items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
         <div className="text-center">
           <p className="mb-4" style={{ color: "var(--sf-orange)" }}>{error ?? "Workflow not found"}</p>
           <Link href="/workflows">
@@ -93,14 +93,14 @@ export default function EditorPage() {
 
   if (workflow.status === "processing") {
     return (
-      <div className="h-screen flex flex-col items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
+      <div className="h-full flex flex-col items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
         <PipelineStatus workflowId={workflowId} onComplete={handlePipelineComplete} />
       </div>
     );
   }
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden" style={{ backgroundColor: "var(--sf-black)" }}>
+    <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: "var(--sf-black)" }}>
       {/* Header */}
       <div
         className="flex items-center gap-4 px-6 py-3 shrink-0"
@@ -136,7 +136,7 @@ export default function EditorPage() {
             {isPublishing ? "..." : workflow.published ? "Unpublish" : "Publish"}
           </Button>
         )}
-        <Link href={`/learn/${workflow.id}`}>
+        <Link href={`/editor/${workflow.id}/preview`}>
           <Button size="sm">Preview as Trainee →</Button>
         </Link>
       </div>

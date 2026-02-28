@@ -19,6 +19,7 @@ async def upload_step_videos(
     initial_description: Optional[str] = Form(None),
     step_transcripts_json: Optional[str] = Form(None),
     step_notes_json: Optional[str] = Form(None),
+    step_durations_json: Optional[str] = Form(None),
 ):
     """
     Accept per-step video segments from hardware (webcam) guided recording.
@@ -43,6 +44,13 @@ async def upload_step_videos(
             step_notes = json.loads(step_notes_json)
         except Exception as e:
             print(f"[Recording] Failed to parse step_notes_json: {e} — notes will be empty", flush=True)
+
+    step_durations: list[int] = []
+    if step_durations_json:
+        try:
+            step_durations = [int(d) for d in json.loads(step_durations_json)]
+        except Exception as e:
+            print(f"[Recording] Failed to parse step_durations_json: {e} — durations will be empty", flush=True)
 
     workflow_video_dir = UPLOAD_DIR / workflow_id
     workflow_video_dir.mkdir(parents=True, exist_ok=True)
@@ -70,6 +78,7 @@ async def upload_step_videos(
         step_video_paths=step_video_paths,
         step_transcripts=step_transcripts,
         step_notes=step_notes,
+        client_durations=step_durations or None,
     )
 
     return {"workflow_id": workflow_id, "status": "processing"}

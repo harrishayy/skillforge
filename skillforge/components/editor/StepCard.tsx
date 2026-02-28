@@ -61,18 +61,16 @@ export function StepCard({ step, isSelected, onSelect }: StepCardProps) {
           </span>
         )}
       </div>
-      <div className="flex items-center gap-2 text-xs ml-8" style={{ color: "#666" }}>
-        {(step.workflow_start_ms > 0 || step.workflow_end_ms > 0) ? (
-          <>
-            <span className="font-mono" style={{ color: "#777" }}>{msToTimestamp(step.workflow_start_ms)}</span>
-            <span style={{ color: "#555" }}>→</span>
-            <span className="font-mono" style={{ color: "#777" }}>{msToTimestamp(step.workflow_end_ms)}</span>
-          </>
-        ) : step.end_ms > 0 ? (
+      {step.end_ms > 0 && (
+        <div className="flex items-center gap-2 text-xs ml-8" style={{ color: "#666" }}>
+          <span className="font-mono" style={{ color: "#777" }}>{msToTimestamp(step.start_ms)}</span>
+          <span style={{ color: "#555" }}>→</span>
           <span className="font-mono" style={{ color: "#777" }}>{msToTimestamp(step.end_ms)}</span>
-        ) : null}
-        <span className="ml-auto">{step.annotations.length} ann.</span>
-      </div>
+          <span className="ml-auto font-mono" style={{ color: "#555" }}>
+            {msToTimestamp(step.end_ms - step.start_ms)}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

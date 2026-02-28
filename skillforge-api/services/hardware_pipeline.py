@@ -49,6 +49,7 @@ async def run_hardware_pipeline(
     step_video_paths: list[str],
     step_transcripts: list[str],
     step_notes: list[str] | None = None,
+    client_durations: list[int] | None = None,
 ):
     """
     Process per-step video segments for a hardware/webcam guided recording.
@@ -81,6 +82,10 @@ async def run_hardware_pipeline(
 
             frames = await extract_frames(video_path, workflow_id, on_progress=None)
             duration_ms = get_video_duration_ms(video_path)
+            if duration_ms == 0 and frames:
+                duration_ms = frames[-1]["timestamp_ms"]
+            if duration_ms == 0 and client_durations and i < len(client_durations):
+                duration_ms = client_durations[i]
             total_duration_ms += duration_ms
 
             mid_ms = duration_ms // 2
@@ -136,7 +141,7 @@ async def run_hardware_pipeline(
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     step_id, workflow_id, step_num, title, description,
-                    0, sd["duration_ms"], wf_start, wf_end,
+                    wf_start, wf_end, wf_start, wf_end,
                     key_frame_path, sd["relative_video_path"],
                     ai_summary, sd["transcript"], sd["note"],
                     ts, ts,
@@ -290,8 +295,8 @@ async def run_hardware_pipeline(
                     "step_number": step_num,
                     "title": title,
                     "description": description,
-                    "start_ms": 0,
-                    "end_ms": sd["duration_ms"],
+                    "start_ms": wf_start,
+                    "end_ms": wf_end,
                     "workflow_start_ms": wf_start,
                     "workflow_end_ms": wf_end,
                     "key_frame_path": key_frame_path,

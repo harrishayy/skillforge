@@ -1,4 +1,4 @@
-import type { Step } from "@/types";
+import type { Step, StepFrame, ClickTarget } from "@/types";
 
 export function msToTimestamp(ms: number | null | undefined): string {
   if (ms == null || isNaN(ms)) return "0:00";
@@ -18,4 +18,42 @@ export function findCurrentStepIndex(steps: Step[], currentTimeMs: number): numb
 
 export function seekToStep(videoEl: HTMLVideoElement, step: Step) {
   videoEl.currentTime = step.start_ms / 1000;
+}
+
+const FRAME_TOLERANCE_MS = 500;
+
+/**
+ * Returns click_targets whose frame_path matches the closest detected frame
+ * to the given video time. Returns empty if no detected frame is within
+ * FRAME_TOLERANCE_MS of currentTimeMs.
+ */
+export function getClickTargetsForTime(
+  frames: StepFrame[],
+  clickTargets: ClickTarget[],
+  currentTimeMs: number,
+): ClickTarget[] {
+  if (!frames.length || !clickTargets.length) return [];
+
+  const ctByFrame = new Map<string, ClickTarget[]>();
+  for (const ct of clickTargets) {
+    if (!ct.frame_path) continue;
+    const list = ctByFrame.get(ct.frame_path) ?? [];
+    list.push(ct);
+    ctByFrame.set(ct.frame_path, list);
+  }
+
+  let bestFrame: StepFrame | null = null;
+  let bestDist = Infinity;
+
+  for (const f of frames) {
+    if (!f.object_detected) continue;
+    const dist = Math.abs(f.timestamp_ms - currentTimeMs);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestFrame = f;
+    }
+  }
+
+  if (!bestFrame || bestDist > FRAME_TOLERANCE_MS) return [];
+  return ctByFrame.get(bestFrame.frame_path) ?? [];
 }

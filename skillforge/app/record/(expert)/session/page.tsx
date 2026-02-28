@@ -34,6 +34,7 @@ interface RecordingConfig {
 interface StepVideo {
   stepNumber: number;
   blob: Blob;
+  durationMs: number;
 }
 
 export default function RecordingSessionPage() {
@@ -190,7 +191,7 @@ export default function RecordingSessionPage() {
       const snapshotTime = webcamRecorder.getDurationMs();
       const blob = await webcamRecorder.snapshot();
       const durationMs = snapshotTime - stepStartTimeRef.current;
-      stepVideosRef.current.push({ stepNumber: prevStepNum, blob });
+      stepVideosRef.current.push({ stepNumber: prevStepNum, blob, durationMs });
 
       setCompletedSteps((prev) => [...prev, { stepNumber: prevStepNum, durationMs }]);
       toastKeyRef.current += 1;
@@ -248,9 +249,11 @@ export default function RecordingSessionPage() {
     try {
       pushUploadLog("upload", "Stopping recorder and packaging video...");
       console.log("[FinishRecording] Stopping webcam recorder...");
+      const finalSnapshotTime = webcamRecorder.getDurationMs();
       const finalBlob = await webcamRecorder.stop();
+      const finalDurationMs = finalSnapshotTime - stepStartTimeRef.current;
       console.log(`[FinishRecording] Final blob: ${(finalBlob.size / 1024).toFixed(0)} KB`);
-      stepVideosRef.current.push({ stepNumber: currentStepNumber, blob: finalBlob });
+      stepVideosRef.current.push({ stepNumber: currentStepNumber, blob: finalBlob, durationMs: finalDurationMs });
 
       pushUploadLog("upload", "Saving step locally as backup...");
       console.log("[FinishRecording] Persisting final step to IndexedDB...");
@@ -281,6 +284,7 @@ export default function RecordingSessionPage() {
         initialDescription: cfg?.description,
         stepTranscripts: stepTranscriptsRef.current,
         stepNotes: notesArr,
+        stepDurations: stepVideosRef.current.map((sv) => sv.durationMs),
       });
 
       pushUploadLog("upload", "Upload complete — starting AI pipeline...");
@@ -309,6 +313,8 @@ export default function RecordingSessionPage() {
       let title: string;
       let description: string | undefined;
 
+      let durations: number[] | undefined;
+
       if (stepVideosRef.current.length > 0) {
         console.log("[RetryUpload] Using in-memory data");
         pushUploadLog("upload", "Retrying with in-memory data...");
@@ -317,6 +323,7 @@ export default function RecordingSessionPage() {
         notes = stepVideosRef.current.map(
           (sv) => stepNotesRef.current[sv.stepNumber] ?? ""
         );
+        durations = stepVideosRef.current.map((sv) => sv.durationMs);
         const cfg = configRef.current;
         title = cfg?.title ?? "Untitled";
         description = cfg?.description;
@@ -339,6 +346,7 @@ export default function RecordingSessionPage() {
         videos = savedSteps.map((s) => s.blob);
         transcripts = savedSteps.map((s) => s.transcript);
         notes = savedSteps.map((s) => s.note);
+        durations = savedSteps.map((s) => s.durationMs);
         title = meta.title;
         description = meta.description;
       }
@@ -352,6 +360,7 @@ export default function RecordingSessionPage() {
         initialDescription: description,
         stepTranscripts: transcripts,
         stepNotes: notes,
+        stepDurations: durations,
       });
       pushUploadLog("upload", "Upload complete — starting AI pipeline...");
       console.log("[RetryUpload] Success, workflow_id:", result.workflow_id);
@@ -398,6 +407,7 @@ export default function RecordingSessionPage() {
         initialDescription: meta.description,
         stepTranscripts: savedSteps.map((s) => s.transcript),
         stepNotes: savedSteps.map((s) => s.note),
+        stepDurations: savedSteps.map((s) => s.durationMs),
       });
 
       pushUploadLog("upload", "Upload complete — starting AI pipeline...");
