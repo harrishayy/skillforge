@@ -11,6 +11,8 @@ interface StepHistoryPanelProps {
   visible: boolean;
   completedSteps: CompletedStep[];
   currentStepNumber: number;
+  editingStepNumber?: number | null;
+  onStepClick?: (stepNumber: number) => void;
 }
 
 const GLASS =
@@ -26,6 +28,8 @@ export function StepHistoryPanel({
   visible,
   completedSteps,
   currentStepNumber,
+  editingStepNumber,
+  onStepClick,
 }: StepHistoryPanelProps) {
   return (
     <div
@@ -41,37 +45,63 @@ export function StepHistoryPanel({
 
       <div className="p-3 space-y-1">
         <AnimatePresence initial={false}>
-          {completedSteps.map((step) => (
-            <motion.div
-              key={`done-${step.stepNumber}`}
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="flex items-center gap-2.5 px-3 py-2 rounded-xl"
-              style={{ backgroundColor: "rgba(255,255,255,0.05)" }}
-            >
-              <div
-                className="w-5 h-5 rounded-full flex items-center justify-center shrink-0"
-                style={{ backgroundColor: "var(--sf-lime)" }}
+          {completedSteps.map((step) => {
+            const isEditing = editingStepNumber === step.stepNumber;
+            return (
+              <motion.button
+                key={`done-${step.stepNumber}`}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                onClick={() => onStepClick?.(step.stepNumber)}
+                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition-colors text-left"
+                style={{
+                  backgroundColor: isEditing
+                    ? "rgba(245, 158, 11, 0.15)"
+                    : "rgba(255,255,255,0.05)",
+                  border: isEditing
+                    ? "1px solid rgba(245, 158, 11, 0.3)"
+                    : "1px solid transparent",
+                  cursor: "pointer",
+                }}
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--sf-black)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M20 6 9 17l-5-5" />
-                </svg>
-              </div>
-              <span className="text-sm text-white font-medium">Step {step.stepNumber}</span>
-              <span className="text-xs ml-auto" style={{ color: "rgba(255,255,255,0.4)" }}>
-                {formatDuration(step.durationMs)}
-              </span>
-            </motion.div>
-          ))}
+                <div
+                  className="w-5 h-5 rounded-full flex items-center justify-center shrink-0"
+                  style={{ backgroundColor: isEditing ? "var(--sf-yellow)" : "var(--sf-lime)" }}
+                >
+                  {isEditing ? (
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--sf-black)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                    </svg>
+                  ) : (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--sf-black)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                  )}
+                </div>
+                <span className="text-sm text-white font-medium">Step {step.stepNumber}</span>
+                <span className="text-xs ml-auto" style={{ color: "rgba(255,255,255,0.4)" }}>
+                  {isEditing ? "editing notes" : formatDuration(step.durationMs)}
+                </span>
+              </motion.button>
+            );
+          })}
         </AnimatePresence>
 
         {/* Current active step */}
-        <motion.div
+        <motion.button
           key={`active-${currentStepNumber}`}
           initial={{ opacity: 0, x: -10 }}
           animate={{ opacity: 1, x: 0 }}
-          className="flex items-center gap-2.5 px-3 py-2 rounded-xl"
-          style={{ backgroundColor: "rgba(168, 85, 247, 0.2)", border: "1px solid rgba(168, 85, 247, 0.3)" }}
+          onClick={() => onStepClick?.(currentStepNumber)}
+          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left"
+          style={{
+            backgroundColor: editingStepNumber === currentStepNumber || !editingStepNumber
+              ? "rgba(168, 85, 247, 0.2)"
+              : "rgba(168, 85, 247, 0.1)",
+            border: "1px solid rgba(168, 85, 247, 0.3)",
+            cursor: "pointer",
+          }}
         >
           <div
             className="w-5 h-5 rounded-full flex items-center justify-center shrink-0"
@@ -83,7 +113,7 @@ export function StepHistoryPanel({
           <span className="text-xs ml-auto" style={{ color: "rgba(255,255,255,0.5)" }}>
             recording...
           </span>
-        </motion.div>
+        </motion.button>
       </div>
     </div>
   );

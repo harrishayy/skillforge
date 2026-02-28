@@ -5,12 +5,65 @@ from models.schemas import (
     StepUpdateRequest,
     AnnotationCreateRequest,
     ClickTargetCreateRequest,
-    AnalyzeFrameRequest,
     RegenerateStepRequest,
     SegmentPointRequest,
 )
 
 router = APIRouter(tags=["editor"])
+
+_STEP_TOOLS = [
+    {
+        "name": "create_workflow_step",
+        "description": "Create a step in the workflow with all its annotations and click targets. Call this once per step.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "step_number": {"type": "integer"},
+                "title": {"type": "string", "description": "Short title, max 8 words"},
+                "description": {
+                    "type": "string",
+                    "description": "Direct, actionable instruction for the trainee. Start with a verb.",
+                },
+                "start_ms": {"type": "integer"},
+                "end_ms": {"type": "integer"},
+                "key_frame_ms": {"type": "integer", "description": "Timestamp of the most representative frame"},
+                "annotations": {
+                    "type": "array",
+                    "description": "Visual annotations. All coordinates are percentages (0-100).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["bounding_box", "arrow", "highlight", "text_label"]},
+                            "label": {"type": "string"},
+                            "x": {"type": "number"}, "y": {"type": "number"},
+                            "width": {"type": "number"}, "height": {"type": "number"},
+                            "from_x": {"type": "number"}, "from_y": {"type": "number"},
+                            "to_x": {"type": "number"}, "to_y": {"type": "number"},
+                            "color": {"type": "string"},
+                            "style": {"type": "string", "enum": ["solid", "dashed", "pulse"]},
+                        },
+                    },
+                },
+                "click_targets": {
+                    "type": "array",
+                    "description": "Interactive elements the trainee should interact with.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "element_text": {"type": "string"},
+                            "element_type": {"type": "string", "enum": ["button", "input", "menu_item", "link", "icon", "other"]},
+                            "bbox_x": {"type": "number"}, "bbox_y": {"type": "number"},
+                            "bbox_width": {"type": "number"}, "bbox_height": {"type": "number"},
+                            "is_primary": {"type": "boolean"},
+                        },
+                        "required": ["bbox_x", "bbox_y", "bbox_width", "bbox_height"],
+                    },
+                },
+            },
+            "required": ["step_number", "title", "description", "start_ms", "end_ms", "key_frame_ms"],
+        },
+    },
+]
 
 
 # ─── Steps ────────────────────────────────────────────────────────────────────
@@ -164,8 +217,6 @@ async def regenerate_step(step_id: str, body: RegenerateStepRequest):
         "Add bounding_box and arrow annotations for key UI elements."
     )
 
-    from services.claude_orchestrator import ORCHESTRATOR_TOOLS
-
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     system = (
         "You are regenerating a single workflow step. Call create_workflow_step exactly once. "
@@ -181,7 +232,7 @@ async def regenerate_step(step_id: str, body: RegenerateStepRequest):
             model="claude-sonnet-4-6",
             max_tokens=2000,
             system=system,
-            tools=ORCHESTRATOR_TOOLS,
+            tools=_STEP_TOOLS,
             messages=messages,
         )
         if response.stop_reason == "end_turn":
@@ -373,7 +424,6 @@ async def re_record_step(
     )
 
     import json, anthropic
-    from services.claude_orchestrator import ORCHESTRATOR_TOOLS
 
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     user_msg = (
@@ -393,7 +443,7 @@ async def re_record_step(
     for _ in range(5):
         response = client.messages.create(
             model="claude-sonnet-4-6", max_tokens=2000, system=system,
-            tools=ORCHESTRATOR_TOOLS, messages=messages,
+            tools=_STEP_TOOLS, messages=messages,
         )
         if response.stop_reason == "end_turn":
             break
@@ -443,48 +493,6 @@ async def re_record_step(
             break
 
     return await _get_step(step_id)
-
-
-# ─── On-demand frame analysis ─────────────────────────────────────────────────
-
-@router.post("/api/workflows/{workflow_id}/analyze-frame")
-async def analyze_frame_on_demand(workflow_id: str, body: AnalyzeFrameRequest):
-    import os
-    from pathlib import Path
-    from services.nemotron_client import analyze_frame
-    from services.sam3_service import segment_with_context
-    from services.video_processor import extract_frames
-
-    wf = await fetchone("SELECT * FROM workflows WHERE id=?", (workflow_id,))
-    if not wf:
-        raise HTTPException(404, "Workflow not found")
-
-    video_path = Path(__file__).parent.parent / wf["video_path"]
-    if not video_path.exists():
-        raise HTTPException(404, "Video file not found")
-
-    frames = await extract_frames(str(video_path), workflow_id)
-    target = min(frames, key=lambda f: abs(f["timestamp_ms"] - body.timestamp_ms))
-
-    nim_key = os.environ.get("NVIDIA_NIM_API_KEY", "")
-    vl_result = await analyze_frame(target["path"], wf["mode"], nim_key)
-
-    sam3_segments = []
-    try:
-        frame_bytes = Path(target["path"]).read_bytes()
-        sam_result = await segment_with_context(
-            frame_bytes, wf.get("title", ""), wf.get("description", ""),
-        )
-        if sam_result:
-            sam3_segments = sam_result["segments"]
-    except Exception:
-        pass
-
-    return {
-        "frame_path": target["relative_path"],
-        "nemotron_analysis": vl_result,
-        "sam3_segments": sam3_segments,
-    }
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

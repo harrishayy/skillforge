@@ -6,13 +6,13 @@
 export type VoiceIntent = "next" | "prev" | "finish" | null;
 
 const NEXT_PATTERN =
-  /(?:^|\s)(?:next|skip|continue|advance|moving\s+on|go\s*(?:to\s*)?(?:the\s*)?next)\s*(?:step|phase|part|stage)?(?:\s|$)|(?:^|\s)(?:next|skip|continue)\s*(?:\s|$)/i;
+  /(?:^|\s)next\s+step(?:\s|$)/i;
 const PREV_PATTERN =
   /(?:^|\s)(?:previous|back|go\s*back|last|prior)\s*(?:step|phase|part|stage)?(?:\s|$)|(?:^|\s)(?:go\s*back|previous)\s*(?:\s|$)/i;
 const FINISH_PATTERN =
   /(?:^|\s)(?:finish|done|complete|that'?s\s*it|done\s+with\s+this|end\s*recording|stop\s*recording)(?:\s|$)/i;
 
-const NEXT_SEEDS = ["next step", "next", "skip", "continue", "advance", "go to next phase"];
+const NEXT_SEEDS = ["next step"];
 const PREV_SEEDS = ["previous step", "previous", "back", "go back"];
 const FINISH_SEEDS = ["finish", "done", "complete", "end recording", "stop recording"];
 

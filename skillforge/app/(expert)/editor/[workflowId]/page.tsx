@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getWorkflow, publishWorkflow, unpublishWorkflow } from "@/lib/api-client";
 import { showErrorToast } from "@/store/toast-store";
 import { useWorkflowStore } from "@/store/workflow-store";
+import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { StepList } from "@/components/editor/StepList";
 import { StepFrameViewer } from "@/components/editor/StepFrameViewer";
 import { StepDetailPanel } from "@/components/editor/StepDetailPanel";
@@ -19,6 +20,20 @@ export default function EditorPage() {
   const [error, setError] = useState<string | null>(null);
   const [isPublishing, setIsPublishing] = useState(false);
   const { workflow, setWorkflow, selectedStepId, selectStep } = useWorkflowStore();
+
+  const leftPanel = useResizablePanel({
+    initialWidth: 240,
+    minWidth: 160,
+    maxWidth: 400,
+    direction: "right",
+  });
+
+  const rightPanel = useResizablePanel({
+    initialWidth: 320,
+    minWidth: 220,
+    maxWidth: 520,
+    direction: "left",
+  });
 
   const handleTogglePublish = async () => {
     if (!workflow) return;
@@ -108,23 +123,50 @@ export default function EditorPage() {
         </Link>
       </div>
 
-      {/* 3-column layout */}
+      {/* 3-column resizable layout — drag the thin borders between panels to resize */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left: Step list */}
-        <div className="w-60 shrink-0 p-3 overflow-y-auto" style={{ borderRight: "1px solid #222" }}>
+        <div
+          className="shrink-0 p-3 overflow-y-auto"
+          style={{ width: leftPanel.width, borderRight: "1px solid #222" }}
+        >
           <StepList />
         </div>
 
+        {/* Left resize handle */}
+        <ResizeHandle onMouseDown={leftPanel.handleMouseDown} />
+
         {/* Center: Frame viewer with SAM3 + filmstrip + video */}
-        <div className="flex-1 flex flex-col overflow-hidden p-4">
+        <div className="flex-1 flex flex-col overflow-hidden p-4 min-w-0">
           <StepFrameViewer />
         </div>
 
+        {/* Right resize handle */}
+        <ResizeHandle onMouseDown={rightPanel.handleMouseDown} />
+
         {/* Right: Step detail panel */}
-        <div className="w-80 shrink-0 p-4 overflow-y-auto" style={{ borderLeft: "1px solid #222" }}>
+        <div
+          className="shrink-0 p-4 overflow-y-auto"
+          style={{ width: rightPanel.width, borderLeft: "1px solid #222" }}
+        >
           <StepDetailPanel />
         </div>
       </div>
+    </div>
+  );
+}
+
+function ResizeHandle({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      className="shrink-0 group flex items-center justify-center"
+      style={{ width: 6, cursor: "col-resize" }}
+    >
+      <div
+        className="w-[2px] h-8 rounded-full transition-all group-hover:h-16 group-active:h-full"
+        style={{ backgroundColor: "#333" }}
+      />
     </div>
   );
 }

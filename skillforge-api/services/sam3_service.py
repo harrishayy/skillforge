@@ -213,10 +213,14 @@ async def segment_with_context(
     """
     Auto-segment a key frame using step context as the text prompt.
     Extracts keywords from title/description/transcript and calls segment_concept.
+    Returns dict with "segments" and "prompt" keys, or None.
     """
     prompt = _extract_keywords(title, description, transcript)
     print(f"[SAM3] Auto-segment prompt: \"{prompt}\"", flush=True)
-    return await segment_concept(frame_bytes, prompt, confidence_threshold)
+    result = await segment_concept(frame_bytes, prompt, confidence_threshold)
+    if result:
+        result["prompt"] = prompt
+    return result
 
 
 async def toggle_segment(

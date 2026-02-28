@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
 type PanelTab = "helpChat" | "notes";
@@ -8,8 +8,10 @@ type PanelTab = "helpChat" | "notes";
 interface HelpAndChatPanelProps {
   visible: boolean;
   currentStepNumber?: number;
+  editingStepNumber?: number | null;
   stepNotes?: Record<number, string>;
   onSaveNote?: (stepNumber: number, text: string) => void;
+  onEditStep?: (stepNumber: number) => void;
 }
 
 const GLASS =
@@ -215,27 +217,129 @@ function RecordingChat() {
   );
 }
 
-function StepNotesTab({
-  currentStepNumber,
-  stepNotes,
+function StepNoteCard({
+  stepNumber,
+  note,
+  isEditing,
+  isCurrent,
   onSaveNote,
+  onEditStep,
 }: {
-  currentStepNumber: number;
-  stepNotes: Record<number, string>;
+  stepNumber: number;
+  note: string;
+  isEditing: boolean;
+  isCurrent: boolean;
   onSaveNote: (stepNumber: number, text: string) => void;
+  onEditStep: (stepNumber: number) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const currentNote = stepNotes[currentStepNumber] ?? "";
 
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.value = currentNote;
+    if (isEditing && textareaRef.current) {
+      textareaRef.current.value = note;
+      textareaRef.current.focus();
     }
-  }, [currentStepNumber, currentNote]);
+  }, [isEditing, note]);
 
-  const previousNotes = Object.entries(stepNotes)
-    .filter(([num]) => Number(num) < currentStepNumber && stepNotes[Number(num)]?.trim())
-    .sort(([a], [b]) => Number(a) - Number(b));
+  if (isEditing) {
+    return (
+      <div
+        className="rounded-xl overflow-hidden"
+        style={{
+          backgroundColor: isCurrent ? "rgba(168, 85, 247, 0.12)" : "rgba(245, 158, 11, 0.1)",
+          border: `1px solid ${isCurrent ? "rgba(168, 85, 247, 0.3)" : "rgba(245, 158, 11, 0.25)"}`,
+        }}
+      >
+        <div className="px-3 pt-2.5 pb-1 flex items-center gap-1.5">
+          <span
+            className="text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full"
+            style={{
+              backgroundColor: isCurrent ? "var(--sf-purple)" : "var(--sf-yellow)",
+              color: "var(--sf-black)",
+            }}
+          >
+            Step {stepNumber}
+          </span>
+          {isCurrent && (
+            <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.4)" }}>current</span>
+          )}
+        </div>
+        <div className="px-3 pb-3">
+          <textarea
+            ref={textareaRef}
+            defaultValue={note}
+            onChange={(e) => onSaveNote(stepNumber, e.target.value)}
+            rows={3}
+            placeholder="Add notes for this step..."
+            className="w-full rounded-lg px-3 py-2 text-sm outline-none resize-none mt-1"
+            style={{
+              backgroundColor: "rgba(255, 255, 255, 0.08)",
+              border: "1px solid rgba(255, 255, 255, 0.12)",
+              color: "white",
+            }}
+          />
+          <p className="text-[10px] mt-1" style={{ color: "rgba(255,255,255,0.3)" }}>
+            Notes supplement the voice transcript to improve AI output.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => onEditStep(stepNumber)}
+      className="w-full rounded-xl px-3 py-2.5 text-left transition-colors"
+      style={{
+        backgroundColor: isCurrent ? "rgba(168, 85, 247, 0.08)" : "rgba(255,255,255,0.04)",
+        border: isCurrent ? "1px solid rgba(168, 85, 247, 0.2)" : "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div className="flex items-center gap-1.5 mb-1">
+        <span
+          className="text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full"
+          style={{
+            backgroundColor: isCurrent ? "var(--sf-purple)" : "rgba(255,255,255,0.12)",
+            color: isCurrent ? "var(--sf-black)" : "rgba(255,255,255,0.5)",
+          }}
+        >
+          Step {stepNumber}
+        </span>
+        {isCurrent && (
+          <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.4)" }}>current</span>
+        )}
+        <svg
+          width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          className="ml-auto"
+          style={{ color: "rgba(255,255,255,0.25)" }}
+        >
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+        </svg>
+      </div>
+      <p className="text-xs leading-relaxed" style={{ color: note.trim() ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.2)" }}>
+        {note.trim() || "No notes — tap to add"}
+      </p>
+    </button>
+  );
+}
+
+function StepNotesTab({
+  currentStepNumber,
+  editingStepNumber,
+  stepNotes,
+  onSaveNote,
+  onEditStep,
+}: {
+  currentStepNumber: number;
+  editingStepNumber: number | null;
+  stepNotes: Record<number, string>;
+  onSaveNote: (stepNumber: number, text: string) => void;
+  onEditStep: (stepNumber: number) => void;
+}) {
+  const allSteps = Array.from({ length: currentStepNumber }, (_, i) => i + 1);
+  const activeEditing = editingStepNumber ?? currentStepNumber;
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -244,62 +348,43 @@ function StepNotesTab({
           <path d="M12 20h9" />
           <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
         </svg>
-        <span className="text-sm font-bold text-white">Step {currentStepNumber} Notes</span>
+        <span className="text-sm font-bold text-white">Step Notes</span>
+        <span className="text-[10px] ml-auto" style={{ color: "rgba(255,255,255,0.3)" }}>
+          {currentStepNumber} step{currentStepNumber > 1 ? "s" : ""}
+        </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        <div>
-          <label className="block text-xs font-bold mb-2" style={{ color: "rgba(255,255,255,0.5)" }}>
-            Description for Step {currentStepNumber}
-          </label>
-          <textarea
-            ref={textareaRef}
-            defaultValue={currentNote}
-            onChange={(e) => onSaveNote(currentStepNumber, e.target.value)}
-            rows={4}
-            placeholder="Add notes about what you're demonstrating in this step..."
-            className="w-full rounded-lg px-3 py-2.5 text-sm outline-none resize-none"
-            style={{
-              backgroundColor: "rgba(255, 255, 255, 0.08)",
-              border: "1px solid rgba(255, 255, 255, 0.12)",
-              color: "white",
-            }}
+      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {allSteps.map((stepNum) => (
+          <StepNoteCard
+            key={stepNum}
+            stepNumber={stepNum}
+            note={stepNotes[stepNum] ?? ""}
+            isEditing={activeEditing === stepNum}
+            isCurrent={stepNum === currentStepNumber}
+            onSaveNote={onSaveNote}
+            onEditStep={onEditStep}
           />
-          <p className="text-[10px] mt-1" style={{ color: "rgba(255,255,255,0.3)" }}>
-            These notes supplement the automatic voice transcript to improve AI output.
-          </p>
-        </div>
-
-        {previousNotes.length > 0 && (
-          <div>
-            <label className="block text-xs font-bold mb-2" style={{ color: "rgba(255,255,255,0.4)" }}>
-              Previous Step Notes
-            </label>
-            <div className="space-y-2">
-              {previousNotes.map(([num, text]) => (
-                <div
-                  key={num}
-                  className="rounded-lg px-3 py-2"
-                  style={{ backgroundColor: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" }}
-                >
-                  <span className="text-[10px] font-bold" style={{ color: "var(--sf-purple)" }}>
-                    Step {num}
-                  </span>
-                  <p className="text-xs mt-0.5" style={{ color: "rgba(255,255,255,0.6)" }}>
-                    {text}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        ))}
       </div>
     </div>
   );
 }
 
-export function HelpAndChatPanel({ visible, currentStepNumber = 1, stepNotes = {}, onSaveNote }: HelpAndChatPanelProps) {
+export function HelpAndChatPanel({
+  visible,
+  currentStepNumber = 1,
+  editingStepNumber,
+  stepNotes = {},
+  onSaveNote,
+  onEditStep,
+}: HelpAndChatPanelProps) {
   const [activeTab, setActiveTab] = useState<PanelTab>("helpChat");
+
+  const handleEditStep = useCallback((stepNumber: number) => {
+    setActiveTab("notes");
+    onEditStep?.(stepNumber);
+  }, [onEditStep]);
 
   return (
     <div
@@ -341,8 +426,10 @@ export function HelpAndChatPanel({ visible, currentStepNumber = 1, stepNotes = {
       ) : (
         <StepNotesTab
           currentStepNumber={currentStepNumber}
+          editingStepNumber={editingStepNumber ?? null}
           stepNotes={stepNotes}
           onSaveNote={onSaveNote ?? (() => {})}
+          onEditStep={handleEditStep}
         />
       )}
     </div>

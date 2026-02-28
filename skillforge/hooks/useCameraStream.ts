@@ -7,6 +7,8 @@ export type FacingMode = "user" | "environment";
 interface UseCameraStreamOptions {
   /** Video constraints passed to getUserMedia */
   constraints?: MediaTrackConstraints;
+  /** Also request microphone access (needed for voice commands). Defaults to true. */
+  audio?: boolean;
   /** Preferred camera facing (front "user" or back "environment"). Used when starting and when switching. */
   facingMode?: FacingMode;
 }
@@ -38,7 +40,7 @@ export function useCameraStream(
   const facingModeRef = useRef<FacingMode>(options.facingMode ?? "user");
   const [facingMode, setFacingMode] = useState<FacingMode>(options.facingMode ?? "user");
 
-  const { constraints = {} } = options;
+  const { constraints = {}, audio = true } = options;
 
   // Attach stream after DOM update (video element only exists when isActive=true)
   useEffect(() => {
@@ -51,22 +53,31 @@ export function useCameraStream(
     setError(null);
     const mode = facingModeRef.current;
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 60 },
-          facingMode: { ideal: mode },
-          ...constraints,
-        },
-        audio: false,
-      });
+      let mediaStream: MediaStream;
+      const videoConstraints = {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 60 },
+        facingMode: { ideal: mode },
+        ...constraints,
+      };
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraints,
+          audio: audio ? { echoCancellation: true, noiseSuppression: true } : false,
+        });
+      } catch {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraints,
+          audio: false,
+        });
+      }
       setStream(mediaStream);
       setIsActive(true);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Camera access denied");
     }
-  }, [constraints]);
+  }, [constraints, audio]);
 
   const stop = useCallback(() => {
     stream?.getTracks().forEach((t) => t.stop());

@@ -4,7 +4,6 @@ from enum import Enum
 
 
 class TaskMode(str, Enum):
-    software = "software"
     hardware = "hardware"
 
 
@@ -41,6 +40,7 @@ class StepCreateRequest(BaseModel):
 class StepUpdateRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
+    note: Optional[str] = None
     step_number: Optional[int] = None
     start_ms: Optional[int] = None
     end_ms: Optional[int] = None
@@ -70,10 +70,6 @@ class ClickTargetCreateRequest(BaseModel):
     bbox_height: float
     action: str = "left_click"
     is_primary: bool = False
-
-
-class AnalyzeFrameRequest(BaseModel):
-    timestamp_ms: int
 
 
 class RegenerateStepRequest(BaseModel):
@@ -144,6 +140,8 @@ class StepFrameResponse(BaseModel):
     timestamp_ms: int
     frame_path: str
     is_key_frame: bool
+    object_detected: bool = False
+    object_description: Optional[str] = None
 
 
 class StepResponse(BaseModel):
@@ -157,6 +155,9 @@ class StepResponse(BaseModel):
     key_frame_path: Optional[str] = None
     video_path: Optional[str] = None
     ai_description: Optional[str] = None
+    transcript: Optional[str] = None
+    note: Optional[str] = None
+    sam3_prompt: Optional[str] = None
     annotations: list[AnnotationResponse] = []
     click_targets: list[ClickTargetResponse] = []
     frames: list[StepFrameResponse] = []
@@ -185,13 +186,6 @@ class WorkflowDetailResponse(WorkflowSummaryResponse):
 
 class WorkflowListResponse(BaseModel):
     workflows: list[WorkflowSummaryResponse]
-
-
-class FrameAnalysisResponse(BaseModel):
-    frame_path: str
-    nemotron_analysis: dict
-    sam3_segments: list[dict] = []
-    hand_data: Optional[dict] = None
 
 
 class PipelineLogEvent(BaseModel):

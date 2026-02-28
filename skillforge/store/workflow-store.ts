@@ -17,6 +17,7 @@ interface WorkflowStore {
 
   // SAM3 segmentation state
   segmentsByStep: Record<string, Sam3Segment[]>;
+  segmentPromptByStep: Record<string, string>;
   segmentingStepId: string | null;
 
   // Regeneration state
@@ -42,6 +43,7 @@ interface WorkflowStore {
   addSegment: (stepId: string, x: number, y: number, frameTimestampMs: number) => Promise<void>;
   removeSegment: (stepId: string, index: number) => void;
   clearSegments: (stepId: string) => void;
+  setSegmentPrompt: (stepId: string, prompt: string) => void;
 
   // Regeneration
   regenerate: (stepId: string, additionalContext: string) => Promise<void>;
@@ -55,6 +57,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   selectedStepId: null,
   isLoading: false,
   segmentsByStep: {},
+  segmentPromptByStep: {},
   segmentingStepId: null,
   regeneratingStepId: null,
   activeFramePath: {},
@@ -190,6 +193,11 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   clearSegments: (stepId) =>
     set((s) => ({
       segmentsByStep: { ...s.segmentsByStep, [stepId]: [] },
+    })),
+
+  setSegmentPrompt: (stepId, prompt) =>
+    set((s) => ({
+      segmentPromptByStep: { ...s.segmentPromptByStep, [stepId]: prompt },
     })),
 
   regenerate: async (stepId, additionalContext) => {
