@@ -1,20 +1,25 @@
 """
-Database layer — Neon PostgreSQL via asyncpg.
+Database layer — Neon PostgreSQL via asyncpg, with SQLite fallback for local dev.
 
-All query functions accept `?` placeholders which are automatically
-converted to `$1, $2, …` for PostgreSQL.
+All query functions accept `?` placeholders (converted to `$1, $2, …` for PostgreSQL).
 
-Requires DATABASE_URL to be set to a postgres:// or postgresql:// URI.
+Set DATABASE_URL to a postgres:// or postgresql:// URI for production.
+When DATABASE_URL is unset or contains the placeholder, uses local SQLite (skillforge.db).
 """
 import os
 import re
 import uuid
 import time
+from pathlib import Path
+
 import asyncpg
+import aiosqlite
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
 _pool: asyncpg.Pool | None = None
+_use_sqlite = False
+_sqlite_path: str = ""
 
 # ── Schema ─────────────────────────────────────────────────────────────────────
 
@@ -122,18 +127,121 @@ def _to_pg(sql: str) -> str:
     return re.sub(r"\?", replace, sql)
 
 
+def _to_sql(sql: str) -> str:
+    """Return SQL with correct placeholders for current backend."""
+    return sql if _use_sqlite else _to_pg(sql)
+
+
+def _row_to_dict(row) -> dict | None:
+    """Convert asyncpg Record or aiosqlite Row to dict."""
+    if row is None:
+        return None
+    if hasattr(row, "keys"):
+        return dict(zip(row.keys(), row))
+    return dict(row)
+
+
+# ── SQLite fallback (local dev) ────────────────────────────────────────────────
+
+def _is_placeholder_db_url(url: str) -> bool:
+    """True if DATABASE_URL is unset or contains the Neon placeholder."""
+    if not url or not url.strip():
+        return True
+    if "ep-your-endpoint" in url or "YOUR_PASSWORD" in url:
+        return True
+    return False
+
+
+class _SQLitePool:
+    """Minimal pool-like interface for aiosqlite, compatible with asyncpg usage."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self._conn: aiosqlite.Connection | None = None
+
+    async def _get_conn(self) -> aiosqlite.Connection:
+        if self._conn is None:
+            self._conn = await aiosqlite.connect(self.path)
+            self._conn.row_factory = aiosqlite.Row
+        return self._conn
+
+    def acquire(self):
+        return _SQLiteAcquire(self)
+
+    async def close(self):
+        if self._conn:
+            await self._conn.close()
+            self._conn = None
+
+
+class _SQLiteAcquire:
+    def __init__(self, pool: _SQLitePool):
+        self.pool = pool
+
+    async def __aenter__(self):
+        self.conn = await self.pool._get_conn()
+        return _SQLiteConn(self.conn)
+
+    async def __aexit__(self, *args):
+        pass
+
+
+class _SQLiteConn:
+    def __init__(self, conn: aiosqlite.Connection):
+        self._conn = conn
+
+    async def execute(self, sql: str, *params):
+        await self._conn.execute(sql, params if params else ())
+
+    async def fetchrow(self, sql: str, *params) -> aiosqlite.Row | None:
+        cursor = await self._conn.execute(sql, params if params else ())
+        row = await cursor.fetchone()
+        return row
+
+    async def fetch(self, sql: str, *params) -> list:
+        cursor = await self._conn.execute(sql, params if params else ())
+        return await cursor.fetchall()
+
+    async def transaction(self):
+        return _SQLiteTransaction(self._conn)
+
+
+class _SQLiteTransaction:
+    def __init__(self, conn: aiosqlite.Connection):
+        self._conn = conn
+
+    async def __aenter__(self):
+        await self._conn.execute("BEGIN")
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            await self._conn.execute("ROLLBACK")
+        else:
+            await self._conn.execute("COMMIT")
+
+
 # ── Initialisation ─────────────────────────────────────────────────────────────
 
 async def init_db():
-    global _pool
-    db_url = os.environ.get("DATABASE_URL", "")
+    global _pool, _use_sqlite, _sqlite_path
+    db_url = os.environ.get("DATABASE_URL", "").strip()
+
+    if _is_placeholder_db_url(db_url):
+        _use_sqlite = True
+        base = Path(__file__).resolve().parent.parent
+        _sqlite_path = str(base / "skillforge.db")
+        _pool = await _init_sqlite(_sqlite_path)
+        print("[DB] Using local SQLite (skillforge.db)")
+        return
 
     if not db_url.startswith(("postgres://", "postgresql://")):
         raise RuntimeError(
             "DATABASE_URL must be set to a postgres:// or postgresql:// URI. "
-            "SQLite is no longer supported — use Neon PostgreSQL."
+            "For local dev without Neon, leave it unset or use the placeholder."
         )
 
+    _use_sqlite = False
     _pool = await asyncpg.create_pool(
         db_url, min_size=2, max_size=10, ssl="require",
         statement_cache_size=0,
@@ -143,6 +251,14 @@ async def init_db():
             await conn.execute(stmt)
         await _run_migrations(conn)
     print("[DB] Connected to Neon PostgreSQL")
+
+
+async def _init_sqlite(path: str) -> _SQLitePool:
+    pool = _SQLitePool(path)
+    async with pool.acquire() as conn:
+        for stmt in _CREATE_STATEMENTS:
+            await conn.execute(stmt)
+    return pool
 
 
 async def _run_migrations(conn):
@@ -177,27 +293,31 @@ async def _run_migrations(conn):
 # ── Query helpers ──────────────────────────────────────────────────────────────
 
 async def fetchone(query: str, params: tuple = ()) -> dict | None:
+    sql = _to_sql(query)
     async with _pool.acquire() as conn:
-        row = await conn.fetchrow(_to_pg(query), *params)
-        return dict(row) if row else None
+        row = await conn.fetchrow(sql, *params)
+        return _row_to_dict(row)
 
 
 async def fetchall(query: str, params: tuple = ()) -> list[dict]:
+    sql = _to_sql(query)
     async with _pool.acquire() as conn:
-        rows = await conn.fetch(_to_pg(query), *params)
-        return [dict(r) for r in rows]
+        rows = await conn.fetch(sql, *params)
+        return [_row_to_dict(r) for r in rows]
 
 
 async def execute(query: str, params: tuple = ()) -> None:
+    sql = _to_sql(query)
     async with _pool.acquire() as conn:
-        await conn.execute(_to_pg(query), *params)
+        await conn.execute(sql, *params)
 
 
 async def execute_many(queries: list[tuple[str, tuple]]) -> None:
     async with _pool.acquire() as conn:
         async with conn.transaction():
             for query, params in queries:
-                await conn.execute(_to_pg(query), *params)
+                sql = _to_sql(query)
+                await conn.execute(sql, *params)
 
 
 # ── Utilities ──────────────────────────────────────────────────────────────────

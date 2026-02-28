@@ -14,8 +14,8 @@ Called as a FastAPI BackgroundTask from routers/recording.py (upload-steps endpo
 import os
 import json
 from pathlib import Path
-from models.database import execute, fetchall, new_id, now_ms
-from websockets.pipeline_ws import broadcast
+from models.database import execute, new_id, now_ms
+from app_ws.pipeline_ws import broadcast
 from services.video_processor import extract_frames, get_video_duration_ms
 from services.key_object_pipeline import run_key_object_analysis
 
