@@ -1,6 +1,8 @@
 node_modules
 .venv
+venv
 .next
 __pycache__
 .env
 uploads
+skills-lock.json

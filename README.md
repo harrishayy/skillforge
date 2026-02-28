@@ -1,18 +1,18 @@
 # SkillForge
 
-An AI-powered knowledge transfer platform that bridges the gap between expert practitioners and trainees — across both digital software workflows and hands-on physical tasks.
+An AI-powered knowledge transfer platform that bridges the gap between expert practitioners and trainees — capturing expert workflows through video recording and turning them into structured, interactive learning experiences.
 
 ---
 
 ## Overview
 
-SkillForge lets experts record what they know, and lets AI turn those recordings into structured, interactive learning experiences for trainees. It supports three distinct modes:
+SkillForge lets experts record what they know, and lets AI turn those recordings into structured, interactive learning experiences for trainees.
 
-**Digital Workflow** — Experts screen-record themselves performing software tasks. An AI pipeline (NVIDIA Nemotron VL + Claude) extracts steps, identifies UI elements, and generates annotations. Trainees replay recordings with live visual overlays and a built-in Claude copilot.
+**Expert Recording** — Experts record themselves performing tasks via webcam with voice narration. An AI pipeline (NVIDIA Nemotron VL + Claude) extracts steps, identifies key moments, and generates annotations. Experts can then refine steps in a visual editor.
 
-**Physical Apprenticeship** — Experts record video of physical demonstrations. Optical flow isolates key frames, Claude Vision extracts structured steps, and during a trainee session MediaPipe, YOLOv8, and Grounding DINO deliver real-time AR-style overlays.
+**Trainee Learning** — Trainees browse a library of published workflows and replay recordings with AI-drawn overlays and a built-in Claude copilot chat for real-time guidance.
 
-**Live Camera Detection** — A standalone mode with no workflow required. Point a camera, toggle detectors (hand tracking, YOLO objects, SAM 3 concept segmentation), and see real-time overlays on the camera feed.
+**Live Camera Detection** — A standalone mode with no workflow required. Point a camera, toggle detectors (hand tracking, SAM 3 concept segmentation), and see real-time overlays on the camera feed.
 
 ---
 
@@ -52,8 +52,8 @@ graph TB
 
 - **Frontend** — Next.js 16, React 19, TypeScript, Tailwind CSS 4, Zustand, Fabric.js, Framer Motion
 - **Backend** — Python FastAPI, uvicorn, Neon PostgreSQL (asyncpg), SQLite fallback
-- **AI / ML** — Claude Sonnet (Anthropic), Nemotron VL (NVIDIA NIM), MediaPipe Hands, YOLOv8n, Grounding DINO 1.5, SAM 2/3, DINOv2
-- **Real-time** — WebSockets for pipeline progress, live sessions, and AR hand tracking
+- **AI / ML** — Claude Sonnet (Anthropic), Nemotron VL (NVIDIA NIM), MediaPipe Hands, Grounding DINO 1.5, SAM 2/3
+- **Real-time** — WebSockets for pipeline progress and AR hand tracking
 
 ---
 
@@ -63,9 +63,9 @@ graph TB
 skillforge/
 ├── skillforge/                  # Next.js frontend
 │   ├── app/                     # App Router pages
-│   │   ├── (expert)/            # Expert routes: /record, /workflows, /editor/[id]
+│   │   ├── (expert)/            # Expert routes: /workflows, /editor/[id]
 │   │   ├── (trainee)/           # Trainee routes: /library, /learn/[id]
-│   │   ├── (physical)/          # Physical routes: /tasks, /capture, /guide/[id]
+│   │   ├── record/              # Recording flow: /record, /record/setup, /record/session
 │   │   └── live/                # Live camera detection: /live
 │   ├── components/              # Modular UI components
 │   ├── hooks/                   # React hooks (camera, detection, sessions)
@@ -88,7 +88,7 @@ skillforge/
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.10+
 - Node.js 18+
 - `pip` and `pnpm` (or `npm`)
 
@@ -96,9 +96,11 @@ skillforge/
 
 ```bash
 cd skillforge-api
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # edit with your API keys
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8000 --ws wsproto
 ```
 
 Full details: [API Server Setup](docs/api-server-setup.md)
@@ -126,27 +128,24 @@ Navigate to [http://localhost:3000](http://localhost:3000).
 
 ## Workflows
 
-### Digital Workflow (Expert to Trainee)
+### Expert Recording Flow
 
-1. Expert navigates to `/record` and selects Software or Hardware mode.
-2. Expert records their screen or webcam while performing a task.
-3. The AI pipeline runs automatically: frame extraction, Nemotron VL frame analysis, YOLO and MediaPipe detection, Claude step decomposition.
-4. Expert reviews and annotates steps in the workflow editor at `/editor/[id]`.
-5. Trainee browses the library at `/library` and opens a workflow at `/learn/[id]`.
-6. Trainee watches the video with AI-drawn overlays and uses the built-in Claude copilot chat for real-time guidance.
+1. Expert navigates to `/record` and selects a recording mode.
+2. Expert enters a title and description, then records via webcam with voice narration at `/record/session`.
+3. Steps are captured using "Next Step" (button, voice command, or double-tap gesture).
+4. On finish, the AI pipeline runs: frame extraction, Nemotron VL analysis, MediaPipe hand tracking, Claude step decomposition.
+5. Expert lands in the workflow editor at `/editor/[id]` to refine steps, add annotations, and publish.
 
-### Physical Apprenticeship (Expert to Trainee)
+### Trainee Learning Flow
 
-1. Expert navigates to `/capture` and uploads a video of performing a physical task.
-2. The physical AI pipeline runs: optical flow key frame extraction, Claude VLM step decomposition, Grounding DINO object detection, DINOv2 visual fingerprinting.
-3. Trainee browses tasks at `/tasks` and starts a guided session at `/guide/[id]`.
-4. The camera displays live object detection overlays; Claude Vision checks step completion in real time.
+1. Trainee browses the library at `/library` and opens a workflow at `/learn/[id]`.
+2. Trainee watches the video with AI-drawn overlays and uses the built-in Claude copilot chat for real-time guidance.
 
 ### Live Camera Detection
 
 1. Navigate to `/live`.
 2. Enable the camera.
-3. Toggle individual detectors: Hand Tracking (MediaPipe), YOLO Objects, SAM 3 Concept Segmentation, or Custom Prompt (Grounding DINO with Claude fallback).
+3. Toggle individual detectors: Hand Tracking (MediaPipe), SAM 3 Concept Segmentation, or Custom Prompt (Grounding DINO with Claude fallback).
 4. Real-time overlays are drawn directly on the camera feed.
 
 ---
@@ -160,7 +159,6 @@ SkillForge is designed to be fully functional with only an `ANTHROPIC_API_KEY`, 
 | Frame analysis | NVIDIA Nemotron VL | Claude Vision |
 | Object detection | Grounding DINO 1.5 | Claude Vision |
 | Segmentation | SAM 3 / SAM 2 | Skipped |
-| Feature extraction | DINOv2 | Skipped |
 | Database | Neon PostgreSQL | Local SQLite |
 | File storage | Local `uploads/` | — |
 
@@ -178,139 +176,6 @@ SkillForge is designed to be fully functional with only an `ANTHROPIC_API_KEY`, 
 
 ---
 
-Here's a complete step-by-step overview of how your teammate can get onto this Brev instance and use the SAM3 server.
-
----
-
-## Current Setup Summary
-
-| Detail | Value |
-|--------|-------|
-| **Hostname** | `brev-mj7yysud1` |
-| **Public IP** | `216.81.245.40` |
-| **GPUs** | 2x NVIDIA A100 80GB PCIe |
-| **SSH Port** | 22 (open via UFW) |
-| **SAM3 Server** | Running on port 8080 (bound to `0.0.0.0`, but **blocked by firewall**) |
-| **OS User** | `shadeform` (also `root` access) |
-
----
-
-## Step-by-Step for Your Teammate
-
-### 1. Add their SSH public key to the server
-
-Your teammate needs to generate an SSH key pair (if they don't have one) and send you their **public key**. Then you (or they, via you) add it to the server:
-
-```bash
-# On your teammate's machine -- generate a key if needed
-ssh-keygen -t ed25519 -C "teammate@email.com"
-cat ~/.ssh/id_ed25519.pub   # send this to you
-```
-
-Then on the server, append it to `~/.ssh/authorized_keys`:
-
-```bash
-echo "ssh-ed25519 AAAA...their_key... teammate@email.com" >> /home/shadeform/.ssh/authorized_keys
-```
-
-There is already one key in `authorized_keys` (for `harrishayyanar21@outlook.com`). Each additional teammate gets a new line.
-
-### 2. SSH into the instance
-
-Your teammate connects with:
-
-```bash
-ssh shadeform@216.81.245.40
-```
-
-Or if they want to also use Cursor remote SSH, they can add this to their `~/.ssh/config`:
-
-```
-Host brev-sam3
-    HostName 216.81.245.40
-    User shadeform
-    IdentityFile ~/.ssh/id_ed25519
-```
-
-Then just `ssh brev-sam3`.
-
-### 3. Port-forward the SAM3 API (port 8080)
-
-The firewall (`init.sh`) only allows inbound traffic on ports 22 and 2222. Port 8080 is **not** exposed to the internet, which is the correct security posture. Your teammate accesses it via SSH tunnel:
-
-```bash
-ssh -L 8080:localhost:8080 shadeform@216.81.245.40
-```
-
-Now on their local machine, `http://localhost:8080` hits the SAM3 server. They can test with:
-
-```bash
-curl http://localhost:8080/health
-```
-
-Expected response:
-
-```json
-{"status": "ok", "model": "sam3", "gpu": "NVIDIA A100 80GB PCIe", "tracking_sessions": 0}
-```
-
-### 4. Verify the SAM3 server is running
-
-The server is currently running in a tmux session called `sam3`. If it ever goes down, reconnect and restart:
-
-```bash
-# Attach to the existing tmux session
-tmux attach -t sam3
-
-# If the server isn't running, start it:
-cd /home/shadeform && python3 -m uvicorn sam3_server:app --host 0.0.0.0 --port 8080
-```
-
-### 5. Use the API
-
-With the tunnel active, your teammate can hit all endpoints from their machine:
-
-| Endpoint | Purpose | Latency |
-|----------|---------|---------|
-| `GET /health` | Health check | instant |
-| `POST /segment` | Single-shot segmentation (image + text) | ~300ms |
-| `POST /track/start` | Start tracking session (first frame + text) | ~300ms |
-| `POST /track/frame` | Send subsequent frames (fast propagation) | ~30-50ms |
-| `POST /track/stop` | Close session, free GPU memory | instant |
-
-Example test:
-
-```bash
-curl -X POST http://localhost:8080/segment \
-  -F image=@photo.jpg \
-  -F text="coffee mug"
-```
-
----
-
-## Alternative: Open port 8080 directly (less secure)
-
-If you'd rather skip the SSH tunnel and expose the API directly (e.g., for a frontend calling it), you'd need to open the firewall:
-
-```bash
-sudo ufw allow 8080/tcp
-```
-
-But this means **anyone** on the internet can hit your GPU server with no authentication. Only do this temporarily for a hackathon/demo, and close it after.
-
----
-
-## Quick-Reference Card for Your Teammate
-
-```
-1.  Send your SSH public key to [you]
-2.  ssh -L 8080:localhost:8080 shadeform@216.81.245.40
-3.  curl http://localhost:8080/health   (verify it works)
-4.  Start building against the API at localhost:8080
-```
-
-Let me know if you want me to add a new key for a specific teammate, or if you'd prefer to open port 8080 directly instead of using the tunnel.
-
 ## License
 
-This project is for internal and educational use. See individual service documentation for third-party licensing terms (Ultralytics YOLOv8, Meta SAM 2/3, Grounding DINO, DINOv2, NVIDIA NIM, Anthropic Claude).
+This project is for internal and educational use. See individual service documentation for third-party licensing terms (Meta SAM 2/3, Grounding DINO, NVIDIA NIM, Anthropic Claude).

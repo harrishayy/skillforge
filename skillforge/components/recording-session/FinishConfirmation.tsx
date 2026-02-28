@@ -29,14 +29,19 @@ export function FinishConfirmation({
       setCountdown((prev) => {
         if (prev <= 1) {
           clearInterval(interval);
-          onCancel();
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [visible, timeoutSeconds, onCancel]);
+  }, [visible, timeoutSeconds]);
+
+  useEffect(() => {
+    if (visible && countdown === 0) {
+      onCancel();
+    }
+  }, [visible, countdown, onCancel]);
 
   return (
     <AnimatePresence>

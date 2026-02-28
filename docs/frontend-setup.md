@@ -67,8 +67,6 @@ pnpm lint         # run ESLint
 | Fabric.js | 6 | Canvas-based annotation editor |
 | Framer Motion | 11 | Animations and transitions |
 | MediaPipe Tasks Vision | 0.10 | On-device hand tracking |
-| Socket.io Client | 4 | Real-time communication |
-| React DnD | 16 | Drag and drop in the editor |
 
 ---
 
@@ -77,14 +75,13 @@ pnpm lint         # run ESLint
 | Path | Area | Description |
 |---|---|---|
 | `/` | Home | Landing page with role selection |
-| `/record` | Expert | Screen / webcam recording interface |
+| `/record` | Recording | Mode selection (software / hardware) |
+| `/record/setup` | Recording | Title and description entry before recording |
+| `/record/session` | Recording | Live webcam recording session with voice commands |
 | `/workflows` | Expert | List of expert workflows |
 | `/editor/[workflowId]` | Expert | Annotation and step editor |
 | `/library` | Trainee | Browse available workflows |
 | `/learn/[workflowId]` | Trainee | Interactive learning view with overlays and copilot |
-| `/tasks` | Physical | Browse physical apprenticeship tasks |
-| `/capture` | Physical | Upload physical demonstration video |
-| `/guide/[id]` | Physical | Live guided session with AR overlays |
 | `/live` | Live | Standalone camera detection (no workflow needed) |
 
 ---
@@ -96,14 +93,14 @@ skillforge/
 ├── app/                         # Next.js App Router
 │   ├── (expert)/                # Expert route group
 │   │   ├── editor/[workflowId]/ # Workflow annotation editor
-│   │   ├── record/              # Recording interface
 │   │   └── workflows/           # Workflow list
 │   ├── (trainee)/               # Trainee route group
 │   │   ├── learn/[workflowId]/  # Interactive learning
 │   │   └── library/             # Workflow browser
-│   ├── (physical)/              # Physical apprenticeship routes
+│   ├── record/                  # Recording flow
+│   │   ├── (select)/            # Mode selection
+│   │   └── (expert)/            # Setup + live recording session
 │   ├── live/                    # Live camera detection
-│   ├── api/health/              # Next.js health check API route
 │   ├── layout.tsx               # Root layout
 │   ├── page.tsx                 # Home page
 │   └── globals.css              # Global styles and CSS variables
@@ -114,21 +111,29 @@ skillforge/
 │   ├── live-detect/             # Live detection sidebar and overlays
 │   ├── pipeline/                # Pipeline progress display
 │   ├── player/                  # Video player with annotations
-│   ├── recording/               # Recording controls
+│   ├── recording/               # Recording controls and pipeline status
+│   ├── recording-session/       # Session UI (control bar, step history, toolbar)
 │   ├── shared/                  # Reusable components
 │   └── ui/                      # Primitives (buttons, inputs, etc.)
 ├── hooks/                       # React hooks
-│   ├── useCameraStream.ts       # Camera stream management
+│   ├── useWebcamRecorder.ts     # Webcam recording with snapshot/pause/resume
+│   ├── useScreenRecorder.ts     # Screen recording
+│   ├── useVoiceCommands.ts      # Speech recognition voice commands
+│   ├── useMediaPipeDetect.ts    # On-device MediaPipe detection
 │   ├── useLiveDetect.ts         # WebSocket live detection
 │   ├── useSam3Detect.ts         # HTTP SAM 3 segmentation
-│   ├── useMediaPipeDetect.ts    # On-device MediaPipe detection
 │   ├── useARStream.ts           # AR pipeline WebSocket
 │   ├── useCopilotChat.ts        # Claude copilot chat
-│   └── useScreenRecorder.ts     # Screen recording
+│   ├── useCameraStream.ts       # Camera stream management
+│   └── useWorkflowSocket.ts     # Pipeline progress WebSocket
 ├── lib/                         # Utilities
+│   ├── api-client.ts            # API client functions
 │   ├── constants.ts             # API and WebSocket URL definitions
-│   └── ...                      # API clients, helpers
+│   └── ...                      # Helpers and utilities
 ├── store/                       # Zustand state stores
+│   ├── workflow-store.ts        # Workflow and editor state
+│   ├── player-store.ts          # Video player state
+│   └── toast-store.ts           # Error toast notifications
 ├── types/                       # TypeScript type definitions
 └── backend/                     # AR WebSocket server (separate process)
 ```
@@ -154,7 +159,6 @@ The frontend opens several WebSocket connections to different backend servers:
 | Endpoint | Backend | Purpose |
 |---|---|---|
 | `/ws/pipeline/{workflowId}` | API Server (8000) | Real-time pipeline progress events |
-| `/ws/live/{sessionId}` | API Server (8000) | Live session events during guided tasks |
 | `/ws/live/detect` | AR Server (8001) | Real-time hand detection in VIDEO mode |
 | `/ws/ar` | AR Server (8001) | AR camera stream (phone to laptop) |
 
@@ -164,5 +168,5 @@ The live detection page (`/live`) supports a hybrid approach:
 
 - **MediaPipe** runs on-device in the browser via `@mediapipe/tasks-vision` — no backend call needed.
 - **SAM 3** sends frames to the API server via HTTP (`/api/live/detect-frame`), which forwards to the remote SAM 3 GPU server.
-- **YOLO / Custom** send frames to the API server via HTTP for server-side inference.
+- **Custom** sends frames to the API server via HTTP for Grounding DINO or Claude-based detection.
 - **Hand tracking over WebSocket** sends frames to the AR WebSocket server for MediaPipe VIDEO mode with cross-frame tracking.

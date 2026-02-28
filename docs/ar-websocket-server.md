@@ -18,7 +18,7 @@ The main API server (`skillforge-api/`) also has a `/api/live/detect-frame` endp
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.10+
 - `uv` (recommended) or `pip`
 
 ---
