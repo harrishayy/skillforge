@@ -24,7 +24,7 @@ cp .env.example .env
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `DATABASE_URL` | No | *(SQLite)* | Neon PostgreSQL connection string. When unset, a local `skillforge.db` SQLite file is used |
+| `DATABASE_URL` | **Yes** | — | Neon PostgreSQL connection string (`postgresql://...`) |
 
 Example:
 
@@ -87,4 +87,4 @@ To run SkillForge with the least configuration:
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Everything else uses local fallbacks (SQLite, local file storage, Claude Vision for detection). No cloud infrastructure required.
+Everything else uses local fallbacks (local file storage, Claude Vision for detection). No cloud infrastructure required beyond Neon.

@@ -41,8 +41,7 @@ Interactive API docs are available at [http://localhost:8000/docs](http://localh
 
 ## Database
 
-- **Development** — SQLite (`skillforge.db`), used automatically when `DATABASE_URL` is unset.
-- **Production** — Neon PostgreSQL, set `DATABASE_URL=postgresql://...`.
+- Neon PostgreSQL — set `DATABASE_URL=postgresql://...` in `.env`.
 - Tables are created automatically on first startup — no manual migrations needed.
 
 ### Setting up Neon PostgreSQL
