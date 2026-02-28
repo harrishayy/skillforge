@@ -8,6 +8,7 @@ import { useARStream } from "@/hooks/useARStream";
 import { useMicLevel } from "@/hooks/useMicLevel";
 import { useLiveDetect, type DetectMode, type DetectionResult } from "@/hooks/useLiveDetect";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
+import { useDoubleTapDetection } from "@/hooks/useDoubleTapDetection";
 import { computePinchState } from "@/lib/pinch-detection";
 import { CameraFeed } from "@/components/camera/CameraFeed";
 import { DetectorSidebar } from "@/components/live-detect/DetectorSidebar";
@@ -86,6 +87,20 @@ export default function LiveDetectPage() {
       : null;
 
   const pinchState = computePinchState(result?.hands ?? null);
+
+  const skipForward = useCallback(() => {
+    // Placeholder: wire to next step when integrated (e.g. learn page)
+    console.log("Skip forward (next step)");
+  }, []);
+  const skipBackward = useCallback(() => {
+    // Placeholder: wire to previous step when integrated (e.g. learn page)
+    console.log("Skip backward (previous step)");
+  }, []);
+
+  useDoubleTapDetection(
+    isActive && modes.has("hands") ? result?.hands ?? null : null,
+    { onSkipForward: skipForward, onSkipBackward: skipBackward }
+  );
 
   const renderLoop = useCallback(() => {
     const video = videoRef.current;
