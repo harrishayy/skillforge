@@ -1,0 +1,65 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "SSH Tunnel",
+      "type": "shell",
+      "command": "ssh -L 8080:localhost:8080 sam3-server",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "ngrok",
+      "type": "shell",
+      "command": "ngrok http 127.0.0.1:3000",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Clean Next.js lock",
+      "type": "shell",
+      "command": "Remove-Item -Path .next/dev/lock -Force -ErrorAction SilentlyContinue; npx --yes kill-port 3000 3001",
+      "options": {
+        "cwd": "${workspaceFolder}/skillforge"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "skillforge dev",
+      "type": "shell",
+      "command": "pnpm dev",
+      "dependsOn": ["Clean Next.js lock"],
+      "options": {
+        "cwd": "${workspaceFolder}/skillforge",
+        "env": {}
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "skillforge backend",
+      "type": "shell",
+      "command": ". .venv\\Scripts\\Activate.ps1; uv run uvicorn main:app --host 0.0.0.0 --port 8001",
+      "options": {
+        "cwd": "${workspaceFolder}/skillforge/backend"
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "skillforge-api",
+      "type": "shell",
+      "command": "uv run uvicorn main:app --reload --port 8000",
+      "options": {
+        "cwd": "${workspaceFolder}/skillforge-api"
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Start All",
+      "dependsOn": ["SSH Tunnel", "ngrok", "skillforge dev", "skillforge backend", "skillforge-api"],
+      "dependsOrder": "parallel"
+    }
+  ]
+}

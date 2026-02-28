@@ -10,7 +10,7 @@ import json
 import asyncio
 import time
 from models.database import execute, new_id, now_ms
-from websockets.pipeline_ws import broadcast
+from app_ws.pipeline_ws import broadcast
 from services.video_processor import extract_frames, get_video_duration_ms
 from services.nemotron_client import analyze_frames_batch
 from services.claude_orchestrator import decompose_workflow

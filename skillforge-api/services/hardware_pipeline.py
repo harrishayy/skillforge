@@ -13,7 +13,7 @@ import json
 import asyncio
 from pathlib import Path
 from models.database import execute, new_id, now_ms
-from websockets.pipeline_ws import broadcast
+from app_ws.pipeline_ws import broadcast
 from services.video_processor import extract_frames, get_video_duration_ms
 from services.sam3_service import segment_with_context
 

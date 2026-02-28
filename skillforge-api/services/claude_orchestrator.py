@@ -8,7 +8,7 @@ import os
 import json
 import anthropic
 from models.database import execute, fetchall, new_id, now_ms
-from websockets.pipeline_ws import broadcast
+from app_ws.pipeline_ws import broadcast
 from utils.event_mapper import events_to_summary
 
 ORCHESTRATOR_TOOLS = [
