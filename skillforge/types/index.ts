@@ -183,6 +183,16 @@ export interface RegenerateStepResponse {
   step: Step;
 }
 
+// ─── Subtitles ────────────────────────────────────────────────────────────────
+
+export interface SubtitleSegment {
+  id: string;
+  step_id: string;
+  start_ms: number;
+  end_ms: number;
+  text: string;
+}
+
 // ─── Player State ─────────────────────────────────────────────────────────────
 
 export interface PlayerState {

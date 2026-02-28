@@ -100,11 +100,20 @@ _CREATE_STATEMENTS = [
     progress    INTEGER DEFAULT 0,
     created_at  BIGINT NOT NULL
 )""",
+    """CREATE TABLE IF NOT EXISTS subtitles (
+    id         TEXT PRIMARY KEY,
+    step_id    TEXT NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
+    start_ms   INTEGER NOT NULL,
+    end_ms     INTEGER NOT NULL,
+    text       TEXT NOT NULL,
+    created_at REAL DEFAULT (strftime('%s', 'now') * 1000)
+)""",
     "CREATE INDEX IF NOT EXISTS idx_steps_workflow ON steps(workflow_id, step_number)",
     "CREATE INDEX IF NOT EXISTS idx_annotations_step ON annotations(step_id)",
     "CREATE INDEX IF NOT EXISTS idx_click_targets_step ON click_targets(step_id)",
     "CREATE INDEX IF NOT EXISTS idx_step_frames_step ON step_frames(step_id, timestamp_ms)",
     "CREATE INDEX IF NOT EXISTS idx_pipeline_logs_workflow ON pipeline_logs(workflow_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_subtitles_step ON subtitles(step_id, start_ms)",
 ]
 
 # Keep for aiosqlite executescript (needs a single string)
@@ -186,6 +195,7 @@ async def _init_sqlite():
             await db.execute("ALTER TABLE workflows ADD COLUMN published INTEGER DEFAULT 0")
         except Exception:
             pass
+        # subtitles table — created via CREATE TABLE IF NOT EXISTS above, no migration needed
         await db.commit()
     print(f"[DB] Using SQLite at {DB_PATH}")
 

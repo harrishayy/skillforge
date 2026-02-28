@@ -34,6 +34,7 @@ export function useVoiceCommands({
   const transcriptRef = useRef<string>("");
   const [isListening, setIsListening] = useState(false);
   const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
+  const [liveTranscript, setLiveTranscript] = useState<string>("");
 
   const onNextStepRef = useRef(onNextStep);
   const onFinishRef = useRef(onFinish);
@@ -132,6 +133,7 @@ export function useVoiceCommands({
     recognition.onresult = (event: any) => {
       let final = "";
       let hasFinal = false;
+      let interim = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const text = event.results[i][0].transcript.toLowerCase().trim();
         const isFinal = event.results[i].isFinal;
@@ -139,10 +141,13 @@ export function useVoiceCommands({
           final += text + " ";
           stepTranscript += text + " ";
           hasFinal = true;
+        } else {
+          interim += text + " ";
         }
       }
 
       transcriptRef.current = stepTranscript;
+      setLiveTranscript((stepTranscript + interim).trim());
 
       // Only run the command matcher on finalised results — ignoring interim
       // transcripts prevents ambient speech and partial phrases from triggering
@@ -168,6 +173,7 @@ export function useVoiceCommands({
   const snapshotTranscript = useCallback((): string => {
     const t = transcriptRef.current.trim();
     transcriptRef.current = "";
+    setLiveTranscript("");
     return t;
   }, []);
 
@@ -179,5 +185,5 @@ export function useVoiceCommands({
         ? "listening"
         : "starting";
 
-  return { isListening, snapshotTranscript, status, unavailableReason };
+  return { isListening, snapshotTranscript, status, unavailableReason, liveTranscript };
 }

@@ -20,6 +20,7 @@ from routers.live_detect import router as live_detect_router
 from routers.guided_recording import router as guided_recording_router
 from routers.voice import router as voice_router
 from routers.asr import router as asr_router
+from routers.subtitles import router as subtitles_router
 
 
 @asynccontextmanager
@@ -62,6 +63,7 @@ app.include_router(asr_router)
 
 app.include_router(live_detect_router)
 app.include_router(guided_recording_router)
+app.include_router(subtitles_router)
 
 
 @app.get("/api/health")

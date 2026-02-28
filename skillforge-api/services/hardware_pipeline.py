@@ -16,6 +16,7 @@ from models.database import execute, new_id, now_ms
 from websockets.pipeline_ws import broadcast
 from services.video_processor import extract_frames, get_video_duration_ms
 from services.sam3_service import segment_with_context
+from services.subtitle_service import generate_subtitles
 
 UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
 
@@ -167,6 +168,13 @@ async def run_hardware_pipeline(
                             )
                 except Exception as e:
                     print(f"[HardwarePipeline] SAM3 auto-segment failed for step {step_num}: {e}")
+
+            # Generate and store subtitle segments from the step transcript
+            try:
+                await generate_subtitles(step_id, sd["transcript"], sd["duration_ms"])
+                print(f"[HardwarePipeline] [Step {step_num}] Subtitles generated")
+            except Exception as e:
+                print(f"[HardwarePipeline] Subtitle generation failed for step {step_num}: {e}")
 
             await broadcast(workflow_id, {
                 "type": "step_created",

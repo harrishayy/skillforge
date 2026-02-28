@@ -7,6 +7,7 @@ import type {
   ClickTarget,
   RegenerateStepResponse,
   SegmentPointResponse,
+  SubtitleSegment,
 } from "@/types";
 
 class ApiError extends Error {
@@ -245,6 +246,13 @@ export async function classifyVoiceIntent(transcript: string): Promise<VoiceInte
     body: JSON.stringify({ transcript }),
   });
   return data.intent;
+}
+
+// ─── Subtitles ────────────────────────────────────────────────────────────────
+
+export async function getStepSubtitles(stepId: string): Promise<SubtitleSegment[]> {
+  const data = await apiFetch<{ subtitles: SubtitleSegment[] }>(`/api/steps/${stepId}/subtitles`);
+  return data.subtitles;
 }
 
 export { ApiError };

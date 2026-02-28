@@ -2,8 +2,10 @@
 import { useRef, useEffect } from "react";
 import type { Step } from "@/types";
 import { OverlayCanvas } from "./OverlayCanvas";
+import { SubtitleOverlay } from "@/components/subtitles/SubtitleOverlay";
 import { videoUrl } from "@/lib/constants";
 import { usePlayerStore } from "@/store/player-store";
+import { useSubtitles } from "@/hooks/useSubtitles";
 
 interface VideoWithOverlayProps {
   videoPath: string;
@@ -19,7 +21,9 @@ export function VideoWithOverlay({
   onStepChange,
 }: VideoWithOverlayProps) {
   const videoRef = useRef<HTMLVideoElement>(null!);
-  const { setIsPlaying } = usePlayerStore();
+  const { setIsPlaying, currentStepIndex } = usePlayerStore();
+  const currentStepId = steps[currentStepIndex]?.id ?? null;
+  const currentSubtitle = useSubtitles(currentStepId, videoRef);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -51,6 +55,7 @@ export function VideoWithOverlay({
         workflowId={workflowId}
         onStepChange={onStepChange}
       />
+      <SubtitleOverlay currentSubtitle={currentSubtitle} />
     </div>
   );
 }

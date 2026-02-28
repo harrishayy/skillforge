@@ -23,6 +23,7 @@ import { StepHistoryPanel, type CompletedStep } from "@/components/recording-ses
 import { HelpAndChatPanel } from "@/components/recording-session/HelpAndChatPanel";
 import { StepSavedToast } from "@/components/recording-session/StepSavedToast";
 import { FinishConfirmation } from "@/components/recording-session/FinishConfirmation";
+import { LiveSubtitleBar } from "@/components/subtitles/LiveSubtitleBar";
 
 type SessionState = "mounting" | "recovering" | "recording" | "confirming_finish" | "uploading" | "processing";
 
@@ -495,6 +496,11 @@ export default function RecordingSessionPage() {
         ref={canvasRef}
         className="absolute inset-0 w-full h-full pointer-events-none"
       />
+
+      {/* Live subtitle bar — shown while recording */}
+      {isRecordingActive && (
+        <LiveSubtitleBar liveTranscript={voice.liveTranscript} />
+      )}
 
       {/* Mounting overlay */}
       {sessionState === "mounting" && (

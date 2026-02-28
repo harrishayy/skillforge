@@ -194,6 +194,14 @@ class FrameAnalysisResponse(BaseModel):
     hand_data: Optional[dict] = None
 
 
+class SubtitleSegmentResponse(BaseModel):
+    id: str
+    step_id: str
+    start_ms: int
+    end_ms: int
+    text: str
+
+
 class PipelineLogEvent(BaseModel):
     type: Literal["pipeline_log"] = "pipeline_log"
     stage: str
