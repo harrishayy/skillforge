@@ -56,8 +56,8 @@ export function useCameraRoomViewer({
     }
 
     // When the viewer runs on the laptop at localhost, connect to localhost:8001 so the
-    // backend's localhost certificate is accepted. NEXT_PUBLIC_WS_HOST (LAN IP) would
-    // cause a cert mismatch and connection failure.
+    // viewer uses the local AR server. When using ngrok, the page origin is the ngrok URL
+    // so no override; NEXT_PUBLIC_WS_HOST (the AR tunnel host) is used.
     const hostOverride =
       typeof window !== "undefined" && window.location.hostname === "localhost"
         ? "localhost:8001"

@@ -1,9 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Allow dev server to serve when opened via LAN IP (e.g. phone loading from laptop's IP)
-  // Next may match origin by host; include both full origin and bare host for compatibility.
+  // Allow dev server to serve when opened via LAN IP or ngrok. Add your ngrok origin if it changes.
   allowedDevOrigins: [
+    "https://phytocidal-unsquabbling-joshua.ngrok-free.dev",
+    "phytocidal-unsquabbling-joshua.ngrok-free.dev",
     "http://192.168.114.254:3000",
     "https://192.168.114.254:3000",
     "192.168.114.254",
@@ -25,6 +26,10 @@ const nextConfig: NextConfig = {
       {
         source: "/api/python/:path*",
         destination: "http://localhost:8000/api/:path*",
+      },
+      {
+        source: "/ws/:path*",
+        destination: "http://localhost:8001/ws/:path*",
       },
     ];
   },

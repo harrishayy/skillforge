@@ -4,4 +4,4 @@ Next.js web application for SkillForge — recording, editing, learning, and liv
 
 See **[Frontend Setup](../docs/frontend-setup.md)** for installation, running, routes, and architecture.
 
-For using the phone as a camera source over Wi‑Fi, see **[Development over HTTPS (phone camera)](../docs/dev-https-phone-camera.md)**.
+For using the phone as a camera source ("Use phone as camera" on `/live`), see **[Phone as camera (ngrok)](../docs/phone-camera-ngrok.md)**. If ngrok gives you only one URL, use the single-URL (Next.js rewrites) flow in that doc.

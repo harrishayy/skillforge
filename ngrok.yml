@@ -1,0 +1,13 @@
+# When using --config, ngrok only reads this file (not your default config).
+# So either set the env var before running:
+#   PowerShell: $env:NGROK_AUTHTOKEN="your-token"
+#   CMD: set NGROK_AUTHTOKEN=your-token
+# Or add below: authtoken: your-token-from-https://dashboard.ngrok.com/get-started/your-authtoken
+version: "2"
+tunnels:
+  app:
+    addr: 3000
+    proto: http
+  ar:
+    addr: 8001
+    proto: http

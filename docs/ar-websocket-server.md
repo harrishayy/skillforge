@@ -52,42 +52,7 @@ uvicorn main:app --host 0.0.0.0 --port 8001
 
 Run on a different port than the main API server (default 8000). The frontend expects this server on port 8001 by default.
 
-### Running over HTTPS (WSS) for phone camera
-
-Mobile browsers often require a secure context (HTTPS) for camera access. When the Next.js app is served over HTTPS, the frontend uses **WSS** to connect to this server. If the server only accepts plain WS, you will see "Invalid HTTP request received" in the server log and the camera feed will not reach the viewer.
-
-**Option A — Use Next.js dev certs (simplest):** After running `npm run dev:https` once in `skillforge/`, certs are created in `skillforge/certificates/`. Run the AR server with SSL:
-
-```bash
-cd skillforge/backend
-uv run python run_https.py
-```
-
-Or explicitly:
-
-```bash
-uv run uvicorn main:app --host 0.0.0.0 --port 8001 --ssl-keyfile=../certificates/localhost-key.pem --ssl-certfile=../certificates/localhost.pem
-```
-
-**Option B — Generate your own certs** (e.g. to match your LAN IP in the cert):
-
-1. Generate a self-signed certificate (e.g. in `skillforge/backend`):
-
-   ```bash
-   openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"
-   ```
-
-   For LAN access you can use your machine's IP: `-subj "/CN=192.168.1.5"` (replace with your LAN IP). The phone will show a certificate warning; accept it once.
-
-2. Run the server with SSL:
-
-   ```bash
-   uv run uvicorn main:app --host 0.0.0.0 --port 8001 --ssl-keyfile=key.pem --ssl-certfile=cert.pem
-   ```
-
-3. Set `NEXT_PUBLIC_APP_URL=https://<LAN-IP>:3000` and `NEXT_PUBLIC_WS_HOST=<LAN-IP>:8001` in the Next.js app's `.env.local`. The frontend will use `wss://` for the camera room when the app URL is HTTPS.
-
-4. Ensure your firewall allows inbound connections on port 8001.
+For using your phone as a camera source ("Use phone as camera" on `/live`), the phone needs HTTPS/WSS. Use [ngrok](phone-camera-ngrok.md) to expose this server and the Next.js app; run this backend with plain HTTP above and start the ngrok tunnels from the repo root.
 
 ---
 
