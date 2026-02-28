@@ -64,7 +64,7 @@ export default function EditorPage() {
           ← Workflows
         </Link>
         <h1 className="text-sm font-bold" style={{ color: "var(--sf-white)" }}>{workflow.title}</h1>
-        <TaskTypeBadge mode={workflow.mode} />
+        <TaskTypeBadge />
         <span className="ml-auto text-xs" style={{ color: "#555" }}>
           {workflow.steps.length} steps · Double-click step titles to rename
         </span>

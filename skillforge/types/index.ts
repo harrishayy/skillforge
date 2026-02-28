@@ -1,6 +1,6 @@
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
-export type TaskMode = "software" | "hardware";
+export type TaskMode = "hardware";
 export type WorkflowStatus = "processing" | "ready" | "failed";
 export type AnnotationType = "bounding_box" | "arrow" | "highlight" | "text_label";
 export type InputEventType = "click" | "keypress" | "scroll" | "drag";

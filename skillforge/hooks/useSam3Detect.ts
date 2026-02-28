@@ -32,7 +32,7 @@ export function useSam3Detect({
   videoRef,
   textPrompt,
   intervalMs,
-  confidenceThreshold = 0.35,
+  confidenceThreshold = 0.2,
   enabled,
   onResult,
 }: UseSam3DetectOptions) {
@@ -53,14 +53,12 @@ export function useSam3Detect({
       frameCanvasRef.current = document.createElement("canvas");
     }
     const fc = frameCanvasRef.current;
-    const maxWidth = 640;
-    const scale = Math.min(1, maxWidth / video.videoWidth);
-    fc.width = Math.round(video.videoWidth * scale);
-    fc.height = Math.round(video.videoHeight * scale);
+    fc.width = video.videoWidth;
+    fc.height = video.videoHeight;
     const ctx = fc.getContext("2d");
     if (!ctx) return;
-    ctx.drawImage(video, 0, 0, fc.width, fc.height);
-    const dataUrl = fc.toDataURL("image/jpeg", 0.6);
+    ctx.drawImage(video, 0, 0);
+    const dataUrl = fc.toDataURL("image/jpeg", 0.7);
     const frame_base64 = dataUrl.split(",")[1];
     if (!frame_base64 || !textPromptRef.current) return;
 

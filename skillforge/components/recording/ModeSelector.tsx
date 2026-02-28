@@ -1,12 +1,12 @@
 "use client";
 import { motion } from "framer-motion";
-import type { TaskMode } from "@/types";
+import Link from "next/link";
 
 interface ModeSelectorProps {
-  onSelect: (mode: TaskMode) => void;
+  onExpertSelect: () => void;
 }
 
-export function ModeSelector({ onSelect }: ModeSelectorProps) {
+export function ModeSelector({ onExpertSelect }: ModeSelectorProps) {
   return (
     <div className="flex flex-col items-center gap-8">
       <div>
@@ -14,10 +14,10 @@ export function ModeSelector({ onSelect }: ModeSelectorProps) {
           className="font-black text-center mb-2"
           style={{ fontSize: "2rem", letterSpacing: "-0.04em", color: "var(--sf-black)" }}
         >
-          Choose Recording Mode
+          What would you like to do?
         </h2>
         <p className="text-center text-sm" style={{ color: "var(--sf-gray)" }}>
-          Select what type of task you are recording for trainees
+          Record an expert workflow or learn from existing recordings
         </p>
       </div>
 
@@ -25,49 +25,47 @@ export function ModeSelector({ onSelect }: ModeSelectorProps) {
         className="grid grid-cols-2 w-full max-w-2xl rounded-2xl overflow-hidden"
         style={{ border: "1px solid var(--sf-black)" }}
       >
-        <ModeCard
-          mode="software"
-          icon="💻"
-          title="Software Task"
-          description="Record your screen with keyboard and mouse tracking. Best for software tools, workflows, and digital processes."
+        <RoleCard
+          icon="🎬"
+          title="Expert Recording Video"
+          description="Record a task via webcam with hand tracking and object detection. AI builds an annotated workflow automatically."
           bg="var(--sf-purple)"
-          onSelect={() => onSelect("software")}
+          onClick={onExpertSelect}
         />
-        <ModeCard
-          mode="hardware"
-          icon="🔧"
-          title="Hardware Task"
-          description="Record via webcam with hand tracking. Best for physical assembly, lab work, and hands-on procedures."
-          bg="var(--sf-yellow)"
-          onSelect={() => onSelect("hardware")}
-          borderLeft
-        />
+        <Link href="/library" className="block">
+          <RoleCard
+            icon="🎓"
+            title="Learning Trainee Video"
+            description="Browse and watch expert recordings with live AI annotations, bounding boxes, and a Claude copilot guide."
+            bg="var(--sf-lime)"
+            borderLeft
+          />
+        </Link>
       </div>
     </div>
   );
 }
 
-function ModeCard({
+function RoleCard({
   icon,
   title,
   description,
   bg,
-  onSelect,
+  onClick,
   borderLeft,
 }: {
-  mode: TaskMode;
   icon: string;
   title: string;
   description: string;
   bg: string;
-  onSelect: () => void;
+  onClick?: () => void;
   borderLeft?: boolean;
 }) {
   return (
     <motion.button
-      onClick={onSelect}
+      onClick={onClick}
       whileTap={{ scale: 0.98 }}
-      className="flex flex-col items-start gap-4 p-8 text-left cursor-pointer transition-opacity hover:opacity-90"
+      className="flex flex-col items-start gap-4 p-8 text-left cursor-pointer transition-opacity hover:opacity-90 h-full"
       style={{
         backgroundColor: bg,
         color: "var(--sf-black)",

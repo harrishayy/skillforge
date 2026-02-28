@@ -132,7 +132,7 @@ export default function LearnPage() {
               ← Library
             </Link>
             <h1 className="text-sm font-bold" style={{ color: "var(--sf-white)" }}>{workflow.title}</h1>
-            <TaskTypeBadge mode={workflow.mode} />
+            <TaskTypeBadge />
           </div>
 
           <div className="flex-1 min-h-0">

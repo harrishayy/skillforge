@@ -12,9 +12,10 @@ import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
 import { useDoubleTapDetection } from "@/hooks/useDoubleTapDetection";
 import { useVoiceCommands } from "@/hooks/useVoiceCommands";
 import { computePinchState } from "@/lib/pinch-detection";
-import { CameraFeed } from "@/components/camera/CameraFeed";
 import { DetectorSidebar } from "@/components/live-detect/DetectorSidebar";
 import { PinchIndicator } from "@/components/live-detect/PinchIndicator";
+import { ImmersiveOverlay } from "@/components/live-detect/ImmersiveOverlay";
+import type { OverlayPanels } from "@/components/live-detect/ImmersiveToolbar";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
 
 const SAM3_COLORS = [
@@ -44,6 +45,16 @@ export default function LiveDetectPage() {
   const [fps, setFps] = useState(0);
   const [sam3IntervalMs, setSam3IntervalMs] = useState(500);
   const [arStreamEnabled, setArStreamEnabled] = useState(false);
+  const [isImmersive, setIsImmersive] = useState(true);
+  const [overlayPanels, setOverlayPanels] = useState<OverlayPanels>({
+    options: true,
+    chat: true,
+    stats: true,
+  });
+
+  const toggleOverlayPanel = useCallback((panel: keyof OverlayPanels) => {
+    setOverlayPanels((prev) => ({ ...prev, [panel]: !prev[panel] }));
+  }, []);
 
   const { videoRef, isActive, error, start, stop } = useCameraStream();
   const { connectionStatus: arConnectionStatus, lastAckTs: arLastAckTs } = useARStream({
@@ -78,7 +89,7 @@ export default function LiveDetectPage() {
     intervalMs: sam3IntervalMs,
     enabled: isActive && modes.has("sam3") && textPrompt.length > 0,
     onResult: (r: Sam3Result) => {
-      setSam3Result(r);
+      if (r.sam3_segments.length > 0) setSam3Result(r);
       setHasReceivedResult(true);
       const cache = sam3MaskCacheRef.current;
       for (const seg of r.sam3_segments ?? []) {
@@ -122,14 +133,12 @@ export default function LiveDetectPage() {
     const now = Date.now();
     if (now - lastSkipRewindAtRef.current < SKIP_REWIND_COOLDOWN_MS) return;
     lastSkipRewindAtRef.current = now;
-    // Placeholder: wire to next step when integrated (e.g. learn page)
     console.log("Skipping step");
   }, []);
   const skipBackward = useCallback(() => {
     const now = Date.now();
     if (now - lastSkipRewindAtRef.current < SKIP_REWIND_COOLDOWN_MS) return;
     lastSkipRewindAtRef.current = now;
-    // Placeholder: wire to previous step when integrated (e.g. learn page)
     console.log("Rewinding step");
   }, []);
 
@@ -179,7 +188,6 @@ export default function LiveDetectPage() {
         }
       }
 
-      // SAM3 segmentation masks
       if (result.sam3_segments?.length) {
         const maskCache = sam3MaskCacheRef.current;
         result.sam3_segments.forEach((seg, i) => {
@@ -188,7 +196,6 @@ export default function LiveDetectPage() {
             ctx.save();
             ctx.globalAlpha = 0.55;
             ctx.globalCompositeOperation = "source-over";
-            // Draw the mask as a tinted overlay
             const offscreen = document.createElement("canvas");
             offscreen.width = canvas.width;
             offscreen.height = canvas.height;
@@ -201,7 +208,6 @@ export default function LiveDetectPage() {
             ctx.restore();
           }
 
-          // Bounding box + label
           const [bx1, by1, bx2, by2] = seg.bbox;
           const sx = bx1 * canvas.width, sy = by1 * canvas.height;
           const sw = (bx2 - bx1) * canvas.width, sh = (by2 - by1) * canvas.height;
@@ -258,9 +264,28 @@ export default function LiveDetectPage() {
     }
   }, [isActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isImmersive) {
+        setIsImmersive(false);
+      }
+      if (
+        e.key === "f" &&
+        isActive &&
+        !isImmersive &&
+        !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)
+      ) {
+        setIsImmersive(true);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isActive, isImmersive]);
+
   const handleStop = () => {
     stop();
     stopMic();
+    setIsImmersive(false);
     setMpResult(null);
     setSam3Result(null);
     sam3MaskCacheRef.current.clear();
@@ -273,77 +298,136 @@ export default function LiveDetectPage() {
     ...(modes.has("sam3") && textPrompt ? [{ label: `SAM3: ${textPrompt}`, color: "rgba(168,85,247,0.8)" }] : []),
   ];
 
-  return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: "var(--sf-black)", color: "var(--sf-white)" }}>
-      {/* Header */}
-      <header
-        className="px-6 py-3 flex items-center gap-4 shrink-0"
-        style={{ borderBottom: "1px solid #222" }}
-      >
-        <Link
-          href="/"
-          className="text-sm font-medium transition-colors"
-          style={{ color: "#777" }}
-          onMouseEnter={e => (e.currentTarget.style.color = "var(--sf-orange)")}
-          onMouseLeave={e => (e.currentTarget.style.color = "#777")}
-        >
-          ← Home
-        </Link>
-        <span style={{ color: "#333" }}>|</span>
-        <div className="flex items-center gap-2">
-          <span
-            className="w-2 h-2 rounded-full"
-            style={{ backgroundColor: isActive ? "var(--sf-lime)" : "#444" }}
-          />
-          <span className="text-sm font-bold" style={{ color: isActive ? "var(--sf-white)" : "#777" }}>
-            Live Camera Detection
-          </span>
-          {isActive && (
-            <span
-              className="text-xs px-2 py-0.5 rounded-full font-bold animate-pulse"
-              style={{ backgroundColor: "var(--sf-lime)", color: "var(--sf-black)" }}
-            >
-              LIVE
+  const sidebarProps = {
+    modes,
+    onToggleMode: toggleMode,
+    textPrompt,
+    onTextPromptChange: setTextPrompt,
+    isRunning: isActive,
+    mpLoading,
+    sam3IntervalMs,
+    onSam3IntervalChange: setSam3IntervalMs,
+    stats: {
+      handCount: result?.hands?.hand_count ?? 0,
+      sam3Count: result?.sam3_segments?.length ?? 0,
+      hasReceivedResult,
+    },
+    micLevel,
+    hasMic,
+    arStreamEnabled,
+    onARStreamToggle: setArStreamEnabled,
+    arConnectionStatus,
+    arLastAckTs,
+  };
+
+  const immersiveActive = isImmersive && isActive;
+
+  const statsBar = (
+    <div className="flex items-center gap-4 flex-wrap">
+      <div className="flex items-center gap-3 flex-wrap">
+        <p className="text-xs" style={{ color: immersiveActive ? "rgba(255,255,255,0.6)" : "#555" }}>
+          {[
+            modes.has("hands") && "Hands: real-time",
+            modes.has("sam3") && `SAM3: every ${sam3IntervalMs}ms`,
+          ].filter(Boolean).join(" · ")}
+          {" · "}{fps} render fps
+          {arStreamEnabled && (
+            <span className="ml-2">
+              · AR: {arConnectionStatus === "open" ? "connected" : arConnectionStatus === "connecting" ? "connecting…" : arConnectionStatus === "error" ? "error" : "disconnected"}
+              {arLastAckTs != null && " · Pose received"}
             </span>
           )}
-        </div>
-        {isActive && (
-          <div className="ml-auto flex items-center gap-4 text-xs" style={{ color: "#555" }}>
-            {mpLoading && <span className="animate-pulse" style={{ color: "var(--sf-yellow)" }}>Loading model…</span>}
-            <span>{fps} fps</span>
-            {sam3Result && modes.has("sam3") && (
-              <span>{sam3Result.processing_ms}ms (SAM3)</span>
+        </p>
+        {isActive && modes.has("hands") && (
+          <PinchIndicator
+            leftPressed={pinchState.leftPressed}
+            rightPressed={pinchState.rightPressed}
+          />
+        )}
+      </div>
+      <button
+        onClick={handleStop}
+        className="text-xs px-4 py-2 rounded-lg font-bold transition-opacity hover:opacity-80"
+        style={{ backgroundColor: "var(--sf-orange)", color: "var(--sf-black)" }}
+      >
+        Stop Camera
+      </button>
+    </div>
+  );
+
+  return (
+    <div
+      className="min-h-screen flex flex-col"
+      style={{ backgroundColor: "var(--sf-black)", color: "var(--sf-white)" }}
+    >
+      {/* ── Header (hidden in immersive) ── */}
+      {!immersiveActive && (
+        <header
+          className="px-6 py-3 flex items-center gap-4 shrink-0"
+          style={{ borderBottom: "1px solid #222" }}
+        >
+          <Link
+            href="/"
+            className="text-sm font-medium transition-colors"
+            style={{ color: "#777" }}
+            onMouseEnter={e => (e.currentTarget.style.color = "var(--sf-orange)")}
+            onMouseLeave={e => (e.currentTarget.style.color = "#777")}
+          >
+            ← Home
+          </Link>
+          <span style={{ color: "#333" }}>|</span>
+          <div className="flex items-center gap-2">
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{ backgroundColor: isActive ? "var(--sf-lime)" : "#444" }}
+            />
+            <span className="text-sm font-bold" style={{ color: isActive ? "var(--sf-white)" : "#777" }}>
+              Live Camera Detection
+            </span>
+            {isActive && (
+              <span
+                className="text-xs px-2 py-0.5 rounded-full font-bold animate-pulse"
+                style={{ backgroundColor: "var(--sf-lime)", color: "var(--sf-black)" }}
+              >
+                LIVE
+              </span>
             )}
           </div>
-        )}
-      </header>
+          {isActive && (
+            <div className="ml-auto flex items-center gap-4 text-xs" style={{ color: "#555" }}>
+              {mpLoading && <span className="animate-pulse" style={{ color: "var(--sf-yellow)" }}>Loading model…</span>}
+              <span>{fps} fps</span>
+              {sam3Result && modes.has("sam3") && (
+                <span>{sam3Result.processing_ms}ms (SAM3)</span>
+              )}
+              <button
+                onClick={() => setIsImmersive(true)}
+                className="ml-2 px-3 py-1.5 rounded-lg font-bold transition-all hover:opacity-80"
+                style={{ backgroundColor: "rgba(255,255,255,0.1)", color: "var(--sf-white)", border: "1px solid #333" }}
+                title="Immersive mode (F)"
+              >
+                <span className="flex items-center gap-1.5">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+                    <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+                    <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+                    <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+                  </svg>
+                  Immersive
+                </span>
+              </button>
+            </div>
+          )}
+        </header>
+      )}
 
-      <div className="flex flex-1 overflow-hidden">
-        <DetectorSidebar
-          modes={modes}
-          onToggleMode={toggleMode}
-          textPrompt={textPrompt}
-          onTextPromptChange={setTextPrompt}
-          isRunning={isActive}
-          mpLoading={mpLoading}
-          sam3IntervalMs={sam3IntervalMs}
-          onSam3IntervalChange={setSam3IntervalMs}
-          stats={{
-            handCount: result?.hands?.hand_count ?? 0,
-            sam3Count: result?.sam3_segments?.length ?? 0,
-            hasReceivedResult,
-          }}
-          micLevel={micLevel}
-          hasMic={hasMic}
-          arStreamEnabled={arStreamEnabled}
-          onARStreamToggle={setArStreamEnabled}
-          arConnectionStatus={arConnectionStatus}
-          arLastAckTs={arLastAckTs}
-        />
+      <div className={immersiveActive ? "" : "flex flex-1 overflow-hidden"}>
+        {/* ── Sidebar (hidden in immersive) ── */}
+        {!immersiveActive && <DetectorSidebar {...sidebarProps} />}
 
-        <main className="flex-1 flex flex-col items-center justify-center p-6 overflow-hidden">
+        <main className={immersiveActive ? "" : "flex-1 flex flex-col items-center justify-center p-6 overflow-hidden"}>
           {!isActive ? (
-            <div className="text-center max-w-sm">
+            <div className="text-center max-w-sm mx-auto mt-32">
               <div
                 className="w-20 h-20 rounded-2xl flex items-center justify-center text-4xl mx-auto mb-6"
                 style={{ backgroundColor: "#111", border: "1px solid #2a2a2a" }}
@@ -371,47 +455,78 @@ export default function LiveDetectPage() {
               </button>
             </div>
           ) : (
-            <div className="w-full max-w-6xl">
-              <CameraFeed
-                videoRef={videoRef}
-                canvasRef={canvasRef}
-                modeBadges={modeBadges}
-                footer={
-                  <div className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between flex-wrap gap-2">
-                      <div className="flex items-center gap-3 flex-wrap">
-                        <p className="text-xs" style={{ color: "#555" }}>
-                          {[
-                            modes.has("hands") && "Hands: real-time",
-                            modes.has("sam3") && `SAM3: every ${sam3IntervalMs}ms`,
-                          ].filter(Boolean).join(" · ")}
-                          {" · "}{fps} render fps
-                          {arStreamEnabled && (
-                            <span className="ml-2">
-                              · AR: {arConnectionStatus === "open" ? "connected" : arConnectionStatus === "connecting" ? "connecting…" : arConnectionStatus === "error" ? "error" : "disconnected"}
-                              {arLastAckTs != null && " · Pose received"}
-                            </span>
-                          )}
-                        </p>
-                        {isActive && modes.has("hands") && (
-                          <PinchIndicator
-                            leftPressed={pinchState.leftPressed}
-                            rightPressed={pinchState.rightPressed}
-                          />
-                        )}
-                      </div>
-                      <button
-                        onClick={handleStop}
-                        className="text-xs px-4 py-2 rounded-lg font-bold transition-opacity hover:opacity-80"
-                        style={{ backgroundColor: "var(--sf-orange)", color: "var(--sf-black)" }}
-                      >
-                        Stop Camera
-                      </button>
-                    </div>
-                  </div>
+            <>
+              {/* ── Video + Canvas (single instance, CSS toggles layout) ── */}
+              <div
+                className={
+                  immersiveActive
+                    ? "fixed inset-0 z-10 bg-black"
+                    : "w-full max-w-6xl"
                 }
-              />
-            </div>
+              >
+                <div
+                  className={
+                    immersiveActive
+                      ? "relative w-full h-full"
+                      : "relative rounded-2xl overflow-hidden bg-black aspect-video shadow-2xl shadow-black/50"
+                  }
+                >
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-cover"
+                  />
+                  <canvas
+                    ref={canvasRef}
+                    className="absolute inset-0 w-full h-full pointer-events-none"
+                  />
+
+                  {/* Normal-mode badges (immersive has its own floating badges) */}
+                  {!immersiveActive && (
+                    <>
+                      <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-black/60 rounded-full px-2.5 py-1 text-xs text-white">
+                        <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
+                        LIVE
+                      </div>
+                      {modeBadges.length > 0 && (
+                        <div className="absolute top-3 right-3 flex gap-1.5 flex-wrap justify-end">
+                          {modeBadges.map((b) => (
+                            <span
+                              key={b.label}
+                              className="text-white text-xs px-2 py-0.5 rounded-full"
+                              style={{ backgroundColor: b.color }}
+                            >
+                              {b.label}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* Normal-mode footer */}
+                {!immersiveActive && (
+                  <div className="mt-4">
+                    <div className="flex flex-col gap-2">{statsBar}</div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Immersive overlay UI (badges, panels, toolbar) ── */}
+              {immersiveActive && (
+                <ImmersiveOverlay
+                  modeBadges={modeBadges}
+                  panels={overlayPanels}
+                  onTogglePanel={toggleOverlayPanel}
+                  onExit={() => setIsImmersive(false)}
+                  optionsContent={<DetectorSidebar {...sidebarProps} floating />}
+                  statsContent={statsBar}
+                />
+              )}
+            </>
           )}
         </main>
       </div>

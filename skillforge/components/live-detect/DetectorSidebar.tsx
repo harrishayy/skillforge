@@ -27,6 +27,8 @@ interface DetectorSidebarProps {
   onARStreamToggle?: (v: boolean) => void;
   arConnectionStatus?: ARStreamConnectionStatus;
   arLastAckTs?: number | null;
+  /** Transparent floating variant for immersive mode */
+  floating?: boolean;
 }
 
 const MODE_LABELS: Record<DetectMode, string> = {
@@ -50,11 +52,20 @@ export function DetectorSidebar({
   onARStreamToggle,
   arConnectionStatus = "closed",
   arLastAckTs = null,
+  floating = false,
 }: DetectorSidebarProps) {
   return (
     <aside
-      className="w-64 flex flex-col gap-5 p-5 shrink-0 overflow-y-auto"
-      style={{ borderRight: "1px solid #222", backgroundColor: "var(--sf-black)" }}
+      className={
+        floating
+          ? "flex flex-col gap-5 p-5 overflow-y-auto"
+          : "w-64 flex flex-col gap-5 p-5 shrink-0 overflow-y-auto"
+      }
+      style={
+        floating
+          ? {}
+          : { borderRight: "1px solid #222", backgroundColor: "var(--sf-black)" }
+      }
     >
       {/* AR stream to laptop */}
       {isRunning && onARStreamToggle && (

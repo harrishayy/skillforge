@@ -46,7 +46,7 @@ export function WorkflowCard({ workflow, href, actions }: WorkflowCardProps) {
             >
               {workflow.title}
             </h3>
-            <TaskTypeBadge mode={workflow.mode} />
+            <TaskTypeBadge />
           </div>
 
           <div className="flex items-center gap-3 text-xs" style={{ color: "var(--sf-gray)" }}>

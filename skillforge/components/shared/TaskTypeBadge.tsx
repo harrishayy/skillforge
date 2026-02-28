@@ -1,10 +1,9 @@
 import { Badge } from "@/components/ui/Badge";
-import type { TaskMode } from "@/types";
 
-export function TaskTypeBadge({ mode }: { mode: TaskMode }) {
+export function TaskTypeBadge() {
   return (
-    <Badge variant={mode === "software" ? "blue" : "amber"}>
-      {mode === "software" ? "💻 Software" : "🔧 Hardware"}
+    <Badge variant="amber">
+      Hardware
     </Badge>
   );
 }
