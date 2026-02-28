@@ -160,17 +160,22 @@ export function useMediaPipeDetect({
     let handData: HandData | null = null;
     let mpDetections: YoloDetection[] = [];
 
-    // Hand landmark detection
+    // Hand landmark detection (landmarks always x, y, z; handedness per hand)
     if (handsEnabled && hlRef.current) {
       const r = hlRef.current.detectForVideo(video, ts);
       handData = {
         hand_count: r.landmarks.length,
-        hands: r.landmarks.map((lms) => ({
-          landmarks: lms.map((lm) => ({
-            x: lm.x * 100, // MediaPipe returns 0–1, render expects 0–100
-            y: lm.y * 100,
-          })),
-        })),
+        hands: r.landmarks.map((lms, i) => {
+          const handedness = r.handedness?.[i]?.[0]?.categoryName as "Left" | "Right" | undefined;
+          return {
+            landmarks: lms.map((lm) => ({
+              x: lm.x * 100,
+              y: lm.y * 100,
+              z: lm.z,
+            })),
+            ...(handedness === "Left" || handedness === "Right" ? { handedness } : {}),
+          };
+        }),
         pointing_at:
           r.landmarks[0]
             ? { x: r.landmarks[0][8].x * 100, y: r.landmarks[0][8].y * 100 }

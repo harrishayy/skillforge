@@ -8,8 +8,10 @@ import { useARStream } from "@/hooks/useARStream";
 import { useMicLevel } from "@/hooks/useMicLevel";
 import { useLiveDetect, type DetectMode, type DetectionResult } from "@/hooks/useLiveDetect";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
+import { computePinchState } from "@/lib/pinch-detection";
 import { CameraFeed } from "@/components/camera/CameraFeed";
 import { DetectorSidebar } from "@/components/live-detect/DetectorSidebar";
+import { PinchIndicator } from "@/components/live-detect/PinchIndicator";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
 
 const YOLO_COLORS = [
@@ -82,6 +84,8 @@ export default function LiveDetectPage() {
           processing_ms: backendResult?.processing_ms ?? 0,
         }
       : null;
+
+  const pinchState = computePinchState(result?.hands ?? null);
 
   const renderLoop = useCallback(() => {
     const video = videoRef.current;
@@ -309,21 +313,29 @@ export default function LiveDetectPage() {
                 modeBadges={modeBadges}
                 footer={
                   <div className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs" style={{ color: "#555" }}>
-                        {[
-                          modes.has("hands") && "Hands: real-time",
-                          modes.has("yolo") && "Objects: real-time",
-                          modes.has("custom") && `Custom: every ${intervalMs}ms`,
-                        ].filter(Boolean).join(" · ")}
-                        {" · "}{fps} render fps
-                        {arStreamEnabled && (
-                          <span className="ml-2">
-                            · AR: {arConnectionStatus === "open" ? "connected" : arConnectionStatus === "connecting" ? "connecting…" : arConnectionStatus === "error" ? "error" : "disconnected"}
-                            {arLastAckTs != null && " · Pose received"}
-                          </span>
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <p className="text-xs" style={{ color: "#555" }}>
+                          {[
+                            modes.has("hands") && "Hands: real-time",
+                            modes.has("yolo") && "Objects: real-time",
+                            modes.has("custom") && `Custom: every ${intervalMs}ms`,
+                          ].filter(Boolean).join(" · ")}
+                          {" · "}{fps} render fps
+                          {arStreamEnabled && (
+                            <span className="ml-2">
+                              · AR: {arConnectionStatus === "open" ? "connected" : arConnectionStatus === "connecting" ? "connecting…" : arConnectionStatus === "error" ? "error" : "disconnected"}
+                              {arLastAckTs != null && " · Pose received"}
+                            </span>
+                          )}
+                        </p>
+                        {isActive && modes.has("hands") && (
+                          <PinchIndicator
+                            leftPressed={pinchState.leftPressed}
+                            rightPressed={pinchState.rightPressed}
+                          />
                         )}
-                      </p>
+                      </div>
                       <button
                         onClick={handleStop}
                         className="text-xs px-4 py-2 rounded-lg font-bold transition-opacity hover:opacity-80"

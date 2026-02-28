@@ -5,9 +5,16 @@ import { LIVE_DETECT_WS } from "@/lib/constants";
 
 export type DetectMode = "hands" | "yolo" | "custom";
 
+/** Landmarks are always x, y, z (consistent 3D). */
+export interface HandLandmark {
+  x: number;
+  y: number;
+  z: number;
+}
+
 export interface HandData {
   hand_count: number;
-  hands: Array<{ landmarks: Array<{ x: number; y: number }> }>;
+  hands: Array<{ landmarks: HandLandmark[]; handedness?: "Left" | "Right" }>;
   pointing_at: { x: number; y: number } | null;
 }
 
