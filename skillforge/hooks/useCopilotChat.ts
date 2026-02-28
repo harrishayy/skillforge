@@ -2,6 +2,7 @@
 import { useCallback } from "react";
 import { API_BASE } from "@/lib/constants";
 import { usePlayerStore } from "@/store/player-store";
+import { showErrorToast } from "@/store/toast-store";
 import type { ChatMessage } from "@/types";
 
 export function useCopilotChat(workflowId: string, stepId: string) {
@@ -63,9 +64,10 @@ export function useCopilotChat(workflowId: string, stepId: string) {
           }
         }
       } catch (err) {
+        showErrorToast(err);
         addChatMessage({
           role: "assistant",
-          content: "Sorry, I encountered an error. Please try again.",
+          content: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
           timestamp: Date.now(),
         });
       } finally {

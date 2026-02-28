@@ -16,6 +16,7 @@ const STAGE_LABELS: Record<string, string> = {
   yolo: "Detecting UI elements",
   mediapipe: "Tracking hand movements",
   claude_decompose: "Claude decomposing workflow",
+  storage: "Uploading to CDN",
   complete: "Complete",
   error: "Error",
 };

@@ -9,7 +9,6 @@ import { useCameraStream } from "@/hooks/useCameraStream";
 import { useARStream } from "@/hooks/useARStream";
 import { useCameraRoomProducer } from "@/hooks/useCameraRoomProducer";
 import { useCameraRoomViewer } from "@/hooks/useCameraRoomViewer";
-import { useMicLevel } from "@/hooks/useMicLevel";
 import type { DetectMode, DetectionResult } from "@/hooks/useLiveDetect";
 import { useSam3Detect, type Sam3Result } from "@/hooks/useSam3Detect";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
@@ -56,6 +55,7 @@ export default function LiveDetectPage() {
   const [fps, setFps] = useState(0);
   const [sam3IntervalMs, setSam3IntervalMs] = useState(500);
   const [arStreamEnabled, setArStreamEnabled] = useState(false);
+  const [micEnabled, setMicEnabled] = useState(true);
   const [isImmersive, setIsImmersive] = useState(true);
   const [overlayPanels, setOverlayPanels] = useState<OverlayPanels>({
     options: true,
@@ -93,7 +93,6 @@ export default function LiveDetectPage() {
     enabled: cameraSource === "local" && arStreamEnabled && isActive,
     targetFps: 12,
   });
-  const { micLevel, hasMic, startMic, stopMic } = useMicLevel();
 
   const { connectionStatus: viewerStatus, remoteFrame, remoteDetection } = useCameraRoomViewer({
     sessionId: remoteSessionId,
@@ -260,7 +259,7 @@ export default function LiveDetectPage() {
     onNextStep: skipForward,
     onPreviousStep: skipBackward,
     onFinish: () => {},
-    enabled: displayActive,
+    enabled: displayActive && micEnabled,
   });
 
   useEffect(() => {
@@ -400,16 +399,7 @@ export default function LiveDetectPage() {
 
   const handleStart = async () => {
     await start();
-    startMic();
   };
-
-  useEffect(() => {
-    if (isActive) {
-      voice.start();
-    } else {
-      voice.stop();
-    }
-  }, [isActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -441,7 +431,6 @@ export default function LiveDetectPage() {
       setFps(0);
     } else {
       stop();
-      stopMic();
       setIsImmersive(false);
       setMpResult(null);
       setSam3Result(null);
@@ -467,7 +456,7 @@ export default function LiveDetectPage() {
 
   useEffect(() => {
     if (isCameraOnlyMode) {
-      start().then(() => startMic());
+      start();
     }
   }, [isCameraOnlyMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -647,8 +636,6 @@ export default function LiveDetectPage() {
       sam3Count: result?.sam3_segments?.length ?? 0,
       hasReceivedResult,
     },
-    micLevel,
-    hasMic,
     arStreamEnabled,
     onARStreamToggle: cameraSource === "local" ? setArStreamEnabled : undefined,
     arConnectionStatus,
@@ -678,6 +665,50 @@ export default function LiveDetectPage() {
             leftPressed={pinchState.leftPressed}
             rightPressed={pinchState.rightPressed}
           />
+        )}
+        {isActive && (
+          <button
+            onClick={() => setMicEnabled((v) => !v)}
+            className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg transition-all hover:scale-105"
+            style={{
+              backgroundColor: voice.status === "unavailable"
+                ? "rgba(239, 68, 68, 0.2)"
+                : micEnabled && voice.isListening
+                  ? "rgba(190, 242, 100, 0.2)"
+                  : "rgba(255, 255, 255, 0.08)",
+              color: voice.status === "unavailable"
+                ? "rgba(239, 68, 68, 0.8)"
+                : micEnabled && voice.isListening
+                  ? "var(--sf-lime)"
+                  : immersiveActive ? "rgba(255,255,255,0.5)" : "#666",
+              border: `1px solid ${micEnabled && voice.isListening ? "rgba(190,242,100,0.3)" : "#333"}`,
+            }}
+            title={voice.unavailableReason ?? (micEnabled ? "Mute voice commands" : "Unmute voice commands")}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {micEnabled ? (
+                <>
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" x2="12" y1="19" y2="22" />
+                </>
+              ) : (
+                <>
+                  <line x1="2" x2="22" y1="2" y2="22" />
+                  <path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2" />
+                  <path d="M5 10v2a7 7 0 0 0 12 0" />
+                  <path d="M15 9.34V5a3 3 0 0 0-5.68-1.33" />
+                  <path d="M9 9v3a3 3 0 0 0 5.12 2.12" />
+                  <line x1="12" x2="12" y1="19" y2="22" />
+                </>
+              )}
+            </svg>
+            {voice.status === "unavailable"
+              ? "Unavailable"
+              : micEnabled
+                ? voice.isListening ? "Listening" : "Starting..."
+                : "Muted"}
+          </button>
         )}
       </div>
       <button

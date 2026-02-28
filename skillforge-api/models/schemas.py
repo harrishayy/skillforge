@@ -26,6 +26,7 @@ class AnnotationType(str, Enum):
 class WorkflowUpdateRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
+    published: Optional[bool] = None
 
 
 class StepCreateRequest(BaseModel):
@@ -73,6 +74,18 @@ class ClickTargetCreateRequest(BaseModel):
 
 class AnalyzeFrameRequest(BaseModel):
     timestamp_ms: int
+
+
+class RegenerateStepRequest(BaseModel):
+    additional_context: str = ""
+
+
+class SegmentPointRequest(BaseModel):
+    x: float = Field(..., ge=0, le=1, description="Normalized x coordinate (0-1)")
+    y: float = Field(..., ge=0, le=1, description="Normalized y coordinate (0-1)")
+    frame_timestamp_ms: int
+    mode: Literal["add", "remove"] = "add"
+    existing_segments: list[dict] = Field(default_factory=list)
 
 
 class CopilotChatRequest(BaseModel):
@@ -125,6 +138,14 @@ class ClickTargetResponse(BaseModel):
     is_primary: bool
 
 
+class StepFrameResponse(BaseModel):
+    id: str
+    step_id: str
+    timestamp_ms: int
+    frame_path: str
+    is_key_frame: bool
+
+
 class StepResponse(BaseModel):
     id: str
     workflow_id: str
@@ -134,9 +155,11 @@ class StepResponse(BaseModel):
     start_ms: int
     end_ms: int
     key_frame_path: Optional[str] = None
+    video_path: Optional[str] = None
     ai_description: Optional[str] = None
     annotations: list[AnnotationResponse] = []
     click_targets: list[ClickTargetResponse] = []
+    frames: list[StepFrameResponse] = []
     created_at: int
     updated_at: int
 
@@ -148,6 +171,7 @@ class WorkflowSummaryResponse(BaseModel):
     mode: str
     status: str
     total_steps: int
+    published: bool = False
     duration_ms: Optional[int] = None
     thumbnail_path: Optional[str] = None
     created_at: int
@@ -166,7 +190,7 @@ class WorkflowListResponse(BaseModel):
 class FrameAnalysisResponse(BaseModel):
     frame_path: str
     nemotron_analysis: dict
-    yolo_detections: list[dict]
+    sam3_segments: list[dict] = []
     hand_data: Optional[dict] = None
 
 

@@ -1,7 +1,6 @@
 "use client";
 
 import { Toggle } from "@/components/ui/Toggle";
-import { MicLevelBar } from "@/components/camera/MicLevelBar";
 import type { DetectMode } from "@/hooks/useLiveDetect";
 import type { ARStreamConnectionStatus } from "@/hooks/useARStream";
 
@@ -21,8 +20,6 @@ interface DetectorSidebarProps {
   isRunning: boolean;
   mpLoading?: boolean;
   stats: DetectionStats;
-  micLevel: number;
-  hasMic: boolean;
   arStreamEnabled?: boolean;
   onARStreamToggle?: (v: boolean) => void;
   arConnectionStatus?: ARStreamConnectionStatus;
@@ -46,8 +43,6 @@ export function DetectorSidebar({
   isRunning,
   mpLoading = false,
   stats,
-  micLevel,
-  hasMic,
   arStreamEnabled = false,
   onARStreamToggle,
   arConnectionStatus = "closed",
@@ -201,8 +196,6 @@ export function DetectorSidebar({
           </div>
         </div>
       )}
-
-      {hasMic && <MicLevelBar level={micLevel} />}
     </aside>
   );
 }

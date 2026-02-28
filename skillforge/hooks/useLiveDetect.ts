@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { LIVE_DETECT_WS } from "@/lib/constants";
+import { showErrorToast } from "@/store/toast-store";
 
 export type DetectMode = "hands" | "sam3";
 
@@ -58,6 +59,7 @@ export function useLiveDetect({
   const frameCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const hasToastedRef = useRef(false);
   const onResultRef = useRef(onResult);
   onResultRef.current = onResult;
 
@@ -137,6 +139,10 @@ export function useLiveDetect({
     };
 
     ws.onerror = () => {
+      if (!hasToastedRef.current) {
+        hasToastedRef.current = true;
+        showErrorToast("Live detection WebSocket connection failed");
+      }
       ws.close();
     };
 

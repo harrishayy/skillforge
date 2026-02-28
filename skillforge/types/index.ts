@@ -47,6 +47,14 @@ export interface ClickTarget {
   is_primary: boolean;
 }
 
+export interface StepFrame {
+  id: string;
+  step_id: string;
+  timestamp_ms: number;
+  frame_path: string;
+  is_key_frame: boolean;
+}
+
 export interface Step {
   id: string;
   workflow_id: string;
@@ -56,9 +64,11 @@ export interface Step {
   start_ms: number;
   end_ms: number;
   key_frame_path?: string;
+  video_path?: string;
   ai_description?: string;
   annotations: Annotation[];
   click_targets: ClickTarget[];
+  frames: StepFrame[];
   created_at: number;
   updated_at: number;
 }
@@ -69,6 +79,7 @@ export interface Workflow {
   description?: string;
   mode: TaskMode;
   status: WorkflowStatus;
+  published: boolean;
   video_path?: string;
   duration_ms?: number;
   total_steps: number;
@@ -84,6 +95,7 @@ export interface WorkflowSummary {
   description?: string;
   mode: TaskMode;
   status: WorkflowStatus;
+  published: boolean;
   total_steps: number;
   duration_ms?: number;
   thumbnail_path?: string;
@@ -154,16 +166,21 @@ export interface RecordingSession {
   duration_ms: number;
 }
 
-// ─── Editor State ─────────────────────────────────────────────────────────────
+// ─── Segmentation ────────────────────────────────────────────────────────────
 
-export type EditorTool = "select" | "box" | "arrow" | "text" | "click_target";
+export interface Sam3Segment {
+  mask_base64: string;
+  bbox: [number, number, number, number];
+  score: number;
+}
 
-export interface EditorState {
-  activeTool: EditorTool;
-  selectedAnnotationId: string | null;
-  selectedStepId: string | null;
-  isDirty: boolean;
-  activeColor: string;
+export interface SegmentPointResponse {
+  segments: Sam3Segment[];
+  frame_path: string;
+}
+
+export interface RegenerateStepResponse {
+  step: Step;
 }
 
 // ─── Player State ─────────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 "use client";
 import { useState, useRef, useCallback } from "react";
+import { showErrorToast } from "@/store/toast-store";
 
 export interface WebcamRecorderState {
   isRecording: boolean;
@@ -24,36 +25,80 @@ export function useWebcamRecorder() {
   const chunksRef = useRef<Blob[]>([]);
   const startTimeRef = useRef<number>(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const mimeTypeRef = useRef<string>("video/webm");
+  const stopResolveRef = useRef<((blob: Blob) => void) | null>(null);
+  const isPausedRef = useRef(false);
+  const pausedDurationRef = useRef(0);
 
-  const start = useCallback(async (): Promise<MediaStream | null> => {
+  const _startRecorderOnStream = useCallback((stream: MediaStream) => {
+    const mimeType = mimeTypeRef.current;
+    const recorder = new MediaRecorder(stream, { mimeType });
+    chunksRef.current = [];
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
+    };
+
+    recorder.onstop = () => {
+      const blob = new Blob(chunksRef.current, { type: mimeType });
+      if (stopResolveRef.current) {
+        stopResolveRef.current(blob);
+        stopResolveRef.current = null;
+      }
+      setState((s) => ({ ...s, videoBlob: blob }));
+    };
+
+    recorder.start(1000);
+    mediaRecorderRef.current = recorder;
+  }, []);
+
+  const start = useCallback(async (externalAudioStream?: MediaStream): Promise<MediaStream | null> => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 1280, height: 720, frameRate: 30 },
-        audio: true,
-      });
+      let stream: MediaStream;
+      const videoConstraints = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
 
-      const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+      if (externalAudioStream) {
+        // Mic is already owned by useMicStream — only request video here.
+        // This prevents the dual-getUserMedia conflict with SpeechRecognition on macOS/Chrome.
+        stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+      } else {
+        // No shared mic provided — fall back to requesting audio ourselves.
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: videoConstraints,
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          });
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+        }
+      }
+
+      // Build recording stream: video from camera + audio from shared mic (or own audio tracks).
+      const audioTracks = externalAudioStream
+        ? externalAudioStream.getAudioTracks()
+        : stream.getAudioTracks();
+      const recordingStream = new MediaStream([
+        ...stream.getVideoTracks(),
+        ...audioTracks,
+      ]);
+
+      mimeTypeRef.current = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
         ? "video/webm;codecs=vp9"
         : "video/webm";
 
-      const recorder = new MediaRecorder(stream, { mimeType });
-      chunksRef.current = [];
+      streamRef.current = stream;
+      recordingStreamRef.current = recordingStream;
+      _startRecorderOnStream(recordingStream);
 
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-
-      recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: mimeType });
-        setState((s) => ({ ...s, videoBlob: blob, isRecording: false, isPaused: false }));
-        stream.getTracks().forEach((t) => t.stop());
-        if (timerRef.current) clearInterval(timerRef.current);
-      };
-
-      recorder.start(1000);
+      isPausedRef.current = false;
+      pausedDurationRef.current = 0;
       startTimeRef.current = Date.now();
-      mediaRecorderRef.current = recorder;
-
       timerRef.current = setInterval(() => {
         setState((s) => ({ ...s, durationMs: Date.now() - startTimeRef.current }));
       }, 500);
@@ -70,36 +115,82 @@ export function useWebcamRecorder() {
       return stream;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Camera access denied";
+      showErrorToast(`Camera error: ${msg}`);
       setState((s) => ({ ...s, error: msg }));
       return null;
     }
+  }, [_startRecorderOnStream]);
+
+  /**
+   * Fully stop recording and release the camera.
+   * Returns a Promise that resolves with the final video Blob.
+   */
+  const stop = useCallback((): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const recorder = mediaRecorderRef.current;
+      if (!recorder || recorder.state === "inactive") {
+        reject(new Error("No active recording"));
+        return;
+      }
+      stopResolveRef.current = resolve;
+      recorder.stop();
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      recordingStreamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      recordingStreamRef.current = null;
+      if (timerRef.current) clearInterval(timerRef.current);
+      setState((s) => ({ ...s, isRecording: false, isPaused: false }));
+    });
   }, []);
 
-  const stop = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
-    }
-  }, []);
+  /**
+   * Finalize the current segment as a Blob and immediately restart
+   * recording on the same camera stream (no visible interruption).
+   * Used to capture per-step video segments without stopping the camera.
+   */
+  const snapshot = useCallback((): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const recorder = mediaRecorderRef.current;
+      const recStream = recordingStreamRef.current;
+      if (!recorder || recorder.state === "inactive" || !recStream) {
+        reject(new Error("No active recording"));
+        return;
+      }
+      stopResolveRef.current = (blob) => {
+        resolve(blob);
+        _startRecorderOnStream(recStream);
+      };
+      recorder.stop();
+    });
+  }, [_startRecorderOnStream]);
 
   const pause = useCallback(() => {
     if (mediaRecorderRef.current?.state === "recording") {
       mediaRecorderRef.current.pause();
       if (timerRef.current) clearInterval(timerRef.current);
-      setState((s) => ({ ...s, isPaused: true }));
+      isPausedRef.current = true;
+      pausedDurationRef.current = Date.now() - startTimeRef.current;
+      setState((s) => ({ ...s, isPaused: true, durationMs: pausedDurationRef.current }));
     }
   }, []);
 
   const resume = useCallback(() => {
     if (mediaRecorderRef.current?.state === "paused") {
       mediaRecorderRef.current.resume();
-      const pausedAt = state.durationMs;
-      startTimeRef.current = Date.now() - pausedAt;
+      startTimeRef.current = Date.now() - pausedDurationRef.current;
+      isPausedRef.current = false;
       timerRef.current = setInterval(() => {
         setState((s) => ({ ...s, durationMs: Date.now() - startTimeRef.current }));
       }, 500);
       setState((s) => ({ ...s, isPaused: false }));
     }
-  }, [state.durationMs]);
+  }, []);
 
-  return { ...state, start, stop, pause, resume };
+  const getDurationMs = useCallback((): number => {
+    if (isPausedRef.current) return pausedDurationRef.current;
+    if (!startTimeRef.current) return 0;
+    return Date.now() - startTimeRef.current;
+  }, []);
+
+  return { ...state, start, stop, pause, resume, snapshot, getDurationMs };
 }

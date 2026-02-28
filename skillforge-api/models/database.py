@@ -33,10 +33,11 @@ _CREATE_STATEMENTS = [
     status      TEXT NOT NULL DEFAULT 'processing'
                 CHECK(status IN ('processing', 'ready', 'failed')),
     video_path  TEXT,
-    duration_ms INTEGER,
+    duration_ms BIGINT,
     total_steps INTEGER DEFAULT 0,
-    created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL
+    published   INTEGER DEFAULT 0,
+    created_at  BIGINT NOT NULL,
+    updated_at  BIGINT NOT NULL
 )""",
     """CREATE TABLE IF NOT EXISTS steps (
     id              TEXT PRIMARY KEY,
@@ -44,12 +45,13 @@ _CREATE_STATEMENTS = [
     step_number     INTEGER NOT NULL,
     title           TEXT NOT NULL,
     description     TEXT,
-    start_ms        INTEGER NOT NULL,
-    end_ms          INTEGER NOT NULL,
+    start_ms        BIGINT NOT NULL,
+    end_ms          BIGINT NOT NULL,
     key_frame_path  TEXT,
+    video_path      TEXT,
     ai_description  TEXT,
-    created_at      INTEGER NOT NULL,
-    updated_at      INTEGER NOT NULL,
+    created_at      BIGINT NOT NULL,
+    updated_at      BIGINT NOT NULL,
     UNIQUE(workflow_id, step_number)
 )""",
     """CREATE TABLE IF NOT EXISTS annotations (
@@ -67,7 +69,7 @@ _CREATE_STATEMENTS = [
     to_y        REAL,
     color       TEXT DEFAULT '#3B82F6',
     style       TEXT DEFAULT 'solid',
-    created_at  INTEGER NOT NULL
+    created_at  BIGINT NOT NULL
 )""",
     """CREATE TABLE IF NOT EXISTS click_targets (
     id              TEXT PRIMARY KEY,
@@ -82,18 +84,13 @@ _CREATE_STATEMENTS = [
     confidence      REAL,
     is_primary      INTEGER DEFAULT 0
 )""",
-    """CREATE TABLE IF NOT EXISTS input_events (
-    id               TEXT PRIMARY KEY,
-    workflow_id      TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-    event_type       TEXT NOT NULL,
-    timestamp_ms     INTEGER NOT NULL,
-    x                REAL,
-    y                REAL,
-    key              TEXT,
-    button           TEXT,
-    scroll_delta     REAL,
-    element_selector TEXT,
-    element_text     TEXT
+    """CREATE TABLE IF NOT EXISTS step_frames (
+    id           TEXT PRIMARY KEY,
+    step_id      TEXT NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
+    timestamp_ms BIGINT NOT NULL,
+    frame_path   TEXT NOT NULL,
+    is_key_frame INTEGER DEFAULT 0,
+    created_at   BIGINT NOT NULL
 )""",
     """CREATE TABLE IF NOT EXISTS pipeline_logs (
     id          TEXT PRIMARY KEY,
@@ -101,12 +98,12 @@ _CREATE_STATEMENTS = [
     stage       TEXT NOT NULL,
     message     TEXT,
     progress    INTEGER DEFAULT 0,
-    created_at  INTEGER NOT NULL
+    created_at  BIGINT NOT NULL
 )""",
     "CREATE INDEX IF NOT EXISTS idx_steps_workflow ON steps(workflow_id, step_number)",
     "CREATE INDEX IF NOT EXISTS idx_annotations_step ON annotations(step_id)",
     "CREATE INDEX IF NOT EXISTS idx_click_targets_step ON click_targets(step_id)",
-    "CREATE INDEX IF NOT EXISTS idx_input_events_workflow ON input_events(workflow_id, timestamp_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_step_frames_step ON step_frames(step_id, timestamp_ms)",
     "CREATE INDEX IF NOT EXISTS idx_pipeline_logs_workflow ON pipeline_logs(workflow_id, created_at)",
 ]
 
@@ -140,11 +137,11 @@ async def init_db():
     if db_url.startswith(("postgres://", "postgresql://")):
         try:
             import asyncpg
-            # Neon uses sslmode=require; asyncpg needs ssl=True
             _pool = await asyncpg.create_pool(db_url, min_size=2, max_size=10, ssl="require")
             async with _pool.acquire() as conn:
                 for stmt in _CREATE_STATEMENTS:
                     await conn.execute(stmt)
+                await _run_migrations_pg(conn)
             print("[DB] Connected to Neon PostgreSQL")
         except Exception as e:
             print(f"[DB] PostgreSQL connection failed: {e}. Falling back to SQLite.")
@@ -154,9 +151,41 @@ async def init_db():
         await _init_sqlite()
 
 
+async def _run_migrations_pg(conn):
+    """Migrate existing Postgres databases to match the current schema."""
+    migrations = [
+        "ALTER TABLE steps ADD COLUMN IF NOT EXISTS video_path TEXT",
+        "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS published INTEGER DEFAULT 0",
+        # INTEGER → BIGINT for millisecond timestamps and durations
+        "ALTER TABLE workflows ALTER COLUMN duration_ms TYPE BIGINT",
+        "ALTER TABLE workflows ALTER COLUMN created_at TYPE BIGINT",
+        "ALTER TABLE workflows ALTER COLUMN updated_at TYPE BIGINT",
+        "ALTER TABLE steps ALTER COLUMN start_ms TYPE BIGINT",
+        "ALTER TABLE steps ALTER COLUMN end_ms TYPE BIGINT",
+        "ALTER TABLE steps ALTER COLUMN created_at TYPE BIGINT",
+        "ALTER TABLE steps ALTER COLUMN updated_at TYPE BIGINT",
+        "ALTER TABLE annotations ALTER COLUMN created_at TYPE BIGINT",
+        "ALTER TABLE pipeline_logs ALTER COLUMN created_at TYPE BIGINT",
+    ]
+    for sql in migrations:
+        try:
+            await conn.execute(sql)
+        except Exception:
+            pass
+
+
 async def _init_sqlite():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(CREATE_TABLES_SQL)
+        # Safe migration for existing databases
+        try:
+            await db.execute("ALTER TABLE steps ADD COLUMN video_path TEXT")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE workflows ADD COLUMN published INTEGER DEFAULT 0")
+        except Exception:
+            pass
         await db.commit()
     print(f"[DB] Using SQLite at {DB_PATH}")
 

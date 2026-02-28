@@ -5,6 +5,8 @@ import type {
   Step,
   Annotation,
   ClickTarget,
+  RegenerateStepResponse,
+  SegmentPointResponse,
 } from "@/types";
 
 class ApiError extends Error {
@@ -40,8 +42,11 @@ async function apiFetch<T>(
 
 // ─── Workflows ────────────────────────────────────────────────────────────────
 
-export async function listWorkflows(): Promise<WorkflowSummary[]> {
-  const data = await apiFetch<{ workflows: WorkflowSummary[] }>("/api/workflows");
+export async function listWorkflows(
+  opts?: { publishedOnly?: boolean }
+): Promise<WorkflowSummary[]> {
+  const qs = opts?.publishedOnly ? "?published_only=true" : "";
+  const data = await apiFetch<{ workflows: WorkflowSummary[] }>(`/api/workflows${qs}`);
   return data.workflows;
 }
 
@@ -63,11 +68,52 @@ export async function deleteWorkflow(id: string): Promise<void> {
   await apiFetch(`/api/workflows/${id}`, { method: "DELETE" });
 }
 
+export async function publishWorkflow(id: string): Promise<Workflow> {
+  return apiFetch<Workflow>(`/api/workflows/${id}/publish`, { method: "POST" });
+}
+
+export async function unpublishWorkflow(id: string): Promise<Workflow> {
+  return apiFetch<Workflow>(`/api/workflows/${id}/unpublish`, { method: "POST" });
+}
+
 export async function uploadRecording(formData: FormData): Promise<{
   workflow_id: string;
   status: string;
 }> {
   const res = await fetch(`${API_BASE}/api/workflows/upload`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body.detail ?? "Upload failed");
+  }
+  return res.json();
+}
+
+export async function uploadStepVideos(opts: {
+  stepVideos: Blob[];
+  title: string;
+  initialDescription?: string;
+  stepTranscripts?: string[];
+  stepNotes?: string[];
+}): Promise<{ workflow_id: string; status: string }> {
+  const formData = new FormData();
+  opts.stepVideos.forEach((blob, i) => {
+    formData.append("step_videos", blob, `step_${i + 1}.webm`);
+  });
+  formData.append("title", opts.title);
+  if (opts.initialDescription) {
+    formData.append("initial_description", opts.initialDescription);
+  }
+  if (opts.stepTranscripts) {
+    formData.append("step_transcripts_json", JSON.stringify(opts.stepTranscripts));
+  }
+  if (opts.stepNotes) {
+    formData.append("step_notes_json", JSON.stringify(opts.stepNotes));
+  }
+
+  const res = await fetch(`${API_BASE}/api/workflows/upload-steps`, {
     method: "POST",
     body: formData,
   });
@@ -150,6 +196,30 @@ export async function createClickTarget(
 
 export async function deleteClickTarget(targetId: string): Promise<void> {
   await apiFetch(`/api/click-targets/${targetId}`, { method: "DELETE" });
+}
+
+// ─── Regenerate & Segment ────────────────────────────────────────────────────
+
+export async function regenerateStep(
+  stepId: string,
+  additionalContext?: string
+): Promise<RegenerateStepResponse> {
+  return apiFetch<RegenerateStepResponse>(`/api/steps/${stepId}/regenerate`, {
+    method: "POST",
+    body: JSON.stringify({ additional_context: additionalContext ?? "" }),
+  });
+}
+
+export async function segmentPoint(
+  stepId: string,
+  x: number,
+  y: number,
+  frameTimestampMs: number
+): Promise<SegmentPointResponse> {
+  return apiFetch<SegmentPointResponse>(`/api/steps/${stepId}/segment-point`, {
+    method: "POST",
+    body: JSON.stringify({ x, y, frame_timestamp_ms: frameTimestampMs }),
+  });
 }
 
 // ─── Copilot ──────────────────────────────────────────────────────────────────

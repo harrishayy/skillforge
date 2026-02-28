@@ -124,8 +124,7 @@ skillforge/
 │   ├── useMediaPipeDetect.ts    # On-device MediaPipe detection
 │   ├── useARStream.ts           # AR pipeline WebSocket
 │   ├── useCopilotChat.ts        # Claude copilot chat
-│   ├── useScreenRecorder.ts     # Screen recording
-│   └── useMicLevel.ts           # Microphone level monitoring
+│   └── useScreenRecorder.ts     # Screen recording
 ├── lib/                         # Utilities
 │   ├── constants.ts             # API and WebSocket URL definitions
 │   └── ...                      # API clients, helpers

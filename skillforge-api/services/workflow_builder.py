@@ -1,7 +1,7 @@
 """
 SOFTWARE WORKFLOW PIPELINE — do not use for physical apprenticeship workflows.
 Main pipeline orchestrator. Called as a FastAPI BackgroundTask.
-Coordinates: frame extraction → Nemotron VL (software prompt) → YOLO → Claude decomposition.
+Coordinates: frame extraction → Nemotron VL (software prompt) → Claude decomposition.
 
 Physical workflows use: services/physical_pipeline.py
 """
@@ -9,17 +9,12 @@ import os
 import json
 import asyncio
 import time
-from pathlib import Path
-from models.database import execute, fetchall, new_id, now_ms
+from models.database import execute, new_id, now_ms
 from websockets.pipeline_ws import broadcast
 from services.video_processor import extract_frames, get_video_duration_ms
 from services.nemotron_client import analyze_frames_batch
-from services.yolo_detector import detect_ui_elements
 from services.claude_orchestrator import decompose_workflow
-from services import storage_service
 from utils.event_mapper import get_events_near_timestamp
-
-UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
 
 
 async def _log(workflow_id: str, stage: str, message: str, progress: int):
@@ -119,14 +114,6 @@ async def run_pipeline(
 
             await _log(workflow_id, "nemotron_vl", "Nemotron VL analysis complete", 50)
 
-        # ── Stage 3: YOLO UI Element Detection ───────────────────────────────
-        await _log(workflow_id, "yolo", "Detecting UI elements with YOLO...", 52)
-        for fa in frame_analyses:
-            if not fa.get("yolo_detections"):
-                detections = await detect_ui_elements(fa["path"])
-                fa["yolo_detections"] = detections
-        await _log(workflow_id, "yolo", "UI element detection complete", 60)
-
         # Attach input events to nearest frames
         for fa in frame_analyses:
             fa["input_events"] = get_events_near_timestamp(
@@ -152,38 +139,6 @@ async def run_pipeline(
             "UPDATE workflows SET status='ready', total_steps=?, updated_at=? WHERE id=?",
             (steps_created, now_ms(), workflow_id),
         )
-
-        # ── Stage 5: Upload media to Cloudflare R2 (if configured) ───────────
-        if storage_service.is_configured():
-            await _log(workflow_id, "storage", "Uploading media to Cloudflare R2...", 92)
-            try:
-                # Upload video
-                video_key = storage_service.make_video_key(workflow_id, Path(video_path).name)
-                r2_video_url = await storage_service.upload_file(video_path, video_key)
-                await execute(
-                    "UPDATE workflows SET video_path=? WHERE id=?",
-                    (r2_video_url, workflow_id),
-                )
-
-                # Upload each frame and update step key_frame_path
-                steps_db = await fetchall(
-                    "SELECT id, key_frame_path FROM steps WHERE workflow_id=?",
-                    (workflow_id,),
-                )
-                for step in steps_db:
-                    local_rel = step.get("key_frame_path")
-                    if not local_rel:
-                        continue
-                    abs_path = UPLOADS_DIR.parent / local_rel
-                    frame_key = storage_service.make_frame_key(workflow_id, Path(local_rel).name)
-                    r2_url = await storage_service.upload_file(str(abs_path), frame_key)
-                    await execute(
-                        "UPDATE steps SET key_frame_path=? WHERE id=?",
-                        (r2_url, step["id"]),
-                    )
-                await _log(workflow_id, "storage", "Media uploaded to R2 CDN", 97)
-            except Exception as e:
-                print(f"[Pipeline] R2 upload failed (non-fatal): {e}")
 
         await _log(workflow_id, "complete", f"Workflow ready with {steps_created} steps", 100)
         await broadcast(
