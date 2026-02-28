@@ -43,14 +43,13 @@ Setup details: [API Server Setup — Database](api-server-setup.md#database)
 
 ### ML Inference Servers
 
-All ML server URLs are optional. Without them, the system degrades gracefully — Claude Vision handles detection tasks, and segmentation / feature extraction are skipped.
+All ML server URLs are optional. Without them, the system degrades gracefully — Claude Vision handles detection tasks, and segmentation is skipped.
 
 | Variable | Service | Expected Endpoint | Description |
 |---|---|---|---|
 | `GROUNDING_DINO_URL` | Grounding DINO 1.5 | `POST /predict` | Open-vocabulary object detection via text prompt |
 | `SAM2_URL` | SAM 2 | `POST /segment` | Object segmentation from bounding box |
 | `SAM3_URL` | SAM 3 | `POST /segment` | Concept segmentation from text or box prompt (remote GPU) |
-| `DINOV2_URL` | DINOv2 | `POST /extract` | Visual feature extraction for object re-identification |
 
 SAM 3 deployment details: [SAM 3 GPU Deployment](sam3-gpu-deployment.md)
 

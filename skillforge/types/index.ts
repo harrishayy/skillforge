@@ -53,6 +53,8 @@ export interface StepFrame {
   timestamp_ms: number;
   frame_path: string;
   is_key_frame: boolean;
+  object_detected: boolean;
+  object_description?: string;
 }
 
 export interface Step {
@@ -66,6 +68,9 @@ export interface Step {
   key_frame_path?: string;
   video_path?: string;
   ai_description?: string;
+  transcript?: string;
+  note?: string;
+  sam3_prompt?: string;
   annotations: Annotation[];
   click_targets: ClickTarget[];
   frames: StepFrame[];

@@ -247,4 +247,22 @@ export async function classifyVoiceIntent(transcript: string): Promise<VoiceInte
   return data.intent;
 }
 
+// ─── ASR (server-side transcription via Brev-hosted Parakeet) ───────────────
+
+export async function transcribeAudio(audioBlob: Blob): Promise<string> {
+  const formData = new FormData();
+  formData.append("audio", audioBlob, "chunk.webm");
+
+  const res = await fetch(`${API_BASE}/api/voice/transcribe`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body.detail ?? "Transcription failed");
+  }
+  const data: { transcript: string } = await res.json();
+  return data.transcript ?? "";
+}
+
 export { ApiError };
