@@ -4,7 +4,7 @@
     {
       "label": "SSH Tunnel",
       "type": "shell",
-      "command": "ssh -L 8080:localhost:8080 sam3-server",
+      "command": "ssh -L 8090:localhost:8080 sam3-server",
       "isBackground": true,
       "problemMatcher": []
     },
