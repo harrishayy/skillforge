@@ -9,8 +9,12 @@ import { useMicLevel } from "@/hooks/useMicLevel";
 import type { DetectMode, DetectionResult } from "@/hooks/useLiveDetect";
 import { useSam3Detect, type Sam3Result } from "@/hooks/useSam3Detect";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
+import { useDoubleTapDetection } from "@/hooks/useDoubleTapDetection";
+import { useVoiceCommands } from "@/hooks/useVoiceCommands";
+import { computePinchState } from "@/lib/pinch-detection";
 import { CameraFeed } from "@/components/camera/CameraFeed";
 import { DetectorSidebar } from "@/components/live-detect/DetectorSidebar";
+import { PinchIndicator } from "@/components/live-detect/PinchIndicator";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
 
 const SAM3_COLORS = [
@@ -108,6 +112,38 @@ export default function LiveDetectPage() {
           processing_ms: sam3Result?.processing_ms ?? 0,
         }
       : null;
+
+  const pinchState = computePinchState(result?.hands ?? null);
+
+  const lastSkipRewindAtRef = useRef<number>(0);
+  const SKIP_REWIND_COOLDOWN_MS = 1000;
+
+  const skipForward = useCallback(() => {
+    const now = Date.now();
+    if (now - lastSkipRewindAtRef.current < SKIP_REWIND_COOLDOWN_MS) return;
+    lastSkipRewindAtRef.current = now;
+    // Placeholder: wire to next step when integrated (e.g. learn page)
+    console.log("Skipping step");
+  }, []);
+  const skipBackward = useCallback(() => {
+    const now = Date.now();
+    if (now - lastSkipRewindAtRef.current < SKIP_REWIND_COOLDOWN_MS) return;
+    lastSkipRewindAtRef.current = now;
+    // Placeholder: wire to previous step when integrated (e.g. learn page)
+    console.log("Rewinding step");
+  }, []);
+
+  useDoubleTapDetection(
+    isActive && modes.has("hands") ? result?.hands ?? null : null,
+    { onSkipForward: skipForward, onSkipBackward: skipBackward }
+  );
+
+  const voice = useVoiceCommands({
+    onNextStep: skipForward,
+    onPreviousStep: skipBackward,
+    onFinish: () => {},
+    enabled: isActive,
+  });
 
   const renderLoop = useCallback(() => {
     const video = videoRef.current;
@@ -213,6 +249,14 @@ export default function LiveDetectPage() {
     await start();
     startMic();
   };
+
+  useEffect(() => {
+    if (isActive) {
+      voice.start();
+    } else {
+      voice.stop();
+    }
+  }, [isActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleStop = () => {
     stop();
@@ -334,20 +378,28 @@ export default function LiveDetectPage() {
                 modeBadges={modeBadges}
                 footer={
                   <div className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs" style={{ color: "#555" }}>
-                        {[
-                          modes.has("hands") && "Hands: real-time",
-                          modes.has("sam3") && `SAM3: every ${sam3IntervalMs}ms`,
-                        ].filter(Boolean).join(" · ")}
-                        {" · "}{fps} render fps
-                        {arStreamEnabled && (
-                          <span className="ml-2">
-                            · AR: {arConnectionStatus === "open" ? "connected" : arConnectionStatus === "connecting" ? "connecting…" : arConnectionStatus === "error" ? "error" : "disconnected"}
-                            {arLastAckTs != null && " · Pose received"}
-                          </span>
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <p className="text-xs" style={{ color: "#555" }}>
+                          {[
+                            modes.has("hands") && "Hands: real-time",
+                            modes.has("sam3") && `SAM3: every ${sam3IntervalMs}ms`,
+                          ].filter(Boolean).join(" · ")}
+                          {" · "}{fps} render fps
+                          {arStreamEnabled && (
+                            <span className="ml-2">
+                              · AR: {arConnectionStatus === "open" ? "connected" : arConnectionStatus === "connecting" ? "connecting…" : arConnectionStatus === "error" ? "error" : "disconnected"}
+                              {arLastAckTs != null && " · Pose received"}
+                            </span>
+                          )}
+                        </p>
+                        {isActive && modes.has("hands") && (
+                          <PinchIndicator
+                            leftPressed={pinchState.leftPressed}
+                            rightPressed={pinchState.rightPressed}
+                          />
                         )}
-                      </p>
+                      </div>
                       <button
                         onClick={handleStop}
                         className="text-xs px-4 py-2 rounded-lg font-bold transition-opacity hover:opacity-80"

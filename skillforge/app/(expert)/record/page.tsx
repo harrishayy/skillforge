@@ -117,6 +117,27 @@ export default function RecordPage() {
     fetchStepPrompt(nextStep, [...stepTranscriptsRef.current]);
   }, [activeRecorder, currentStepNumber, fetchStepPrompt]);
 
+  const handlePreviousStep = useCallback(() => {
+    if (currentStepNumber <= 1) return;
+
+    // Pop the transcript we added when we advanced
+    stepTranscriptsRef.current.pop();
+
+    // Remove the current step marker and reopen the previous one
+    const existing = stepMarkersRef.current;
+    if (existing.length > 1) {
+      existing.pop();
+      const prevMarker = existing[existing.length - 1];
+      if (prevMarker) {
+        prevMarker.end_ms = 0;
+      }
+    }
+
+    const prevStep = currentStepNumber - 1;
+    setCurrentStepNumber(prevStep);
+    fetchStepPrompt(prevStep, [...stepTranscriptsRef.current]);
+  }, [currentStepNumber, fetchStepPrompt]);
+
   const handleFinish = useCallback(() => {
     // Snapshot final transcript
     const transcript = snapshotTranscriptRef.current();
@@ -135,6 +156,7 @@ export default function RecordPage() {
   const voice = useVoiceCommands({
     onNextStep: handleNextStep,
     onFinish: handleFinish,
+    onPreviousStep: handlePreviousStep,
     enabled: pageState === "recording",
   });
 
