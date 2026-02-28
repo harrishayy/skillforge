@@ -2,9 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { QRCodeSVG } from "qrcode.react";
 import { renderHandLandmarks } from "@/lib/annotation-renderer";
 import { useCameraStream } from "@/hooks/useCameraStream";
 import { useARStream } from "@/hooks/useARStream";
+import { useCameraRoomProducer } from "@/hooks/useCameraRoomProducer";
+import { useCameraRoomViewer } from "@/hooks/useCameraRoomViewer";
 import type { DetectMode, DetectionResult } from "@/hooks/useLiveDetect";
 import { useSam3Detect, type Sam3Result } from "@/hooks/useSam3Detect";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
@@ -31,9 +35,16 @@ const SAM3_STROKE_COLORS = [
 ];
 
 export default function LiveDetectPage() {
+  const searchParams = useSearchParams();
+  const mode = searchParams.get("mode");
+  const sessionParam = searchParams.get("session");
+  const hostParam = searchParams.get("host");
+  const isCameraOnlyMode = mode === "camera" && !!sessionParam;
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animFrameRef = useRef<number>(0);
   const fpsCounterRef = useRef({ frames: 0, last: Date.now() });
+  const remoteCanvasRef = useRef<HTMLCanvasElement>(null);
 
   const [modes, setModes] = useState<Set<DetectMode>>(new Set(["hands"]));
   const [textPrompt, setTextPrompt] = useState("");
@@ -51,17 +62,110 @@ export default function LiveDetectPage() {
     chat: true,
     stats: true,
   });
+  const [cameraSource, setCameraSource] = useState<"local" | "remote">("local");
+  const [remoteSessionId, setRemoteSessionId] = useState<string | null>(null);
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [remoteDimensions, setRemoteDimensions] = useState<{ w: number; h: number } | null>(null);
+  const [focusReticle, setFocusReticle] = useState<{ left: number; top: number } | null>(null);
+  const focusReticleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const toggleOverlayPanel = useCallback((panel: keyof OverlayPanels) => {
     setOverlayPanels((prev) => ({ ...prev, [panel]: !prev[panel] }));
   }, []);
 
-  const { videoRef, isActive, error, start, stop } = useCameraStream();
+  const cameraOnlyConstraints: MediaTrackConstraints = isCameraOnlyMode
+    ? {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 30 },
+        facingMode: { ideal: "environment" },
+        focusMode: "continuous",
+        exposureMode: "continuous",
+        whiteBalanceMode: "continuous",
+      }
+    : {};
+
+  const { videoRef, stream, isActive, error, start, stop, switchCamera, facingMode } = useCameraStream({
+    constraints: cameraOnlyConstraints,
+  });
   const { connectionStatus: arConnectionStatus, lastAckTs: arLastAckTs } = useARStream({
     videoRef,
-    enabled: arStreamEnabled && isActive,
+    enabled: cameraSource === "local" && arStreamEnabled && isActive,
     targetFps: 12,
   });
+
+  const { connectionStatus: viewerStatus, remoteFrame, remoteDetection } = useCameraRoomViewer({
+    sessionId: remoteSessionId,
+    enabled: cameraSource === "remote" && !!remoteSessionId,
+  });
+  const { connectionStatus: producerStatus } = useCameraRoomProducer({
+    videoRef,
+    sessionId: isCameraOnlyMode ? sessionParam : null,
+    host: isCameraOnlyMode ? hostParam ?? undefined : undefined,
+    enabled: isCameraOnlyMode,
+    targetFps: 24,
+  });
+
+  useEffect(() => {
+    return () => {
+      if (focusReticleTimeoutRef.current) {
+        clearTimeout(focusReticleTimeoutRef.current);
+        focusReticleTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isCameraOnlyMode) return;
+    const lock = () => {
+      try {
+        if (typeof screen !== "undefined" && screen.orientation?.lock) {
+          screen.orientation.lock("landscape").catch(() => {});
+        }
+      } catch {
+        // ignore
+      }
+    };
+    lock();
+    return () => {
+      try {
+        if (typeof screen !== "undefined" && screen.orientation?.unlock) {
+          screen.orientation.unlock();
+        }
+      } catch {
+        // ignore
+      }
+    };
+  }, [isCameraOnlyMode]);
+
+  const handleTapToFocus = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!isCameraOnlyMode || cameraSource === "remote" || !stream || !videoRef.current) return;
+      const video = videoRef.current;
+      const rect = video.getBoundingClientRect();
+      const nx = (e.clientX - rect.left) / rect.width;
+      const ny = (e.clientY - rect.top) / rect.height;
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        try {
+          track
+            .applyConstraints({
+              advanced: [{ pointsOfInterest: [{ x: nx, y: ny }] } as MediaTrackConstraintSet],
+            })
+            .catch(() => {});
+        } catch {
+          // ignore
+        }
+      }
+      if (focusReticleTimeoutRef.current) clearTimeout(focusReticleTimeoutRef.current);
+      setFocusReticle({ left: e.clientX - rect.left, top: e.clientY - rect.top });
+      focusReticleTimeoutRef.current = setTimeout(() => {
+        focusReticleTimeoutRef.current = null;
+        setFocusReticle(null);
+      }, 800);
+    },
+    [isCameraOnlyMode, cameraSource, stream]
+  );
 
   const toggleMode = (mode: DetectMode) => {
     setModes((prev) => {
@@ -75,7 +179,7 @@ export default function LiveDetectPage() {
     videoRef,
     handsEnabled: modes.has("hands"),
     objectsEnabled: false,
-    enabled: isActive,
+    enabled: cameraSource === "local" && isActive,
     onResult: (r) => {
       setMpResult({ hands: r.hands });
       setHasReceivedResult(true);
@@ -86,7 +190,7 @@ export default function LiveDetectPage() {
     videoRef,
     textPrompt,
     intervalMs: sam3IntervalMs,
-    enabled: isActive && modes.has("sam3") && textPrompt.length > 0,
+    enabled: cameraSource === "local" && isActive && modes.has("sam3") && textPrompt.length > 0,
     onResult: (r: Sam3Result) => {
       if (r.sam3_segments.length > 0) setSam3Result(r);
       setHasReceivedResult(true);
@@ -114,14 +218,19 @@ export default function LiveDetectPage() {
     },
   });
 
+  const displayActive =
+    (cameraSource === "local" && isActive) || (cameraSource === "remote" && !!remoteSessionId);
+
   const result: DetectionResult | null =
-    mpResult || sam3Result
-      ? {
-          hands: mpResult?.hands ?? null,
-          sam3_segments: sam3Result?.sam3_segments ?? [],
-          processing_ms: sam3Result?.processing_ms ?? 0,
-        }
-      : null;
+    cameraSource === "remote"
+      ? remoteDetection
+      : mpResult || sam3Result
+        ? {
+            hands: mpResult?.hands ?? null,
+            sam3_segments: sam3Result?.sam3_segments ?? [],
+            processing_ms: sam3Result?.processing_ms ?? 0,
+          }
+        : null;
 
   const pinchState = computePinchState(result?.hands ?? null);
 
@@ -142,7 +251,7 @@ export default function LiveDetectPage() {
   }, []);
 
   useDoubleTapDetection(
-    isActive && modes.has("hands") ? result?.hands ?? null : null,
+    displayActive && modes.has("hands") ? result?.hands ?? null : null,
     { onSkipForward: skipForward, onSkipBackward: skipBackward }
   );
 
@@ -150,23 +259,61 @@ export default function LiveDetectPage() {
     onNextStep: skipForward,
     onPreviousStep: skipBackward,
     onFinish: () => {},
-    enabled: micEnabled && isActive,
+    enabled: displayActive && micEnabled,
   });
 
+  useEffect(() => {
+    if (cameraSource !== "remote" || !remoteFrame?.data || !remoteCanvasRef.current) return;
+    const img = new Image();
+    img.onload = () => {
+      const rc = remoteCanvasRef.current;
+      if (!rc) return;
+      rc.width = img.width;
+      rc.height = img.height;
+      const ctx = rc.getContext("2d");
+      if (ctx) ctx.drawImage(img, 0, 0);
+      setRemoteDimensions((prev) =>
+        prev?.w === img.width && prev?.h === img.height ? prev : { w: img.width, h: img.height }
+      );
+    };
+    img.src = `data:image/jpeg;base64,${remoteFrame.data}`;
+  }, [cameraSource, remoteFrame?.data, remoteFrame?.ts]);
+
   const renderLoop = useCallback(() => {
-    const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas || video.readyState < 2) {
+    if (!canvas) {
+      animFrameRef.current = requestAnimationFrame(renderLoop);
+      return;
+    }
+    const isRemote = cameraSource === "remote";
+    const w = isRemote
+      ? remoteCanvasRef.current?.width ?? remoteDimensions?.w ?? 0
+      : videoRef.current?.videoWidth ?? 0;
+    const h = isRemote
+      ? remoteCanvasRef.current?.height ?? remoteDimensions?.h ?? 0
+      : videoRef.current?.videoHeight ?? 0;
+    if (isRemote && (w === 0 || h === 0)) {
+      animFrameRef.current = requestAnimationFrame(renderLoop);
+      return;
+    }
+    if (!isRemote && (!videoRef.current || videoRef.current.readyState < 2)) {
       animFrameRef.current = requestAnimationFrame(renderLoop);
       return;
     }
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width = w;
+    canvas.height = h;
     const ctx = canvas.getContext("2d");
     if (!ctx) { animFrameRef.current = requestAnimationFrame(renderLoop); return; }
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // In remote mode, draw the remote feed onto the main canvas first (then overlays on top).
+    // This ensures the phone feed is visible even if the underlay canvas has stacking/opacity quirks.
+    if (isRemote && remoteCanvasRef.current && remoteCanvasRef.current.width > 0 && remoteCanvasRef.current.height > 0) {
+      ctx.drawImage(remoteCanvasRef.current, 0, 0, w, h);
+    }
+
     const t = performance.now();
 
     if (result) {
@@ -241,14 +388,14 @@ export default function LiveDetectPage() {
     }
 
     animFrameRef.current = requestAnimationFrame(renderLoop);
-  }, [result, textPrompt, videoRef]);
+  }, [result, textPrompt, videoRef, cameraSource, remoteDimensions]);
 
   useEffect(() => {
-    if (isActive) {
+    if (displayActive) {
       animFrameRef.current = requestAnimationFrame(renderLoop);
     }
     return () => cancelAnimationFrame(animFrameRef.current);
-  }, [isActive, renderLoop]);
+  }, [displayActive, renderLoop]);
 
   const handleStart = async () => {
     await start();
@@ -273,14 +420,202 @@ export default function LiveDetectPage() {
   }, [isActive, isImmersive]);
 
   const handleStop = () => {
-    stop();
-    setIsImmersive(false);
-    setMpResult(null);
-    setSam3Result(null);
-    sam3MaskCacheRef.current.clear();
-    setHasReceivedResult(false);
-    setFps(0);
+    if (cameraSource === "remote") {
+      setCameraSource("local");
+      setRemoteSessionId(null);
+      setShowQrModal(false);
+      setRemoteDimensions(null);
+      setMpResult(null);
+      setSam3Result(null);
+      setHasReceivedResult(false);
+      setFps(0);
+    } else {
+      stop();
+      setIsImmersive(false);
+      setMpResult(null);
+      setSam3Result(null);
+      sam3MaskCacheRef.current.clear();
+      setHasReceivedResult(false);
+      setFps(0);
+    }
   };
+
+  const handleUsePhoneAsCamera = () => {
+    setCameraSource("remote");
+    const uuid =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+            const r = (Math.random() * 16) | 0;
+            const v = c === "x" ? r : (r & 0x3) | 0x8;
+            return v.toString(16);
+          });
+    setRemoteSessionId(uuid);
+    setShowQrModal(true);
+  };
+
+  useEffect(() => {
+    if (isCameraOnlyMode) {
+      start();
+    }
+  }, [isCameraOnlyMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (isCameraOnlyMode) {
+    const glassBar =
+      "bg-black/30 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl shadow-black/50";
+
+    if (!isActive) {
+      return (
+        <div
+          className="min-h-screen relative flex flex-col items-center justify-center p-6"
+          style={{ backgroundColor: "var(--sf-black)", color: "var(--sf-white)" }}
+        >
+          <Link
+            href="/live"
+            className="absolute top-4 left-4 text-sm font-medium transition-opacity hover:opacity-80"
+            style={{ color: "rgba(255,255,255,0.9)" }}
+          >
+            ← Back
+          </Link>
+          <p className="text-center text-sm mb-6" style={{ color: "rgba(255,255,255,0.85)" }}>
+            Allow camera to stream to your laptop
+          </p>
+          <button
+            type="button"
+            onClick={() => start()}
+            className="px-8 py-3 rounded-xl font-bold text-sm transition-opacity hover:opacity-90"
+            style={{ backgroundColor: "var(--sf-lime)", color: "var(--sf-black)" }}
+          >
+            Start camera
+          </button>
+          {error && (
+            <div className={`mt-6 w-full max-w-md px-4 py-3 z-10 ${glassBar}`}>
+              <p className="text-xs font-medium" style={{ color: "var(--sf-orange)" }}>
+                Camera: {error}
+              </p>
+              <button
+                type="button"
+                onClick={() => start()}
+                className="mt-3 px-4 py-2 rounded-lg text-xs font-bold"
+                style={{ backgroundColor: "rgba(255,255,255,0.15)", color: "var(--sf-white)" }}
+              >
+                Try again
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div
+        className="min-h-screen relative flex flex-col"
+        style={{ backgroundColor: "var(--sf-black)", color: "var(--sf-white)" }}
+      >
+        {/* Full-bleed camera feed */}
+        <div className="absolute inset-0">
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="absolute inset-0 w-full h-full object-cover"
+          />
+        </div>
+
+        {/* Camera error bar (when active but error set e.g. after flip failure) */}
+        {error && (
+          <div
+            className={`absolute top-4 left-4 right-4 z-20 mt-[4.5rem] px-4 py-3 flex items-center justify-between gap-3 ${glassBar}`}
+          >
+            <span className="text-xs font-medium" style={{ color: "var(--sf-orange)" }}>
+              Camera: {error}
+            </span>
+            <button
+              type="button"
+              onClick={() => start()}
+              className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold"
+              style={{ backgroundColor: "rgba(255,255,255,0.15)", color: "var(--sf-white)" }}
+            >
+              Try again
+            </button>
+          </div>
+        )}
+
+        {/* Top bar: title + status (frosted) */}
+        <div
+          className={`absolute top-4 left-4 right-4 z-10 px-4 py-3 grid grid-cols-3 items-center gap-2 ${glassBar}`}
+        >
+          <Link
+            href="/live"
+            className="text-sm font-medium transition-opacity hover:opacity-80"
+            style={{ color: "rgba(255,255,255,0.9)" }}
+          >
+            ← Back
+          </Link>
+          <span className="text-sm font-bold text-center">Streaming to laptop</span>
+          <span
+            className="text-xs font-medium text-right"
+            style={{
+              color:
+                producerStatus === "open"
+                  ? "var(--sf-lime)"
+                  : producerStatus === "error"
+                    ? "var(--sf-orange)"
+                    : "rgba(255,255,255,0.6)",
+            }}
+          >
+            {producerStatus === "open"
+              ? "Connected"
+              : producerStatus === "connecting"
+                ? "Connecting…"
+                : producerStatus === "error"
+                  ? "Error"
+                  : "Disconnected"}
+          </span>
+        </div>
+
+        {/* Bottom bar: flip + stop (frosted) */}
+        <div
+          className={`absolute bottom-4 left-4 right-4 z-10 px-4 py-3 flex items-center justify-center gap-3 ${glassBar}`}
+        >
+          <button
+            type="button"
+            onClick={switchCamera}
+            className="w-12 h-12 rounded-xl flex items-center justify-center transition-all hover:scale-105"
+            style={{
+              backgroundColor: "rgba(255, 255, 255, 0.1)",
+              color: "var(--sf-white)",
+              border: "1px solid rgba(255, 255, 255, 0.1)",
+            }}
+            title={facingMode === "user" ? "Switch to back camera" : "Switch to front camera"}
+          >
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M11 19H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
+              <path d="M13 5h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+          <Link
+            href="/live"
+            className="px-5 py-2.5 rounded-xl font-bold text-sm transition-opacity hover:opacity-90"
+            style={{ backgroundColor: "var(--sf-orange)", color: "var(--sf-black)" }}
+          >
+            Stop streaming
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   const modeBadges = [
     ...(modes.has("hands") ? [{ label: "Hands", color: "rgba(245,158,11,0.8)" }] : []),
@@ -292,7 +627,7 @@ export default function LiveDetectPage() {
     onToggleMode: toggleMode,
     textPrompt,
     onTextPromptChange: setTextPrompt,
-    isRunning: isActive,
+    isRunning: displayActive,
     mpLoading,
     sam3IntervalMs,
     onSam3IntervalChange: setSam3IntervalMs,
@@ -302,12 +637,12 @@ export default function LiveDetectPage() {
       hasReceivedResult,
     },
     arStreamEnabled,
-    onARStreamToggle: setArStreamEnabled,
+    onARStreamToggle: cameraSource === "local" ? setArStreamEnabled : undefined,
     arConnectionStatus,
     arLastAckTs,
   };
 
-  const immersiveActive = isImmersive && isActive;
+  const immersiveActive = isImmersive && displayActive;
 
   const statsBar = (
     <div className="flex items-center gap-4 flex-wrap">
@@ -410,12 +745,12 @@ export default function LiveDetectPage() {
           <div className="flex items-center gap-2">
             <span
               className="w-2 h-2 rounded-full"
-              style={{ backgroundColor: isActive ? "var(--sf-lime)" : "#444" }}
+              style={{ backgroundColor: displayActive ? "var(--sf-lime)" : "#444" }}
             />
-            <span className="text-sm font-bold" style={{ color: isActive ? "var(--sf-white)" : "#777" }}>
-              Live Camera Detection
+            <span className="text-sm font-bold" style={{ color: displayActive ? "var(--sf-white)" : "#777" }}>
+              {cameraSource === "remote" ? "Phone camera (remote)" : "Live Camera Detection"}
             </span>
-            {isActive && (
+            {displayActive && (
               <span
                 className="text-xs px-2 py-0.5 rounded-full font-bold animate-pulse"
                 style={{ backgroundColor: "var(--sf-lime)", color: "var(--sf-black)" }}
@@ -424,7 +759,7 @@ export default function LiveDetectPage() {
               </span>
             )}
           </div>
-          {isActive && (
+          {displayActive && (
             <div className="ml-auto flex items-center gap-4 text-xs" style={{ color: "#555" }}>
               {mpLoading && <span className="animate-pulse" style={{ color: "var(--sf-yellow)" }}>Loading model…</span>}
               <span>{fps} fps</span>
@@ -457,7 +792,7 @@ export default function LiveDetectPage() {
         {!immersiveActive && <DetectorSidebar {...sidebarProps} />}
 
         <main className={immersiveActive ? "" : "flex-1 flex flex-col items-center justify-center p-6 overflow-hidden"}>
-          {!isActive ? (
+          {!displayActive ? (
             <div className="text-center max-w-sm mx-auto mt-32">
               <div
                 className="w-20 h-20 rounded-2xl flex items-center justify-center text-4xl mx-auto mb-6"
@@ -477,13 +812,26 @@ export default function LiveDetectPage() {
               </p>
               {error && <ErrorBanner message={error} className="mb-4" />}
               {mpError && <ErrorBanner message={`MediaPipe: ${mpError}`} className="mb-4" />}
-              <button
-                onClick={handleStart}
-                className="px-8 py-3 rounded-xl font-bold text-sm transition-opacity hover:opacity-80"
-                style={{ backgroundColor: "var(--sf-lime)", color: "var(--sf-black)" }}
-              >
-                Enable Camera
-              </button>
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                <button
+                  onClick={handleStart}
+                  className="px-8 py-3 rounded-xl font-bold text-sm transition-opacity hover:opacity-80"
+                  style={{ backgroundColor: "var(--sf-lime)", color: "var(--sf-black)" }}
+                >
+                  Enable Camera
+                </button>
+                <button
+                  onClick={handleUsePhoneAsCamera}
+                  className="px-8 py-3 rounded-xl font-bold text-sm transition-opacity hover:opacity-80 border border-solid"
+                  style={{
+                    backgroundColor: "transparent",
+                    color: "var(--sf-orange)",
+                    borderColor: "var(--sf-orange)",
+                  }}
+                >
+                  Use phone as camera
+                </button>
+              </div>
             </div>
           ) : (
             <>
@@ -501,18 +849,45 @@ export default function LiveDetectPage() {
                       ? "relative w-full h-full"
                       : "relative rounded-2xl overflow-hidden bg-black aspect-video shadow-2xl shadow-black/50"
                   }
+                  onClick={isCameraOnlyMode && cameraSource === "local" ? handleTapToFocus : undefined}
+                  style={
+                    isCameraOnlyMode && cameraSource === "local"
+                      ? { cursor: "pointer" }
+                      : undefined
+                  }
                 >
-                  <video
-                    ref={videoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-cover"
-                  />
+                  {cameraSource === "remote" ? (
+                    <canvas
+                      ref={remoteCanvasRef}
+                      width={1920}
+                      height={1080}
+                      className="w-full h-full object-contain bg-black"
+                      style={{ display: "block" }}
+                    />
+                  ) : (
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="w-full h-full object-cover"
+                    />
+                  )}
                   <canvas
                     ref={canvasRef}
                     className="absolute inset-0 w-full h-full pointer-events-none"
                   />
+                  {focusReticle && (
+                    <div
+                      className="absolute w-10 h-10 border-2 border-white rounded-full pointer-events-none animate-pulse"
+                      style={{
+                        left: focusReticle.left - 20,
+                        top: focusReticle.top - 20,
+                        boxShadow: "0 0 0 2px rgba(0,0,0,0.5)",
+                      }}
+                      aria-hidden
+                    />
+                  )}
 
                   {/* Normal-mode badges (immersive has its own floating badges) */}
                   {!immersiveActive && (
@@ -561,6 +936,75 @@ export default function LiveDetectPage() {
           )}
         </main>
       </div>
+
+      {/* QR modal for "Use phone as camera" */}
+      {showQrModal && remoteSessionId && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backgroundColor: "rgba(0,0,0,0.85)" }}
+        >
+          <div
+            className="rounded-2xl p-6 max-w-sm w-full flex flex-col items-center gap-4"
+            style={{ backgroundColor: "#111", border: "1px solid #333" }}
+          >
+            <h3 className="font-bold text-lg" style={{ color: "var(--sf-white)" }}>
+              Scan with your phone
+            </h3>
+            <p className="text-xs" style={{ color: "#888" }}>
+              Open the camera app or a QR scanner and scan to stream your phone camera to this laptop.
+            </p>
+            <div className="p-3 rounded-xl bg-white">
+              <QRCodeSVG
+                value={
+                  (() => {
+                    if (typeof window === "undefined") return "";
+                    const appUrl =
+                      process.env.NEXT_PUBLIC_APP_URL ||
+                      window.location.origin;
+                    const wsHost =
+                      process.env.NEXT_PUBLIC_WS_HOST ||
+                      (process.env.NEXT_PUBLIC_APP_URL
+                        ? `${new URL(process.env.NEXT_PUBLIC_APP_URL).hostname}:8001`
+                        : `${window.location.hostname}:8001`);
+                    return `${appUrl.replace(/\/$/, "")}/live?mode=camera&session=${remoteSessionId}&host=${encodeURIComponent(wsHost)}`;
+                  })()
+                }
+                size={200}
+                level="M"
+              />
+            </div>
+            {typeof window !== "undefined" &&
+              !process.env.NEXT_PUBLIC_APP_URL &&
+              (window.location.hostname === "localhost" ||
+                window.location.hostname === "127.0.0.1") && (
+              <p className="text-xs" style={{ color: "var(--sf-orange)" }}>
+                Set NEXT_PUBLIC_APP_URL (e.g. http://172.21.160.1:3000) and
+                NEXT_PUBLIC_WS_HOST (e.g. 172.21.160.1:8001) so your phone can
+                reach this machine.
+              </p>
+            )}
+            <p className="text-xs font-medium" style={{ color: "var(--sf-lime)" }}>
+              {viewerStatus === "open" && remoteFrame
+                ? "Phone connected"
+                : viewerStatus === "connecting"
+                  ? "Waiting for phone…"
+                  : viewerStatus === "error"
+                    ? "Connection error"
+                    : viewerStatus === "open"
+                      ? "Waiting for phone…"
+                      : "Waiting for phone…"}
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowQrModal(false)}
+              className="px-4 py-2 rounded-lg text-sm font-bold"
+              style={{ backgroundColor: "#333", color: "var(--sf-white)" }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

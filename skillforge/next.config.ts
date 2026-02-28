@@ -1,6 +1,21 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Allow dev server to serve when opened via LAN IP or ngrok. Add your ngrok origin if it changes.
+  allowedDevOrigins: [
+    "https://phytocidal-unsquabbling-joshua.ngrok-free.dev",
+    "phytocidal-unsquabbling-joshua.ngrok-free.dev",
+    "http://192.168.114.254:3000",
+    "https://192.168.114.254:3000",
+    "192.168.114.254",
+    "192.168.114.254:3000",
+    "http://192.168.43.1:3000",
+    "https://192.168.43.1:3000",
+    "192.168.43.1",
+    "http://172.21.160.1:3000",
+    "https://172.21.160.1:3000",
+    "172.21.160.1",
+  ],
   experimental: {
     serverActions: {
       bodySizeLimit: "500mb",
@@ -11,6 +26,10 @@ const nextConfig: NextConfig = {
       {
         source: "/api/python/:path*",
         destination: "http://localhost:8000/api/:path*",
+      },
+      {
+        source: "/ws/:path*",
+        destination: "http://localhost:8001/ws/:path*",
       },
     ];
   },

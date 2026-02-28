@@ -52,6 +52,8 @@ uvicorn main:app --host 0.0.0.0 --port 8001
 
 Run on a different port than the main API server (default 8000). The frontend expects this server on port 8001 by default.
 
+For using your phone as a camera source ("Use phone as camera" on `/live`), the phone needs HTTPS/WSS. Use [ngrok](phone-camera-ngrok.md) to expose this server and the Next.js app; run this backend with plain HTTP above and start the ngrok tunnels from the repo root.
+
 ---
 
 ## GPU vs CPU Delegate

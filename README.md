@@ -119,6 +119,14 @@ Full details: [Frontend Setup](docs/frontend-setup.md)
 
 Navigate to [http://localhost:3000](http://localhost:3000).
 
+**Phone as camera:** Run ngrok to expose the app over HTTPS, then open the app in your browser via the ngrok URL:
+
+```bash
+ngrok http 127.0.0.1:3000
+```
+
+Connect at `https://phytocidal-unsquabbling-joshua.ngrok-free.dev/` (or whatever URL ngrok prints). See [Phone as camera (ngrok)](docs/phone-camera-ngrok.md) for full setup.
+
 ### Optional components
 
 - **AR WebSocket Server** — real-time hand tracking over WebSocket. See [AR WebSocket Server](docs/ar-websocket-server.md).
