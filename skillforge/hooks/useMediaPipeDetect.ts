@@ -159,8 +159,10 @@ export function useMediaPipeDetect({
     lastVideoTimeRef.current = currentTime;
 
     const t0 = performance.now();
-    // MediaPipe VIDEO mode requires a monotonically increasing timestamp in ms
-    const ts = currentTime * 1000;
+    // performance.now() is guaranteed monotonically increasing, unlike
+    // video.currentTime which can reset when the underlying MediaStream
+    // is replaced (e.g. after webcamRecorder.snapshot()).
+    const ts = Math.round(t0);
 
     let handData: HandData | null = null;
     let mpDetections: YoloDetection[] = [];
