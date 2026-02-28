@@ -178,6 +178,139 @@ SkillForge is designed to be fully functional with only an `ANTHROPIC_API_KEY`, 
 
 ---
 
+Here's a complete step-by-step overview of how your teammate can get onto this Brev instance and use the SAM3 server.
+
+---
+
+## Current Setup Summary
+
+| Detail | Value |
+|--------|-------|
+| **Hostname** | `brev-mj7yysud1` |
+| **Public IP** | `216.81.245.40` |
+| **GPUs** | 2x NVIDIA A100 80GB PCIe |
+| **SSH Port** | 22 (open via UFW) |
+| **SAM3 Server** | Running on port 8080 (bound to `0.0.0.0`, but **blocked by firewall**) |
+| **OS User** | `shadeform` (also `root` access) |
+
+---
+
+## Step-by-Step for Your Teammate
+
+### 1. Add their SSH public key to the server
+
+Your teammate needs to generate an SSH key pair (if they don't have one) and send you their **public key**. Then you (or they, via you) add it to the server:
+
+```bash
+# On your teammate's machine -- generate a key if needed
+ssh-keygen -t ed25519 -C "teammate@email.com"
+cat ~/.ssh/id_ed25519.pub   # send this to you
+```
+
+Then on the server, append it to `~/.ssh/authorized_keys`:
+
+```bash
+echo "ssh-ed25519 AAAA...their_key... teammate@email.com" >> /home/shadeform/.ssh/authorized_keys
+```
+
+There is already one key in `authorized_keys` (for `harrishayyanar21@outlook.com`). Each additional teammate gets a new line.
+
+### 2. SSH into the instance
+
+Your teammate connects with:
+
+```bash
+ssh shadeform@216.81.245.40
+```
+
+Or if they want to also use Cursor remote SSH, they can add this to their `~/.ssh/config`:
+
+```
+Host brev-sam3
+    HostName 216.81.245.40
+    User shadeform
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+Then just `ssh brev-sam3`.
+
+### 3. Port-forward the SAM3 API (port 8080)
+
+The firewall (`init.sh`) only allows inbound traffic on ports 22 and 2222. Port 8080 is **not** exposed to the internet, which is the correct security posture. Your teammate accesses it via SSH tunnel:
+
+```bash
+ssh -L 8080:localhost:8080 shadeform@216.81.245.40
+```
+
+Now on their local machine, `http://localhost:8080` hits the SAM3 server. They can test with:
+
+```bash
+curl http://localhost:8080/health
+```
+
+Expected response:
+
+```json
+{"status": "ok", "model": "sam3", "gpu": "NVIDIA A100 80GB PCIe", "tracking_sessions": 0}
+```
+
+### 4. Verify the SAM3 server is running
+
+The server is currently running in a tmux session called `sam3`. If it ever goes down, reconnect and restart:
+
+```bash
+# Attach to the existing tmux session
+tmux attach -t sam3
+
+# If the server isn't running, start it:
+cd /home/shadeform && python3 -m uvicorn sam3_server:app --host 0.0.0.0 --port 8080
+```
+
+### 5. Use the API
+
+With the tunnel active, your teammate can hit all endpoints from their machine:
+
+| Endpoint | Purpose | Latency |
+|----------|---------|---------|
+| `GET /health` | Health check | instant |
+| `POST /segment` | Single-shot segmentation (image + text) | ~300ms |
+| `POST /track/start` | Start tracking session (first frame + text) | ~300ms |
+| `POST /track/frame` | Send subsequent frames (fast propagation) | ~30-50ms |
+| `POST /track/stop` | Close session, free GPU memory | instant |
+
+Example test:
+
+```bash
+curl -X POST http://localhost:8080/segment \
+  -F image=@photo.jpg \
+  -F text="coffee mug"
+```
+
+---
+
+## Alternative: Open port 8080 directly (less secure)
+
+If you'd rather skip the SSH tunnel and expose the API directly (e.g., for a frontend calling it), you'd need to open the firewall:
+
+```bash
+sudo ufw allow 8080/tcp
+```
+
+But this means **anyone** on the internet can hit your GPU server with no authentication. Only do this temporarily for a hackathon/demo, and close it after.
+
+---
+
+## Quick-Reference Card for Your Teammate
+
+```
+1.  Send your SSH public key to [you]
+2.  ssh -L 8080:localhost:8080 shadeform@216.81.245.40
+3.  curl http://localhost:8080/health   (verify it works)
+4.  Start building against the API at localhost:8080
+```
+
+Let me know if you want me to add a new key for a specific teammate, or if you'd prefer to open port 8080 directly instead of using the tunnel.
+
 ## License
 
 This project is for internal and educational use. See individual service documentation for third-party licensing terms (Ultralytics YOLOv8, Meta SAM 2/3, Grounding DINO, DINOv2, NVIDIA NIM, Anthropic Claude).

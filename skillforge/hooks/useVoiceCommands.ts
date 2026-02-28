@@ -39,6 +39,8 @@ export function useVoiceCommands({
   const onFinishRef = useRef(onFinish);
   const onPreviousStepRef = useRef(onPreviousStep);
   const lastLLMCallRef = useRef(0);
+  const lastCommandRef = useRef<number>(0);
+  const COMMAND_COOLDOWN_MS = 2000;
 
   useEffect(() => { onNextStepRef.current = onNextStep; }, [onNextStep]);
   useEffect(() => { onFinishRef.current = onFinish; }, [onFinish]);
@@ -114,6 +116,11 @@ export function useVoiceCommands({
 
       if (!intent) return;
 
+      // Cooldown: ignore commands fired within 2s of the last one
+      const now = Date.now();
+      if (now - lastCommandRef.current < COMMAND_COOLDOWN_MS) return;
+      lastCommandRef.current = now;
+
       if (intent === "next") onNextStepRef.current();
       else if (intent === "prev") onPreviousStepRef.current?.();
       else if (intent === "finish") onFinishRef.current();
@@ -123,7 +130,6 @@ export function useVoiceCommands({
     };
 
     recognition.onresult = (event: any) => {
-      let interim = "";
       let final = "";
       let hasFinal = false;
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -133,15 +139,15 @@ export function useVoiceCommands({
           final += text + " ";
           stepTranscript += text + " ";
           hasFinal = true;
-        } else {
-          interim = text;
         }
       }
 
       transcriptRef.current = stepTranscript;
 
-      const check = (final + interim).toLowerCase().trim();
-      if (check) runMatcher(check, hasFinal);
+      // Only run the command matcher on finalised results — ignoring interim
+      // transcripts prevents ambient speech and partial phrases from triggering
+      // commands prematurely.
+      if (hasFinal) runMatcher(final.trim(), true);
     };
 
     // Small delay so React Strict Mode's first-pass cleanup finishes before
