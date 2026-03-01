@@ -35,6 +35,8 @@ export interface Annotation {
   created_at: number;
 }
 
+export type ClickTargetRole = "primary" | "context" | "warning";
+
 export interface ClickTarget {
   id: string;
   step_id: string;
@@ -49,6 +51,7 @@ export interface ClickTarget {
   is_primary: boolean;
   mask_path?: string;
   frame_path?: string;
+  role?: ClickTargetRole;
 }
 
 export interface StepFrame {
@@ -97,6 +100,7 @@ export interface Workflow {
   total_steps: number;
   thumbnail_path?: string;
   steps: Step[];
+  apparatus_objects?: ApparatusObject[];
   created_at: number;
   updated_at: number;
 }
@@ -205,4 +209,40 @@ export interface PlayerState {
   chatHistory: ChatMessage[];
   isCopilotLoading: boolean;
   currentInstruction: string;
+}
+
+// ─── Apparatus / Multi-Agent Memory ──────────────────────────────────────────
+
+export interface ApparatusObject {
+  id: string;
+  workflow_id: string;
+  object_name: string;
+  object_type: string;
+  visual_cues: string;
+  sam3_prompt: string;
+  angle_count: number;
+  reference_frame_paths: string[];
+}
+
+export interface StepContext {
+  workflow: { title: string; description: string };
+  apparatus_catalog: ApparatusObject[];
+  previous_steps: StepContextSummary[];
+  current_step: {
+    step_number: number;
+    title: string;
+    description: string;
+    transcript: string;
+    note: string;
+  };
+}
+
+export interface StepContextSummary {
+  step_number: number;
+  title: string;
+  description: string;
+  transcript: string;
+  objects_used: string[];
+  observations: string;
+  frame_insights: string[];
 }

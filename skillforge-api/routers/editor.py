@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File
 from models.database import fetchone, fetchall, execute, execute_many, new_id, now_ms
 from models.schemas import (
     StepCreateRequest,
@@ -555,13 +555,15 @@ async def _read_frame_bytes(kf_path: str) -> bytes:
 async def re_record_step(
     workflow_id: str,
     step_id: str,
+    background_tasks: BackgroundTasks,
     video: UploadFile = File(...),
 ):
-    """Replace a step's video segment and re-run analysis."""
+    """Replace a step's video segment, re-run analysis, and invalidate downstream contexts."""
     import os
     import shutil
     from pathlib import Path
     from services.video_processor import extract_frames
+    from services.memory_layer import invalidate_contexts_from
 
     wf = await fetchone("SELECT * FROM workflows WHERE id=?", (workflow_id,))
     if not wf:
@@ -587,6 +589,8 @@ async def re_record_step(
 
     await execute("DELETE FROM annotations WHERE step_id=?", (step_id,))
     await execute("DELETE FROM click_targets WHERE step_id=?", (step_id,))
+
+    invalidated = await invalidate_contexts_from(workflow_id, step["step_number"])
 
     ts = now_ms()
     await execute(
@@ -663,7 +667,72 @@ async def re_record_step(
         else:
             break
 
+    if invalidated and len(invalidated) > 1:
+        background_tasks.add_task(
+            _rebuild_downstream_contexts,
+            workflow_id,
+            step["step_number"] + 1,
+        )
+
     return await _get_step(step_id)
+
+
+# ─── Context rebuild for downstream steps after re-record ────────────────────
+
+async def _rebuild_downstream_contexts(workflow_id: str, from_step: int):
+    """
+    Re-run the multi-agent pipeline for steps from_step..N to rebuild
+    their context documents after an upstream step was re-recorded.
+    """
+    from services.memory_layer import build_step_context, update_context_with_observations
+    from services.key_object_pipeline import run_key_object_analysis_multi
+
+    steps = await fetchall(
+        "SELECT * FROM steps WHERE workflow_id=? AND step_number>=? ORDER BY step_number",
+        (workflow_id, from_step),
+    )
+    for step in steps:
+        try:
+            context = await build_step_context(workflow_id, step["step_number"])
+            frames = await fetchall(
+                "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms",
+                (step["id"],),
+            )
+            if not frames:
+                continue
+
+            from pathlib import Path
+            uploads_dir = Path(__file__).parent.parent / "uploads"
+            frame_paths = [str(uploads_dir.parent / f["frame_path"]) for f in frames]
+
+            analysis = await run_key_object_analysis_multi(
+                frame_paths=frame_paths,
+                step_title=step.get("title", ""),
+                step_description=step.get("description", ""),
+                transcript=step.get("transcript", ""),
+                note=step.get("note", ""),
+                context=context,
+            )
+
+            await update_context_with_observations(
+                workflow_id=workflow_id,
+                step_number=step["step_number"],
+                objects_identified=analysis["target_objects"],
+                frame_observations=[
+                    det for dets in analysis["detection_results"].values() for det in dets
+                ],
+                new_observations=step.get("ai_description", ""),
+            )
+
+            print(
+                f"[Editor] Rebuilt context for step {step['step_number']} in workflow {workflow_id}",
+                flush=True,
+            )
+        except Exception as e:
+            print(
+                f"[Editor] Failed to rebuild context for step {step['step_number']}: {e}",
+                flush=True,
+            )
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

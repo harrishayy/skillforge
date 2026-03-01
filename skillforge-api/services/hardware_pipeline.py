@@ -2,12 +2,15 @@
 HARDWARE (webcam/guided) WORKFLOW PIPELINE — processes per-step video segments.
 
 Each step arrives as its own video file. The pipeline:
-  1. Extracts key frames from each step video
-  2. Uses Claude to generate titles and descriptions per step
-  3. Runs multi-agent key object analysis:
-     a. Claude identifies the key object from step context
-     b. Nemotron VL scans ALL frames for object presence
-     c. SAM3 segments the object in frames where it was found
+  1. (Optional) Runs apparatus showcase analysis to build object catalog
+  2. Extracts key frames from each step video
+  3. Uses Claude to generate titles and descriptions per step
+  4. Runs multi-agent key object analysis with persistent memory:
+     a. Builds context chain (apparatus catalog + previous steps)
+     b. Claude identifies N target objects per step
+     c. Nemotron VL scans ALL frames for each target object
+     d. SAM3 segments each object in its positive frames
+  5. Writes step context back to the memory layer for downstream steps
 
 Called as a FastAPI BackgroundTask from routers/recording.py (upload-steps endpoint).
 """
@@ -15,10 +18,15 @@ import os
 import re
 import json
 from pathlib import Path
-from models.database import execute, new_id, now_ms
+from models.database import execute, fetchone, new_id, now_ms
 from app_ws.pipeline_ws import broadcast
 from services.video_processor import extract_frames, get_video_duration_ms
-from services.key_object_pipeline import run_key_object_analysis
+from services.key_object_pipeline import run_key_object_analysis_multi
+from services.memory_layer import (
+    build_step_context,
+    save_step_context,
+    update_context_with_observations,
+)
 
 UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
 
@@ -50,6 +58,7 @@ async def run_hardware_pipeline(
     step_transcripts: list[str],
     step_notes: list[str] | None = None,
     client_durations: list[int] | None = None,
+    apparatus_video_path: str | None = None,
 ):
     """
     Process per-step video segments for a hardware/webcam guided recording.
@@ -58,13 +67,30 @@ async def run_hardware_pipeline(
     step_notes = step_notes or []
     total_steps = len(step_video_paths)
 
-    # Fetch workflow-level context for the multi-agent pipeline
     wf = await execute_fetch_workflow(workflow_id)
     wf_title = wf.get("title", "") if wf else ""
     wf_description = wf.get("description", "") if wf else ""
 
     try:
-        await _log(workflow_id, "frame_extraction", f"Processing {total_steps} step videos...", 2)
+        # ── Apparatus showcase analysis (if video provided) ──────────────
+        if apparatus_video_path:
+            await _log(workflow_id, "frame_extraction", "Analyzing apparatus showcase...", 1)
+            try:
+                from services.apparatus_pipeline import run_apparatus_analysis
+                apparatus_objects = await run_apparatus_analysis(
+                    workflow_id=workflow_id,
+                    apparatus_video_path=apparatus_video_path,
+                    on_progress=lambda msg, pct: _log(workflow_id, "frame_extraction", msg, max(1, min(pct // 5, 4))),
+                )
+                await _log(
+                    workflow_id, "frame_extraction",
+                    f"Apparatus catalog: {len(apparatus_objects)} objects identified", 5,
+                )
+            except Exception as e:
+                print(f"[HardwarePipeline] Apparatus analysis failed: {e}", flush=True)
+                await _log(workflow_id, "frame_extraction", f"Apparatus analysis failed — continuing without catalog", 5)
+
+        await _log(workflow_id, "frame_extraction", f"Processing {total_steps} step videos...", 5)
 
         total_duration_ms = 0
         step_data: list[dict] = []
@@ -108,7 +134,7 @@ async def run_hardware_pipeline(
         )
         await _log(workflow_id, "frame_extraction", "Frame extraction complete", 35)
 
-        # ── Claude step annotation ────────────────────────────────────────────
+        # ── Claude step annotation ────────────────────────────────────────
         await _log(workflow_id, "claude_decompose", "Generating step titles and annotations...", 40)
 
         steps_created = 0
@@ -150,7 +176,6 @@ async def run_hardware_pipeline(
             workflow_offset_ms = wf_end
             steps_created += 1
 
-            # Store all extracted frames in step_frames table
             key_frame_rel = sd["key_frame"]["relative_path"] if sd["key_frame"] else None
             frame_id_map: dict[str, str] = {}
             for frm in sd["frames"]:
@@ -168,50 +193,53 @@ async def run_hardware_pipeline(
                     ),
                 )
 
-            # ── Multi-agent key object analysis ───────────────────────────────
+            # ── Multi-agent key object analysis with memory context ───────
             if sd["frames"]:
                 await _log(
                     workflow_id, "nemotron_vl",
-                    f"Step {step_num}: Running key object detection...",
+                    f"Step {step_num}: Running multi-object detection...",
                     55 + int((step_num / total_steps) * 30),
                 )
 
                 try:
+                    context = await build_step_context(workflow_id, step_num)
+
                     frame_paths = [frm["path"] for frm in sd["frames"]]
-                    analysis = await run_key_object_analysis(
+                    analysis = await run_key_object_analysis_multi(
                         frame_paths=frame_paths,
                         step_title=title,
                         step_description=description,
                         transcript=sd["transcript"],
                         note=sd["note"],
-                        workflow_title=wf_title,
-                        workflow_description=wf_description,
+                        context=context,
                     )
 
-                    # Store sam3_prompt from Claude's key object identification
-                    key_obj = analysis["key_object"]
-                    sam3_prompt = key_obj.get("sam3_prompt", "")
+                    target_objects = analysis["target_objects"]
+                    primary_obj = next(
+                        (o for o in target_objects if o["role"] == "primary"),
+                        target_objects[0] if target_objects else {"label": title, "sam3_prompt": title},
+                    )
+
+                    sam3_prompt = primary_obj.get("sam3_prompt", "")
                     if sam3_prompt:
                         await execute(
                             "UPDATE steps SET sam3_prompt=? WHERE id=?",
                             (sam3_prompt, step_id),
                         )
 
-                    # Update step_frames with per-frame detection results
-                    for detection in analysis["frame_detections"]:
-                        fpath = detection["frame_path"]
-                        fid = frame_id_map.get(fpath)
-                        if fid:
-                            await execute(
-                                "UPDATE step_frames SET object_detected=?, object_description=? WHERE id=?",
-                                (
-                                    1 if detection["present"] else 0,
-                                    detection.get("description", ""),
-                                    fid,
-                                ),
-                            )
+                    all_frame_detections = []
+                    for label, detections in analysis["detection_results"].items():
+                        for det in detections:
+                            all_frame_detections.append(det)
+                            fpath = det["frame_path"]
+                            fid = frame_id_map.get(fpath)
+                            if fid and det["present"]:
+                                await execute(
+                                    "UPDATE step_frames SET object_detected=?, object_description=? WHERE id=?",
+                                    (1, det.get("description", ""), fid),
+                                )
 
-                    # Store SAM3 segmentation results as click_targets (with mask files)
+                    # Store SAM3 segmentation results as click_targets
                     import base64 as b64mod
                     from services.sam3_service import generate_segmented_image
 
@@ -229,6 +257,9 @@ async def run_hardware_pipeline(
                         for seg in seg_result["segments"]:
                             bbox = seg.get("bbox", [0, 0, 0, 0])
                             ct_id = new_id()
+                            seg_label = seg.get("label", primary_obj.get("label", title))
+                            seg_role = seg.get("role", "primary")
+                            is_primary = 1 if seg_role == "primary" else 0
 
                             mask_path = None
                             mask_b64 = seg.get("mask_base64")
@@ -241,29 +272,27 @@ async def run_hardware_pipeline(
                                 """INSERT INTO click_targets
                                    (id, step_id, element_text, element_type,
                                     bbox_x, bbox_y, bbox_width, bbox_height,
-                                    action, confidence, is_primary, mask_path, frame_path)
-                                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                    action, confidence, is_primary, mask_path, frame_path, role)
+                                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                 (
                                     ct_id, step_id,
-                                    key_obj.get("key_object", title),
-                                    key_obj.get("object_type", "other"),
+                                    seg_label,
+                                    primary_obj.get("object_type", "other"),
                                     bbox[0] * 100, bbox[1] * 100,
                                     (bbox[2] - bbox[0]) * 100, (bbox[3] - bbox[1]) * 100,
-                                    "left_click", seg.get("score", 0), 0,
-                                    mask_path, seg_frame_rel,
+                                    "left_click", seg.get("score", 0), is_primary,
+                                    mask_path, seg_frame_rel, seg_role,
                                 ),
                             )
 
-                    # Generate pre-rendered segmented images for each positive frame
                     seg_dir = UPLOADS_DIR / workflow_id / "segmented" / step_id
-                    obj_label = key_obj.get("key_object", "")
                     for frame_abs, segs in seg_by_frame.items():
                         fid = frame_id_map.get(frame_abs)
                         if not fid or not segs:
                             continue
                         out_file = seg_dir / f"{fid}.jpg"
                         result_path = generate_segmented_image(
-                            frame_abs, segs, str(out_file), label=obj_label,
+                            frame_abs, segs, str(out_file),
                         )
                         if result_path:
                             seg_rel = str(Path(result_path).relative_to(UPLOADS_DIR.parent))
@@ -272,11 +301,21 @@ async def run_hardware_pipeline(
                                 (seg_rel, fid),
                             )
 
-                    pos = analysis["positive_frame_count"]
-                    tot = analysis["total_frame_count"]
+                    # ── Context writeback to memory layer ─────────────────
+                    await update_context_with_observations(
+                        workflow_id=workflow_id,
+                        step_number=step_num,
+                        objects_identified=target_objects,
+                        frame_observations=all_frame_detections,
+                        new_observations=ai_summary or "",
+                    )
+
+                    total_pos = sum(analysis["positive_frame_counts"].values())
+                    total_frames = analysis["total_frame_count"]
+                    obj_names = ", ".join(f'"{o["label"]}"' for o in target_objects)
                     await _log(
                         workflow_id, "nemotron_vl",
-                        f'Step {step_num}: "{key_obj["key_object"]}" found in {pos}/{tot} frames',
+                        f"Step {step_num}: {obj_names} — {total_pos} detections across {total_frames} frames",
                         55 + int((step_num / total_steps) * 35),
                     )
 
@@ -310,7 +349,7 @@ async def run_hardware_pipeline(
                 55 + int((step_num / total_steps) * 35),
             )
 
-        # ── Finalize ──────────────────────────────────────────────────────────
+        # ── Finalize ──────────────────────────────────────────────────────
         await execute(
             "UPDATE workflows SET status='ready', total_steps=?, updated_at=? WHERE id=?",
             (steps_created, now_ms(), workflow_id),
