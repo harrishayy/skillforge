@@ -6,16 +6,31 @@ import { StepVideoOverlay } from "@/components/player/StepVideoOverlay";
 
 type ViewTab = "frames" | "video";
 
+const SEGMENT_COLORS = [
+  { border: "#FFC412", fill: "rgba(255,196,18,0.18)" },
+  { border: "#00FF80", fill: "rgba(0,255,128,0.18)" },
+  { border: "#00C8FF", fill: "rgba(0,200,255,0.18)" },
+  { border: "#FF64FF", fill: "rgba(255,100,255,0.18)" },
+  { border: "#FF5050", fill: "rgba(255,80,80,0.18)" },
+  { border: "#648CFF", fill: "rgba(100,140,255,0.18)" },
+  { border: "#E879F9", fill: "rgba(232,121,249,0.18)" },
+  { border: "#34D399", fill: "rgba(52,211,153,0.18)" },
+];
+
 export function StepFrameViewer() {
   const store = useWorkflowStore();
   const step = selectedStep(store);
   const {
+    workflow,
     segmentsByStep,
     segmentingStepId,
     activeFramePath,
     addSegment,
     setActiveFrame,
   } = store;
+
+  const segmentationReady = workflow?.segmentation_status === "ready";
+  const segmentationProcessing = workflow?.segmentation_status === "processing" || workflow?.segmentation_status === "pending";
 
   const imgRef = useRef<HTMLImageElement>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -87,8 +102,8 @@ export function StepFrameViewer() {
       {/* Main content */}
       {tab === "frames" ? (
         <div className="flex-1 flex flex-col gap-3 min-h-0">
-          {/* SAM3-detected frames (always visible) */}
-          {detectedFrames.length > 0 && (
+          {/* SAM3-detected frames or processing indicator */}
+          {detectedFrames.length > 0 ? (
             <div className="shrink-0">
               <div className="flex items-center gap-2 mb-1.5">
                 <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "var(--sf-lime)" }} />
@@ -135,7 +150,27 @@ export function StepFrameViewer() {
                 </div>
               </div>
             </div>
-          )}
+          ) : segmentationProcessing ? (
+            <div className="shrink-0">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: "var(--sf-yellow)" }} />
+                <span className="text-[10px] font-bold" style={{ color: "var(--sf-yellow)" }}>
+                  SAM3 SEGMENTATION IN PROGRESS...
+                </span>
+              </div>
+              <div
+                className="flex items-center gap-2 px-3 py-2 rounded-lg"
+                style={{ backgroundColor: "rgba(255,196,18,0.08)", border: "1px solid rgba(255,196,18,0.2)" }}
+              >
+                <svg className="animate-spin w-3.5 h-3.5" style={{ color: "var(--sf-yellow)" }} viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.416" strokeDashoffset="10" strokeLinecap="round" />
+                </svg>
+                <span className="text-[10px]" style={{ color: "var(--sf-yellow)" }}>
+                  Video segmentation is being processed. Segments will appear automatically.
+                </span>
+              </div>
+            </div>
+          ) : null}
 
           {/* All frames (collapsible) */}
           {frames.length > 1 && (
@@ -221,21 +256,32 @@ export function StepFrameViewer() {
                 />
 
                 {/* Manual SAM3 segment overlays (click-to-segment) */}
-                {segments.map((seg, i) => (
-                  <div
-                    key={i}
-                    className="absolute pointer-events-none"
-                    style={{
-                      left: `${seg.bbox[0] * 100}%`,
-                      top: `${seg.bbox[1] * 100}%`,
-                      width: `${(seg.bbox[2] - seg.bbox[0]) * 100}%`,
-                      height: `${(seg.bbox[3] - seg.bbox[1]) * 100}%`,
-                      border: "2px solid var(--sf-yellow)",
-                      borderRadius: 4,
-                      backgroundColor: "rgba(255,196,18,0.15)",
-                    }}
-                  />
-                ))}
+                {segments.map((seg, i) => {
+                  const palette = SEGMENT_COLORS[i % SEGMENT_COLORS.length];
+                  return (
+                    <div
+                      key={i}
+                      className="absolute pointer-events-none"
+                      style={{
+                        left: `${seg.bbox[0] * 100}%`,
+                        top: `${seg.bbox[1] * 100}%`,
+                        width: `${(seg.bbox[2] - seg.bbox[0]) * 100}%`,
+                        height: `${(seg.bbox[3] - seg.bbox[1]) * 100}%`,
+                        border: `2px solid ${palette.border}`,
+                        borderRadius: 4,
+                        backgroundColor: palette.fill,
+                        boxShadow: `0 0 8px ${palette.border}40`,
+                      }}
+                    >
+                      <span
+                        className="absolute -top-5 left-0 text-[9px] font-bold px-1.5 py-0.5 rounded"
+                        style={{ backgroundColor: palette.border, color: "#000" }}
+                      >
+                        {seg.score ? `${Math.round(seg.score * 100)}%` : `#${i + 1}`}
+                      </span>
+                    </div>
+                  );
+                })}
 
                 {isSegmenting && (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded-lg">
@@ -291,7 +337,7 @@ export function StepFrameViewer() {
                 muted
                 className="max-w-full max-h-[60vh] rounded-lg"
               />
-              <StepVideoOverlay videoRef={videoRef} step={step} />
+              <StepVideoOverlay videoRef={videoRef} step={step} segmentationProcessing={segmentationProcessing} />
             </div>
           ) : (
             <div className="text-sm" style={{ color: "#444" }}>No video available</div>

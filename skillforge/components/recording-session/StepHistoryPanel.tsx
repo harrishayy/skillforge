@@ -93,7 +93,38 @@ export function StepHistoryPanel({
               </span>
             </div>
 
-            {/* Individual objects row */}
+            {/* Completed individual objects */}
+            {apparatus.phase === "individual" && apparatus.objectCount > 1 && (
+              <AnimatePresence initial={false}>
+                {Array.from({ length: apparatus.objectCount - 1 }, (_, i) => (
+                  <motion.div
+                    key={`obj-done-${i + 1}`}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className="flex items-center gap-2.5 px-3 py-2 rounded-xl"
+                    style={{
+                      backgroundColor: "rgba(255,255,255,0.05)",
+                      border: "1px solid transparent",
+                    }}
+                  >
+                    <div
+                      className="w-5 h-5 rounded-full flex items-center justify-center shrink-0"
+                      style={{ backgroundColor: "var(--sf-lime)" }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--sf-black)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    </div>
+                    <span className="text-sm text-white font-medium">Object {i + 1}</span>
+                    <span className="text-xs ml-auto" style={{ color: "rgba(255,255,255,0.4)" }}>
+                      done
+                    </span>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            )}
+
+            {/* Current individual object */}
             {apparatus.phase === "individual" && (
               <motion.div
                 initial={{ opacity: 0, x: -10 }}

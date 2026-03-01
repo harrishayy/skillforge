@@ -162,8 +162,8 @@ export function SessionControlBar({
               : voiceHint
                 ? voiceHint
                 : micEnabled
-                  ? <>Say &ldquo;next step&rdquo; or double-tap pinch to advance &middot; Say &ldquo;finish recording&rdquo; to end</>
-                  : <>Voice commands muted &middot; Double-tap pinch to advance</>
+                  ? <>Say &ldquo;next step&rdquo; or Spider-Man gesture to advance &middot; Say &ldquo;finish recording&rdquo; to end</>
+                  : <>Voice commands muted &middot; Spider-Man gesture to advance</>
             }
           </p>
           {voiceStatus !== "unavailable" && (

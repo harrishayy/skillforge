@@ -19,8 +19,8 @@ import asyncio
 
 import anthropic
 
-from services.nemotron_client import detect_object_in_frames_batch
-from services.sam3_service import segment_multi_concept
+from services.nemotron_client import detect_objects_in_frames_parallel
+from services.sam3_service import segment_multi_concept, segment_concept
 
 
 # ── Agent 1: Claude — decide which objects to detect and segment ─────────────
@@ -92,13 +92,16 @@ async def identify_key_objects(
                 "visual_cues": obj.get("visual_cues", ""),
                 "sam3_prompt": obj.get("sam3_prompt", obj.get("label", step_title)),
                 "role": obj.get("role", "primary"),
+                "size_hint": obj.get("size_hint", "medium"),
                 "reasoning": obj.get("reasoning", ""),
             })
 
         if not objects:
             objects = [_fallback_key_object(step_title)]
 
-        labels_str = ", ".join(f'"{o["label"]}" ({o["role"]})' for o in objects)
+        labels_str = ", ".join(
+            f'"{o["label"]}" ({o["role"]}, {o["size_hint"]})' for o in objects
+        )
         print(f"[KeyObjectPipeline] Claude identified {len(objects)} target(s): {labels_str}", flush=True)
         return objects
 
@@ -122,11 +125,19 @@ def _build_system_prompt(context: dict | None) -> str:
         '"visual_cues": "color, shape, markings that help identify it", '
         '"sam3_prompt": "visually descriptive phrase for image segmentation (no verbs)", '
         '"role": "primary|context|warning", '
+        '"size_hint": "large|medium|small", '
         '"reasoning": "why this object matters for this step"}]\n\n'
         "ROLE rules:\n"
         "- primary: the object the trainee directly acts on or uses\n"
         "- context: a supporting element (port, slot, target location)\n"
         "- warning: safety-critical element to be aware of\n\n"
+        "SIZE_HINT rules (controls how the segmentation model finds the object):\n"
+        "- large: easily visible objects that dominate a region of the frame "
+        "(circuit boards, motors, tools, housings, containers)\n"
+        "- medium: moderate-sized objects (wires, cables, large connectors, buttons)\n"
+        "- small: tiny or precise components that occupy a very small area "
+        "(individual pins, labeled ports like VIN/GND, SMD components, small switches, "
+        "DIP switch positions, screw terminals, LED indicators)\n\n"
         "Keep the total to 1-4 objects. Every step must have at least one primary."
     )
     return base
@@ -232,9 +243,16 @@ async def scan_frames_for_objects(
     frame_paths: list[str],
     target_objects: list[dict],
     on_progress=None,
+    step_context: str | None = None,
 ) -> dict[str, list[dict]]:
     """
     For each target object, scan all frames for presence using Nemotron VL.
+    All objects are scanned in parallel (interleaved with a shared semaphore)
+    rather than sequentially.
+
+    Args:
+        step_context: Optional rich context (title, description, transcript)
+            from the Claude Haiku refinement stage, passed to Nemotron.
 
     Returns:
         {
@@ -245,28 +263,26 @@ async def scan_frames_for_objects(
             ...
         }
     """
-    results = {}
-
+    objects_with_frames: list[tuple[str, str, list[str]]] = []
     for i, obj in enumerate(target_objects):
         label = obj.get("label", f"object_{i}")
         desc = obj["label"]
         if obj.get("visual_cues"):
             desc += f" — {obj['visual_cues']}"
+        objects_with_frames.append((label, desc, frame_paths))
 
-        if on_progress:
-            await on_progress(
-                f"Scanning for \"{label}\" ({i+1}/{len(target_objects)})...",
-                i, len(target_objects),
-            )
-
-        detections = await detect_object_in_frames_batch(
-            frame_paths=frame_paths,
-            object_description=desc,
-            batch_size=4,
+    if on_progress:
+        labels = ", ".join(f'"{l}"' for l, _, _ in objects_with_frames)
+        await on_progress(
+            f"Scanning {len(objects_with_frames)} objects in parallel: {labels}...",
+            0, len(target_objects),
         )
 
-        results[label] = detections
+    results = await detect_objects_in_frames_parallel(
+        objects_with_frames, step_context=step_context,
+    )
 
+    for label, detections in results.items():
         positive = sum(1 for d in detections if d["present"])
         print(
             f"[KeyObjectPipeline] Nemotron: \"{label}\" found in {positive}/{len(frame_paths)} frames",
@@ -292,21 +308,102 @@ async def scan_frames_for_object(
 
 # ── Agent 3: SAM3 — multi-object segmentation ────────────────────────────────
 
+_NEMOTRON_PREAMBLE = re.compile(
+    r"^(The image (shows?|contains?|depicts?|does not)|"
+    r"Yes,?\s*|No,?\s*|"
+    r"The object (is|in the image)|"
+    r"There is a?n?\s*|"
+    r"In the image,?\s*|"
+    r"It (is|shows?)\s*)",
+    re.IGNORECASE,
+)
+
+
+def _clean_nemotron_for_sam3(desc: str) -> str:
+    """
+    Strip conversational preamble from a Nemotron description so SAM3
+    receives a concise visual noun-phrase rather than a full sentence.
+
+    'The Arduino Uno board is visible in the image, characterized by its
+     blue PCB and USB connector' → 'Arduino Uno board, blue PCB and USB connector'
+    """
+    if not desc:
+        return ""
+    cleaned = _NEMOTRON_PREAMBLE.sub("", desc).strip(" ,;:.")
+    if not cleaned:
+        return ""
+    cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
+
+
+SAM3_PARALLEL_BATCH = 6
+
+
+async def _segment_single_frame(
+    frame_path: str,
+    objects_present: list[dict],
+    confidence_threshold: float,
+) -> dict | None:
+    """
+    Segment all target objects in a single frame via full-frame text prompts.
+
+    Each object in objects_present may carry a '_nemotron_desc' field — the
+    visual description Nemotron returned for this specific frame.  When
+    available it replaces the generic Claude sam3_prompt, giving SAM3 a
+    concrete visual description (colors, shapes, spatial context) instead
+    of an abstract functional label.
+    """
+    from pathlib import Path
+
+    try:
+        frame_bytes = Path(frame_path).read_bytes()
+
+        prompts = []
+        for obj in objects_present:
+            nemotron_desc = _clean_nemotron_for_sam3(obj.get("_nemotron_desc", ""))
+            prompt = nemotron_desc if nemotron_desc else obj["sam3_prompt"]
+            if nemotron_desc:
+                print(
+                    f"[KeyObjectPipeline] SAM3 prompt for \"{obj['label']}\" "
+                    f"enriched by Nemotron: \"{prompt[:80]}\"",
+                    flush=True,
+                )
+            prompts.append({
+                "label": obj["label"],
+                "sam3_prompt": prompt,
+                "role": obj.get("role", "primary"),
+            })
+
+        seg_result = await segment_multi_concept(
+            frame_bytes, prompts, confidence_threshold,
+        )
+        segments = seg_result.get("segments", [])
+
+        if segments:
+            return {"frame_path": frame_path, "segments": segments}
+
+    except Exception as e:
+        print(f"[KeyObjectPipeline] Multi-object segmentation failed: {e}", flush=True)
+        return {"frame_path": frame_path, "segments": []}
+
+    return None
+
+
 async def segment_positive_frames_multi(
     frame_paths: list[str],
     target_objects: list[dict],
     detection_results: dict[str, list[dict]],
-    confidence_threshold: float = 0.35,
+    confidence_threshold: float = 0.15,
 ) -> list[dict]:
     """
     For each frame, determine which target objects are present (from Nemotron
-    results), then call SAM3 once per present object and merge all segments.
+    results), then segment all of them via full-frame text-prompt SAM3.
+
+    Processes frames in parallel batches of SAM3_PARALLEL_BATCH for throughput.
 
     Returns list of {frame_path, segments} where each segment includes
     label and role metadata.
     """
-    from pathlib import Path
-
     frame_object_map: dict[str, list[dict]] = {fp: [] for fp in frame_paths}
 
     for obj in target_objects:
@@ -314,32 +411,31 @@ async def segment_positive_frames_multi(
         detections = detection_results.get(label, [])
         for det in detections:
             if det["present"] and det["frame_path"] in frame_object_map:
-                frame_object_map[det["frame_path"]].append(obj)
+                frame_object_map[det["frame_path"]].append({
+                    **obj,
+                    "_nemotron_desc": det.get("description", ""),
+                })
 
-    results = []
-    for frame_path, objects_present in frame_object_map.items():
-        if not objects_present:
-            continue
+    work_items = [
+        (fp, objs) for fp, objs in frame_object_map.items() if objs
+    ]
 
-        try:
-            frame_bytes = Path(frame_path).read_bytes()
-            prompts = [
-                {
-                    "label": obj["label"],
-                    "sam3_prompt": obj["sam3_prompt"],
-                    "role": obj.get("role", "primary"),
-                }
-                for obj in objects_present
-            ]
-            seg_result = await segment_multi_concept(
-                frame_bytes, prompts, confidence_threshold,
-            )
-            segments = seg_result.get("segments", [])
-            if segments:
-                results.append({"frame_path": frame_path, "segments": segments})
-        except Exception as e:
-            print(f"[KeyObjectPipeline] Multi-object segmentation failed: {e}", flush=True)
-            results.append({"frame_path": frame_path, "segments": []})
+    results: list[dict] = []
+    for i in range(0, len(work_items), SAM3_PARALLEL_BATCH):
+        batch = work_items[i : i + SAM3_PARALLEL_BATCH]
+        batch_results = await asyncio.gather(
+            *[
+                _segment_single_frame(fp, objs, confidence_threshold)
+                for fp, objs in batch
+            ],
+            return_exceptions=True,
+        )
+        for r in batch_results:
+            if isinstance(r, Exception):
+                print(f"[KeyObjectPipeline] SAM3 batch error: {r}", flush=True)
+                continue
+            if r is not None:
+                results.append(r)
 
     return results
 
@@ -347,14 +443,13 @@ async def segment_positive_frames_multi(
 async def segment_positive_frames(
     positive_frames: list[dict],
     sam3_prompt: str,
-    confidence_threshold: float = 0.35,
+    confidence_threshold: float = 0.15,
 ) -> list[dict]:
     """
     Legacy single-prompt segmentation. Kept for backward compatibility with
     editor rerun-pipeline and other callers.
     """
     from pathlib import Path
-    from services.sam3_service import segment_concept
 
     results = []
     for frame_info in positive_frames:
@@ -413,8 +508,22 @@ async def run_key_object_analysis_multi(
         labels = ", ".join(f'"{o["label"]}"' for o in target_objects)
         await on_progress(f"Target objects: {labels} — scanning frames...", 1, 3)
 
+    # Build rich context for Nemotron from the Claude Haiku refinement stage
+    nemotron_context_parts = []
+    if step_title:
+        nemotron_context_parts.append(f'Step: "{step_title}"')
+    if step_description:
+        nemotron_context_parts.append(f'Description: "{step_description}"')
+    if transcript:
+        nemotron_context_parts.append(f'Expert narration: "{transcript[:300]}"')
+    nemotron_context = (
+        "Context for this frame:\n" + "\n".join(f"- {p}" for p in nemotron_context_parts)
+        if nemotron_context_parts else None
+    )
+
     detection_results = await scan_frames_for_objects(
         frame_paths, target_objects, on_progress=None,
+        step_context=nemotron_context,
     )
 
     positive_counts = {}
@@ -431,6 +540,34 @@ async def run_key_object_analysis_multi(
         frame_paths, target_objects, detection_results,
     )
 
+    # Build spatial descriptions for objects Nemotron detected but SAM3
+    # couldn't segment — pick the longest description per object.
+    segmented_labels: set[str] = set()
+    for seg_result in segmentations:
+        for seg in seg_result.get("segments", []):
+            if seg.get("label"):
+                segmented_labels.add(seg["label"])
+
+    spatial_descriptions: dict[str, str] = {}
+    for obj in target_objects:
+        label = obj.get("label", "")
+        if label in segmented_labels:
+            continue
+        if positive_counts.get(label, 0) == 0:
+            continue
+        detections = detection_results.get(label, [])
+        best_desc = max(
+            (d.get("description", "") for d in detections if d.get("present")),
+            key=len,
+            default="",
+        )
+        if best_desc:
+            spatial_descriptions[label] = best_desc
+            print(
+                f"[KeyObjectPipeline] Spatial fallback for \"{label}\": {best_desc[:100]}",
+                flush=True,
+            )
+
     total_segments = sum(len(s["segments"]) for s in segmentations)
     print(
         f"[KeyObjectPipeline] Multi-object complete: {len(target_objects)} objects, "
@@ -444,6 +581,7 @@ async def run_key_object_analysis_multi(
         "segmentations": segmentations,
         "positive_frame_counts": positive_counts,
         "total_frame_count": len(frame_paths),
+        "spatial_descriptions": spatial_descriptions,
     }
 
 

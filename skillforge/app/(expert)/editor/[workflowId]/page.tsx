@@ -6,21 +6,24 @@ import { getWorkflow, publishWorkflow, unpublishWorkflow } from "@/lib/api-clien
 import { showErrorToast } from "@/store/toast-store";
 import { useWorkflowStore } from "@/store/workflow-store";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
+import { useWorkflowSocket } from "@/hooks/useWorkflowSocket";
 import { StepList } from "@/components/editor/StepList";
 import { StepFrameViewer } from "@/components/editor/StepFrameViewer";
+import { ApparatusFrameViewer } from "@/components/editor/ApparatusFrameViewer";
 import { StepDetailPanel } from "@/components/editor/StepDetailPanel";
 import { PipelineStatus } from "@/components/recording/PipelineStatus";
 import { Spinner } from "@/components/ui/Spinner";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { TaskTypeBadge } from "@/components/shared/TaskTypeBadge";
+import type { PipelineEvent } from "@/types";
 
 export default function EditorPage() {
   const { workflowId } = useParams<{ workflowId: string }>();
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isPublishing, setIsPublishing] = useState(false);
-  const { workflow, setWorkflow, selectedStepId, selectStep } = useWorkflowStore();
+  const { workflow, setWorkflow, selectedStepId, selectedApparatusObjectId, selectStep, regeneratingAll, regenerateAll, rebuildingMemories } = useWorkflowStore();
 
   const leftPanel = useResizablePanel({
     initialWidth: 240,
@@ -69,6 +72,20 @@ export default function EditorPage() {
       })
       .catch((e) => { showErrorToast(e); setError(e.message); });
   }, [workflowId, selectedStepId, setWorkflow, selectStep]);
+
+  // Listen for segmentation_complete WebSocket events to refresh data
+  const segStatus = workflow?.segmentation_status;
+  const needsSegWatch = segStatus === "processing" || segStatus === "pending";
+
+  const handleSegmentationEvent = useCallback((event: PipelineEvent) => {
+    if (event.type === "segmentation_complete") {
+      getWorkflow(workflowId)
+        .then((wf) => setWorkflow(wf))
+        .catch((e) => showErrorToast(e));
+    }
+  }, [workflowId, setWorkflow]);
+
+  useWorkflowSocket(needsSegWatch ? workflowId : null, handleSegmentationEvent);
 
   if (isLoading) {
     return (
@@ -122,19 +139,40 @@ export default function EditorPage() {
           {workflow.steps.length} steps · Click on frames to segment
         </span>
         {workflow.status === "ready" && (
-          <Button
-            size="sm"
-            variant={workflow.published ? "secondary" : "primary"}
-            onClick={handleTogglePublish}
-            disabled={isPublishing}
-            style={
-              !workflow.published
-                ? { backgroundColor: "var(--sf-lime)", color: "var(--sf-black)", border: "1px solid var(--sf-lime)" }
-                : undefined
-            }
-          >
-            {isPublishing ? "..." : workflow.published ? "Unpublish" : "Publish"}
-          </Button>
+          <>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => regenerateAll()}
+              disabled={regeneratingAll || rebuildingMemories}
+              style={{
+                borderColor: "var(--sf-purple)",
+                color: regeneratingAll ? "#555" : "var(--sf-purple)",
+              }}
+            >
+              {regeneratingAll ? (
+                <span className="flex items-center gap-1.5">
+                  <Spinner className="w-3 h-3" />
+                  Regenerating...
+                </span>
+              ) : (
+                "Re-generate"
+              )}
+            </Button>
+            <Button
+              size="sm"
+              variant={workflow.published ? "secondary" : "primary"}
+              onClick={handleTogglePublish}
+              disabled={isPublishing || regeneratingAll}
+              style={
+                !workflow.published
+                  ? { backgroundColor: "var(--sf-lime)", color: "var(--sf-black)", border: "1px solid var(--sf-lime)" }
+                  : undefined
+              }
+            >
+              {isPublishing ? "..." : workflow.published ? "Unpublish" : "Publish"}
+            </Button>
+          </>
         )}
         <Link href={`/editor/${workflow.id}/preview`}>
           <Button size="sm">Preview as Trainee →</Button>
@@ -156,7 +194,7 @@ export default function EditorPage() {
 
         {/* Center: Frame viewer with SAM3 + filmstrip + video */}
         <div className="flex-1 flex flex-col overflow-hidden p-4 min-w-0">
-          <StepFrameViewer />
+          {selectedApparatusObjectId ? <ApparatusFrameViewer /> : <StepFrameViewer />}
         </div>
 
         {/* Right resize handle */}

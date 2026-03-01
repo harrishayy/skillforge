@@ -8,9 +8,16 @@ import { useVoiceCommands } from "@/hooks/useVoiceCommands";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
 import type { MPResult } from "@/hooks/useMediaPipeDetect";
 import { useDoubleTapDetection } from "@/hooks/useDoubleTapDetection";
-import { computePinchState } from "@/lib/pinch-detection";
+import { computePhoneGestureState } from "@/lib/phone-gesture-detection";
 import { renderHandLandmarks } from "@/lib/annotation-renderer";
-import { uploadStepVideos, getGuidedStepPrompt } from "@/lib/api-client";
+import {
+  uploadStepVideos,
+  getGuidedStepPrompt,
+  createWorkflow,
+  uploadApparatus,
+  uploadSingleStep,
+  finalizeWorkflow,
+} from "@/lib/api-client";
 import { showErrorToast } from "@/store/toast-store";
 import type { PipelineLogEvent, PipelineStage } from "@/types";
 import * as stepStorage from "@/lib/step-storage";
@@ -23,6 +30,7 @@ import { StepHistoryPanel, type CompletedStep } from "@/components/recording-ses
 import { HelpAndChatPanel } from "@/components/recording-session/HelpAndChatPanel";
 import { StepSavedToast } from "@/components/recording-session/StepSavedToast";
 import { FinishConfirmation } from "@/components/recording-session/FinishConfirmation";
+import { SubtitleOverlay } from "@/components/ui/SubtitleOverlay";
 
 type SessionState = "mounting" | "recovering" | "apparatus_showcase" | "recording" | "confirming_finish" | "uploading" | "processing";
 
@@ -67,6 +75,9 @@ export default function RecordingSessionPage() {
   stepNotesRef.current = stepNotes;
   const [editingStepNumber, setEditingStepNumber] = useState<number | null>(null);
 
+  // Incremental pipeline: workflow created early so steps can be uploaded as they complete
+  const incrementalWorkflowIdRef = useRef<string | null>(null);
+
   // Apparatus showcase state
   const [apparatusPhase, setApparatusPhase] = useState<"overview" | "individual">("overview");
   const [apparatusObjectCount, setApparatusObjectCount] = useState(0);
@@ -90,7 +101,7 @@ export default function RecordingSessionPage() {
 
   // Hand data as state so useDoubleTapDetection re-runs on each new frame
   const [handData, setHandData] = useState<MPResult["hands"]>(null);
-  const pinchState = computePinchState(handData);
+  const gestureState = computePhoneGestureState(handData);
 
   const handleSaveNote = useCallback((stepNumber: number, text: string) => {
     setStepNotes((prev) => ({ ...prev, [stepNumber]: text }));
@@ -101,6 +112,7 @@ export default function RecordingSessionPage() {
   }, []);
 
   const [micEnabled, setMicEnabled] = useState(true);
+  const [subtitlesEnabled, setSubtitlesEnabled] = useState(false);
   const [gesturesEnabled, setGesturesEnabled] = useState(true);
   const webcamRecorder = useWebcamRecorder();
   const snapshotTranscriptRef = useRef<() => string>(() => "");
@@ -214,6 +226,21 @@ export default function RecordingSessionPage() {
         showErrorToast("Failed to save step to local storage. If the browser's storage is full, try clearing site data.");
       });
 
+      // Incremental upload: send this step to the pipeline immediately
+      const wfId = incrementalWorkflowIdRef.current;
+      if (wfId) {
+        uploadSingleStep({
+          workflowId: wfId,
+          stepNumber: prevStepNum,
+          blob,
+          transcript,
+          note: stepNotesRef.current[prevStepNum] ?? "",
+          durationMs,
+        }).catch((e) => {
+          console.warn(`[Session] Incremental upload failed for step ${prevStepNum}:`, e);
+        });
+      }
+
       const nextStep = prevStepNum + 1;
       stepStartTimeRef.current = snapshotTime;
       setCurrentStepNumber(nextStep);
@@ -267,38 +294,65 @@ export default function RecordingSessionPage() {
         blob: finalBlob,
         transcript,
         note: stepNotesRef.current[currentStepNumber] ?? "",
-        durationMs: 0,
+        durationMs: finalDurationMs,
       }).catch((e) => {
         console.warn("[FinishRecording] IndexedDB save failed:", e);
         showErrorToast("Failed to persist recording backup. Upload may not be recoverable if it fails.");
       });
 
-      const cfg = configRef.current;
-      const notesArr = stepVideosRef.current.map(
-        (sv) => stepNotesRef.current[sv.stepNumber] ?? ""
-      );
-      const totalMB = stepVideosRef.current.reduce((s, v) => s + v.blob.size, 0) / 1024 / 1024;
-      pushUploadLog(
-        "upload",
-        `Uploading ${stepVideosRef.current.length} step video(s) (${totalMB.toFixed(1)} MB)...`
-      );
-      console.log(`[FinishRecording] Uploading ${stepVideosRef.current.length} step video(s)...`);
-      const result = await uploadStepVideos({
-        stepVideos: stepVideosRef.current.map((sv) => sv.blob),
-        title: cfg?.title ?? "Untitled",
-        initialDescription: cfg?.description,
-        stepTranscripts: stepTranscriptsRef.current,
-        stepNotes: notesArr,
-        stepDurations: stepVideosRef.current.map((sv) => sv.durationMs),
-        apparatusVideo: apparatusBlobRef.current ?? undefined,
-      });
+      const wfId = incrementalWorkflowIdRef.current;
+      const totalSteps = stepVideosRef.current.length;
 
-      pushUploadLog("upload", "Upload complete — starting AI pipeline...");
-      console.log("[FinishRecording] Upload succeeded, workflow_id:", result.workflow_id);
-      await stepStorage.clearSession().catch((err: unknown) => console.warn("[FinishRecording] Post-upload IndexedDB cleanup failed:", err));
+      if (wfId) {
+        // ── Incremental path: upload final step + finalize ──────────
+        pushUploadLog("upload", `Uploading final step ${currentStepNumber}...`);
+        await uploadSingleStep({
+          workflowId: wfId,
+          stepNumber: currentStepNumber,
+          blob: finalBlob,
+          transcript,
+          note: stepNotesRef.current[currentStepNumber] ?? "",
+          durationMs: finalDurationMs,
+        });
 
-      setWorkflowId(result.workflow_id);
-      setSessionState("processing");
+        pushUploadLog("upload", `Finalizing workflow with ${totalSteps} steps...`);
+        await finalizeWorkflow(wfId, totalSteps);
+
+        pushUploadLog("upload", "All steps submitted — AI pipeline processing...");
+        console.log("[FinishRecording] Incremental finalize succeeded, workflow_id:", wfId);
+        await stepStorage.clearSession().catch((err: unknown) => console.warn("[FinishRecording] Post-upload IndexedDB cleanup failed:", err));
+
+        setWorkflowId(wfId);
+        setSessionState("processing");
+      } else {
+        // ── Batch fallback: upload everything at once ────────────────
+        const cfg = configRef.current;
+        const notesArr = stepVideosRef.current.map(
+          (sv) => stepNotesRef.current[sv.stepNumber] ?? ""
+        );
+        const totalMB = stepVideosRef.current.reduce((s, v) => s + v.blob.size, 0) / 1024 / 1024;
+        pushUploadLog(
+          "upload",
+          `Uploading ${totalSteps} step video(s) (${totalMB.toFixed(1)} MB)...`
+        );
+        console.log(`[FinishRecording] Batch uploading ${totalSteps} step video(s)...`);
+        const result = await uploadStepVideos({
+          stepVideos: stepVideosRef.current.map((sv) => sv.blob),
+          title: cfg?.title ?? "Untitled",
+          initialDescription: cfg?.description,
+          stepTranscripts: stepTranscriptsRef.current,
+          stepNotes: notesArr,
+          stepDurations: stepVideosRef.current.map((sv) => sv.durationMs),
+          apparatusVideo: apparatusBlobRef.current ?? undefined,
+        });
+
+        pushUploadLog("upload", "Upload complete — starting AI pipeline...");
+        console.log("[FinishRecording] Batch upload succeeded, workflow_id:", result.workflow_id);
+        await stepStorage.clearSession().catch((err: unknown) => console.warn("[FinishRecording] Post-upload IndexedDB cleanup failed:", err));
+
+        setWorkflowId(result.workflow_id);
+        setSessionState("processing");
+      }
     } catch (err) {
       console.error("[FinishRecording] Failed:", err);
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -465,6 +519,14 @@ export default function RecordingSessionPage() {
       const blob = await webcamRecorder.snapshot();
       apparatusBlobRef.current = blob;
       console.log(`[Session] Apparatus showcase captured: ${(blob.size / 1024).toFixed(0)} KB`);
+
+      // Incremental: upload apparatus to pipeline immediately
+      const wfId = incrementalWorkflowIdRef.current;
+      if (wfId && blob.size > 0) {
+        uploadApparatus(wfId, blob).catch((e) => {
+          console.warn("[Session] Incremental apparatus upload failed:", e);
+        });
+      }
     } catch (err) {
       console.warn("[Session] Failed to snapshot apparatus video:", err);
     }
@@ -479,6 +541,8 @@ export default function RecordingSessionPage() {
     stepStartTimeRef.current = webcamRecorder.getDurationMs();
     setSessionState("recording");
     fetchStepPrompt(1, []);
+    // No apparatus_done event needed — the manager defaults to apparatus_done=set
+    // when no apparatus is enqueued (has_apparatus stays false)
   }, [webcamRecorder, fetchStepPrompt]);
 
   // ---------------------------------------------------------------------------
@@ -602,6 +666,16 @@ export default function RecordingSessionPage() {
           description: cfg.description,
           createdAt: Date.now(),
         }).catch((err: unknown) => console.warn("[Session] Failed to save session metadata to IndexedDB:", err));
+
+        // Create workflow early for incremental pipeline uploads
+        createWorkflow(cfg.title, cfg.description)
+          .then((res) => {
+            incrementalWorkflowIdRef.current = res.workflow_id;
+            console.log("[Session] Incremental workflow created:", res.workflow_id);
+          })
+          .catch((err: unknown) => {
+            console.warn("[Session] Failed to create incremental workflow — will use batch upload:", err);
+          });
       }
     })();
   }, [config]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -869,6 +943,30 @@ export default function RecordingSessionPage() {
             {gesturesEnabled ? "Gestures" : "Gestures off"}
           </button>
 
+          {/* Subtitles toggle */}
+          <button
+            onClick={() => setSubtitlesEnabled((v) => !v)}
+            className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition-all hover:scale-105"
+            style={{
+              backgroundColor: subtitlesEnabled
+                ? "rgba(190, 242, 100, 0.25)"
+                : "rgba(255, 255, 255, 0.08)",
+              color: subtitlesEnabled ? "var(--sf-lime)" : "rgba(255,255,255,0.4)",
+              backdropFilter: "blur(20px)",
+              border: `1px solid ${subtitlesEnabled ? "rgba(190,242,100,0.3)" : "rgba(255,255,255,0.1)"}`,
+            }}
+            title={subtitlesEnabled ? "Hide subtitles" : "Show subtitles"}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="1" y="4" width="22" height="16" rx="2" />
+              <path d="M7 15h4" />
+              <path d="M15 15h2" />
+              <path d="M7 11h2" />
+              <path d="M13 11h4" />
+            </svg>
+            {subtitlesEnabled ? "CC" : "CC off"}
+          </button>
+
           {/* Pinch indicator */}
           {gesturesEnabled && handData && (
             <div
@@ -879,7 +977,7 @@ export default function RecordingSessionPage() {
                 border: "1px solid rgba(255,255,255,0.1)",
               }}
             >
-              <PinchIndicator leftPressed={pinchState.leftPressed} rightPressed={pinchState.rightPressed} />
+              <PinchIndicator leftPressed={gestureState.leftPressed} rightPressed={gestureState.rightPressed} />
             </div>
           )}
         </div>
@@ -888,6 +986,13 @@ export default function RecordingSessionPage() {
       {/* Step saved toast */}
       <StepSavedToast key={toastKeyRef.current} stepNumber={savedStepToast} />
 
+      {/* Live subtitles */}
+      {isRecordingActive && (
+        <SubtitleOverlay
+          transcript={voice.displayTranscript}
+          visible={subtitlesEnabled}
+        />
+      )}
 
       {/* Left panel: step history */}
       <StepHistoryPanel
@@ -955,8 +1060,8 @@ export default function RecordingSessionPage() {
                       : "→ Next Object",
                     finishLabel: "✓ Done with Showcase",
                     voiceHint: micEnabled
-                      ? <>Say &ldquo;next&rdquo; to advance &middot; Say &ldquo;done&rdquo; to finish showcase</>
-                      : <>Voice muted &middot; Double-tap pinch to advance</>,
+                      ? <>Say &ldquo;object done&rdquo; to advance &middot; Say &ldquo;move to step&rdquo; to finish showcase</>
+                      : <>Voice muted &middot; Spider-Man gesture to advance</>,
                     onNextStep: voiceNext,
                     onFinish: voiceFinish,
                     onSkip: handleApparatusSkip,

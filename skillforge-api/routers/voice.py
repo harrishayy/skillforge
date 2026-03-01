@@ -16,11 +16,13 @@ The user may say things like:
 - To go to the next step: "next step", "skip", "continue", "go to the next phase", "advance"
 - To go to the previous step: "previous step", "go back", "back", "last step"
 - To finish/end: "finish", "done", "complete", "end recording", "stop recording"
+- To elaborate / break down the current step: "elaborate", "break it down", "more detail", "break down this step"
 
-Respond with EXACTLY one word: next, prev, finish, or none.
+Respond with EXACTLY one word: next, prev, finish, elaborate, or none.
 - next: user wants to advance to the next step
 - prev: user wants to go back to the previous step
 - finish: user wants to end/finish the current session
+- elaborate: user wants to break the current step into subtasks / get more detail
 - none: unclear or unrelated to step navigation
 
 User transcript:
@@ -46,7 +48,7 @@ async def classify_intent(body: VoiceIntentRequest) -> dict:
             raw = block.text.strip().lower()
             break
 
-    match = re.search(r"\b(next|prev|finish|none)\b", raw)
+    match = re.search(r"\b(next|prev|finish|elaborate|none)\b", raw)
     intent = match.group(1) if match else "none"
 
     return {"intent": intent}

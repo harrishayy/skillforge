@@ -30,6 +30,12 @@ async def get_apparatus_catalog(workflow_id: str) -> list[dict]:
                 ref_paths = json.loads(row["reference_frame_paths"])
             except (json.JSONDecodeError, TypeError):
                 pass
+        seg_paths = {}
+        if row.get("segmented_frame_paths"):
+            try:
+                seg_paths = json.loads(row["segmented_frame_paths"])
+            except (json.JSONDecodeError, TypeError):
+                pass
         catalog.append({
             "id": row["id"],
             "object_name": row["object_name"],
@@ -40,6 +46,7 @@ async def get_apparatus_catalog(workflow_id: str) -> list[dict]:
             "angle_count": row.get("angle_count", 0),
             "reference_frames": ref_paths,
             "segmented_reference_path": row.get("segmented_reference_path", ""),
+            "segmented_frame_paths": seg_paths,
         })
     return catalog
 
@@ -232,20 +239,22 @@ async def save_apparatus_object(
     reference_frame_paths: list[str] | None = None,
     description: str = "",
     segmented_reference_path: str = "",
+    segmented_frame_paths: dict[str, str] | None = None,
 ) -> str:
     """Insert a single apparatus object into the catalog. Returns its id."""
     obj_id = new_id()
     ts = now_ms()
     ref_json = json.dumps(reference_frame_paths or [])
+    seg_json = json.dumps(segmented_frame_paths or {})
     await execute(
         """INSERT INTO workflow_objects
            (id, workflow_id, object_name, object_type, visual_cues, sam3_prompt,
             angle_count, reference_frame_paths, description, segmented_reference_path,
-            created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            segmented_frame_paths, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (obj_id, workflow_id, object_name, object_type, visual_cues,
          sam3_prompt or object_name, angle_count, ref_json,
-         description, segmented_reference_path, ts),
+         description, segmented_reference_path, seg_json, ts),
     )
     return obj_id
 

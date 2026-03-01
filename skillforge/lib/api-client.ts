@@ -169,6 +169,119 @@ export async function uploadStepVideos(opts: {
   }
 }
 
+// ─── Incremental Upload (step-by-step during recording) ───────────────────────
+
+const STEP_UPLOAD_TIMEOUT_MS = 60_000;
+
+export async function createWorkflow(
+  title: string,
+  description?: string
+): Promise<{ workflow_id: string; status: string }> {
+  const formData = new FormData();
+  formData.append("title", title);
+  if (description) {
+    formData.append("initial_description", description);
+  }
+  console.log(`[createWorkflow] POST ${API_BASE}/api/workflows/create — "${title}"`);
+  const res = await fetch(`${API_BASE}/api/workflows/create`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body.detail ?? "Failed to create workflow");
+  }
+  const result = await res.json();
+  console.log("[createWorkflow] Success:", result);
+  return result;
+}
+
+export async function uploadApparatus(
+  workflowId: string,
+  blob: Blob
+): Promise<{ status: string }> {
+  const formData = new FormData();
+  formData.append("apparatus_video", blob, "apparatus.webm");
+  console.log(
+    `[uploadApparatus] POST ${API_BASE}/api/workflows/${workflowId}/apparatus — ` +
+    `${(blob.size / 1024).toFixed(0)} KB`
+  );
+  const res = await fetch(`${API_BASE}/api/workflows/${workflowId}/apparatus`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body.detail ?? "Apparatus upload failed");
+  }
+  return res.json();
+}
+
+export async function uploadSingleStep(opts: {
+  workflowId: string;
+  stepNumber: number;
+  blob: Blob;
+  transcript?: string;
+  note?: string;
+  durationMs?: number;
+}): Promise<{ status: string; step_number: number }> {
+  const formData = new FormData();
+  formData.append("step_video", opts.blob, `step_${opts.stepNumber}.webm`);
+  formData.append("step_number", String(opts.stepNumber));
+  if (opts.transcript) formData.append("transcript", opts.transcript);
+  if (opts.note) formData.append("note", opts.note);
+  if (opts.durationMs != null) formData.append("duration_ms", String(opts.durationMs));
+
+  console.log(
+    `[uploadSingleStep] POST step ${opts.stepNumber} — ` +
+    `${(opts.blob.size / 1024).toFixed(0)} KB`
+  );
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), STEP_UPLOAD_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/workflows/${opts.workflowId}/step`,
+      { method: "POST", body: formData, signal: controller.signal },
+    );
+    clearTimeout(timeout);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new ApiError(res.status, body.detail ?? "Step upload failed");
+    }
+    const result = await res.json();
+    console.log(`[uploadSingleStep] Step ${opts.stepNumber} queued:`, result);
+    return result;
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(`Step ${opts.stepNumber} upload timed out after ${STEP_UPLOAD_TIMEOUT_MS / 1000}s`);
+    }
+    throw err;
+  }
+}
+
+export async function finalizeWorkflow(
+  workflowId: string,
+  totalSteps: number
+): Promise<{ status: string; total_steps: number }> {
+  const formData = new FormData();
+  formData.append("total_steps", String(totalSteps));
+  console.log(`[finalizeWorkflow] POST ${workflowId} — ${totalSteps} steps`);
+  const res = await fetch(`${API_BASE}/api/workflows/${workflowId}/finalize`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body.detail ?? "Finalize failed");
+  }
+  const result = await res.json();
+  console.log("[finalizeWorkflow] Success:", result);
+  return result;
+}
+
 export async function getGuidedStepPrompt(
   initialDescription: string,
   stepNumber: number,
@@ -310,6 +423,31 @@ export async function rebuildWorkflowMemories(
   );
 }
 
+export async function regenerateAll(
+  workflowId: string
+): Promise<{ status: string; steps_count: number }> {
+  return apiFetch<{ status: string; steps_count: number }>(
+    `/api/workflows/${workflowId}/regenerate-all`,
+    { method: "POST" }
+  );
+}
+
+export interface TaskStatus {
+  task?: string;
+  status: "idle" | "running" | "done" | "error";
+  progress?: number;
+  total?: number;
+  error?: string | null;
+}
+
+export async function getWorkflowTaskStatus(
+  workflowId: string
+): Promise<TaskStatus> {
+  return apiFetch<TaskStatus>(
+    `/api/workflows/${workflowId}/task-status`
+  );
+}
+
 // ─── Copilot ──────────────────────────────────────────────────────────────────
 
 export async function getStepInstruction(
@@ -323,9 +461,54 @@ export async function getStepInstruction(
   return data.instruction;
 }
 
+export interface ElaborateSubtask {
+  title: string;
+  description?: string;
+}
+
+export async function elaborateStep(
+  workflowId: string,
+  stepId: string,
+  userMessage?: string
+): Promise<{ subtasks: ElaborateSubtask[] }> {
+  return apiFetch<{ subtasks: ElaborateSubtask[] }>("/api/copilot/elaborate-step", {
+    method: "POST",
+    body: JSON.stringify({
+      workflow_id: workflowId,
+      step_id: stepId,
+      user_message: userMessage ?? null,
+    }),
+  });
+}
+
+export interface CheckStepSuggestResult {
+  suggest_complete: boolean;
+  message: string;
+  hands?: { hands: Array<{ landmarks: Array<{ x: number; y: number; z?: number }> }> } | null;
+  sam3_segments?: Array<{ mask_base64?: string; bbox: number[]; score: number }>;
+}
+
+export async function checkStepSuggest(
+  workflowId: string,
+  stepId: string,
+  frameBase64: string
+): Promise<CheckStepSuggestResult> {
+  return apiFetch<CheckStepSuggestResult>(
+    "/api/trainee/check-step-suggest",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        workflow_id: workflowId,
+        step_id: stepId,
+        frame_base64: frameBase64,
+      }),
+    }
+  );
+}
+
 // ─── Voice intent (LLM fallback) ────────────────────────────────────────────
 
-export type VoiceIntentResult = "next" | "prev" | "finish" | "none";
+export type VoiceIntentResult = "next" | "prev" | "finish" | "elaborate" | "none";
 
 export async function classifyVoiceIntent(transcript: string): Promise<VoiceIntentResult> {
   const data = await apiFetch<{ intent: VoiceIntentResult }>("/api/voice/intent", {

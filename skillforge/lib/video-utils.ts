@@ -1,5 +1,45 @@
 import type { Step, StepFrame, ClickTarget } from "@/types";
 
+export interface ContainedRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Compute the actual display rectangle of a video inside a container that
+ * uses `object-fit: contain`. Returns the offset and dimensions in the
+ * container's coordinate space so overlay drawings can be mapped correctly.
+ */
+export function getContainedVideoRect(
+  videoWidth: number,
+  videoHeight: number,
+  containerWidth: number,
+  containerHeight: number,
+): ContainedRect {
+  if (videoWidth <= 0 || videoHeight <= 0 || containerWidth <= 0 || containerHeight <= 0) {
+    return { x: 0, y: 0, width: containerWidth, height: containerHeight };
+  }
+  const videoAspect = videoWidth / videoHeight;
+  const containerAspect = containerWidth / containerHeight;
+
+  let w: number, h: number;
+  if (videoAspect > containerAspect) {
+    w = containerWidth;
+    h = containerWidth / videoAspect;
+  } else {
+    h = containerHeight;
+    w = containerHeight * videoAspect;
+  }
+  return {
+    x: (containerWidth - w) / 2,
+    y: (containerHeight - h) / 2,
+    width: w,
+    height: h,
+  };
+}
+
 export function msToTimestamp(ms: number | null | undefined): string {
   if (ms == null || isNaN(ms)) return "0:00";
   const total = Math.floor(ms / 1000);

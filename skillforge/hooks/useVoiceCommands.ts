@@ -14,9 +14,16 @@ interface UseVoiceCommandsOptions {
   onNextStep: () => void;
   onFinish: () => void;
   onPreviousStep?: () => void;
+  onElaborate?: () => void;
   enabled?: boolean;
   useLLMFallback?: boolean;
   useFuzzy?: boolean;
+  /**
+   * When true (e.g. on learn/trainee page), recognition is not auto-started.
+   * Call the returned startListening() from a user gesture (e.g. button click) to start.
+   * Chrome requires a user gesture to allow microphone access.
+   */
+  requireUserGesture?: boolean;
   /**
    * "browser" — Web Speech API (default, runs in-browser via Chrome/Google).
    * "server"  — Records mic chunks and sends to the backend ASR endpoint
@@ -33,39 +40,65 @@ const ASR_FAIL_THRESHOLD = 3;
 
 export type VoiceStatus = "off" | "starting" | "listening" | "unavailable";
 
+export interface UseVoiceCommandsReturn {
+  isListening: boolean;
+  snapshotTranscript: () => string;
+  status: VoiceStatus;
+  unavailableReason: string | null;
+  fallbackActive: boolean;
+  startListening: () => void;
+  displayTranscript: string;
+}
+
 export function useVoiceCommands({
   onNextStep,
   onFinish,
   onPreviousStep,
+  onElaborate,
   enabled = true,
   useLLMFallback = false,
   useFuzzy = true,
+  requireUserGesture = false,
   transcriptionSource = "browser",
   audioStream = null,
-}: UseVoiceCommandsOptions) {
+}: UseVoiceCommandsOptions): UseVoiceCommandsReturn {
   const transcriptRef = useRef<string>("");
   const stepTranscriptRef = useRef<string>("");
+  const recognitionRef = useRef<SRInstance | null>(null);
   const [isListening, setIsListening] = useState(false);
   const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
   const [fallbackActive, setFallbackActive] = useState(false);
+  const [displayTranscript, setDisplayTranscript] = useState("");
   const asrFailCountRef = useRef(0);
+  const displayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const onNextStepRef = useRef(onNextStep);
   const onFinishRef = useRef(onFinish);
   const onPreviousStepRef = useRef(onPreviousStep);
+  const onElaborateRef = useRef(onElaborate);
   const lastLLMCallRef = useRef(0);
   const lastCommandRef = useRef<number>(0);
   const COMMAND_COOLDOWN_MS = 2000;
+  const DISPLAY_THROTTLE_MS = 150;
+
+  const updateDisplay = useCallback((text: string) => {
+    if (displayTimerRef.current) clearTimeout(displayTimerRef.current);
+    displayTimerRef.current = setTimeout(() => {
+      setDisplayTranscript(text.slice(-200));
+    }, DISPLAY_THROTTLE_MS);
+  }, []);
 
   useEffect(() => { onNextStepRef.current = onNextStep; }, [onNextStep]);
   useEffect(() => { onFinishRef.current = onFinish; }, [onFinish]);
   useEffect(() => { onPreviousStepRef.current = onPreviousStep; }, [onPreviousStep]);
+  useEffect(() => { onElaborateRef.current = onElaborate; }, [onElaborate]);
 
   const effectiveSource = fallbackActive ? "browser" : transcriptionSource;
 
   useEffect(() => {
     if (!enabled) {
       setIsListening(false);
+      setDisplayTranscript("");
       return;
     }
 
@@ -90,6 +123,7 @@ export function useVoiceCommands({
               if (apiIntent === "next") onNextStepRef.current();
               else if (apiIntent === "prev") onPreviousStepRef.current?.();
               else if (apiIntent === "finish") onFinishRef.current();
+              else if (apiIntent === "elaborate") onElaborateRef.current?.();
             })
             .catch((err: unknown) => showErrorToast(err));
           return;
@@ -105,6 +139,7 @@ export function useVoiceCommands({
       if (intent === "next") onNextStepRef.current();
       else if (intent === "prev") onPreviousStepRef.current?.();
       else if (intent === "finish") onFinishRef.current();
+      else if (intent === "elaborate") onElaborateRef.current?.();
 
       stepTranscriptRef.current = "";
       transcriptRef.current = "";
@@ -143,6 +178,7 @@ export function useVoiceCommands({
               if (!active || !transcript) return;
               stepTranscriptRef.current += transcript + " ";
               transcriptRef.current = stepTranscriptRef.current;
+              updateDisplay(stepTranscriptRef.current.trim());
               runMatcher(transcript, true);
             } catch {
               asrFailCountRef.current += 1;
@@ -179,6 +215,7 @@ export function useVoiceCommands({
       return () => {
         active = false;
         clearInterval(timer);
+        if (displayTimerRef.current) clearTimeout(displayTimerRef.current);
         if (currentRecorder?.state === "recording") {
           try { currentRecorder.stop(); } catch (err) { console.warn("[ASR] Cleanup: MediaRecorder.stop() failed:", err); }
         }
@@ -201,6 +238,7 @@ export function useVoiceCommands({
     }
 
     const recognition: SRInstance = new SR();
+    recognitionRef.current = recognition;
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "en-US";
@@ -227,6 +265,7 @@ export function useVoiceCommands({
 
     recognition.onresult = (event: any) => {
       let final = "";
+      let interim = "";
       let hasFinal = false;
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const text = event.results[i][0].transcript.toLowerCase().trim();
@@ -235,31 +274,39 @@ export function useVoiceCommands({
           final += text + " ";
           stepTranscriptRef.current += text + " ";
           hasFinal = true;
+        } else {
+          interim += text + " ";
         }
       }
 
       transcriptRef.current = stepTranscriptRef.current;
+      updateDisplay((stepTranscriptRef.current + interim).trim());
 
       if (hasFinal) runMatcher(final.trim(), true);
     };
 
     const timer = setTimeout(() => {
       if (!active) return;
-      try { recognition.start(); } catch (err) { console.warn("[VoiceCommands] SpeechRecognition initial start failed:", err); }
+      if (!requireUserGesture) {
+        try { recognition.start(); } catch (err) { console.warn("[VoiceCommands] SpeechRecognition initial start failed:", err); }
+      }
     }, 120);
 
     return () => {
       active = false;
+      recognitionRef.current = null;
       clearTimeout(timer);
+      if (displayTimerRef.current) clearTimeout(displayTimerRef.current);
       try { recognition.stop(); } catch (err) { console.warn("[VoiceCommands] SpeechRecognition cleanup stop failed:", err); }
       setIsListening(false);
     };
-  }, [enabled, useFuzzy, useLLMFallback, effectiveSource, audioStream, fallbackActive]);
+  }, [enabled, useFuzzy, useLLMFallback, requireUserGesture, effectiveSource, audioStream, fallbackActive, updateDisplay]);
 
   const snapshotTranscript = useCallback((): string => {
     const t = transcriptRef.current.trim();
     transcriptRef.current = "";
     stepTranscriptRef.current = "";
+    setDisplayTranscript("");
     return t;
   }, []);
 
@@ -271,5 +318,16 @@ export function useVoiceCommands({
         ? "listening"
         : "starting";
 
-  return { isListening, snapshotTranscript, status, unavailableReason, fallbackActive };
+  const startListening = useCallback(() => {
+    const r = recognitionRef.current;
+    if (r) {
+      try {
+        r.start();
+      } catch (err) {
+        console.warn("[VoiceCommands] startListening failed:", err);
+      }
+    }
+  }, []);
+
+  return { isListening, snapshotTranscript, status, unavailableReason, fallbackActive, startListening, displayTranscript };
 }

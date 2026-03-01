@@ -2,6 +2,7 @@
 
 export type TaskMode = "hardware";
 export type WorkflowStatus = "processing" | "ready" | "failed";
+export type SegmentationStatus = "pending" | "processing" | "ready" | "failed";
 export type AnnotationType = "bounding_box" | "arrow" | "highlight" | "text_label";
 export type InputEventType = "click" | "keypress" | "scroll" | "drag";
 export type PipelineStage =
@@ -65,6 +66,12 @@ export interface StepFrame {
   segmented_frame_path?: string;
 }
 
+/** Session-only; from elaborate-step. */
+export interface Subtask {
+  title: string;
+  description?: string;
+}
+
 export interface Step {
   id: string;
   workflow_id: string;
@@ -94,6 +101,7 @@ export interface Workflow {
   description?: string;
   mode: TaskMode;
   status: WorkflowStatus;
+  segmentation_status?: SegmentationStatus;
   published: boolean;
   video_path?: string;
   duration_ms?: number;
@@ -146,11 +154,18 @@ export interface PipelineErrorEvent {
   recoverable: boolean;
 }
 
+export interface SegmentationCompleteEvent {
+  type: "segmentation_complete";
+  workflow_id: string;
+  total_segments: number;
+}
+
 export type PipelineEvent =
   | PipelineLogEvent
   | StepCreatedEvent
   | PipelineCompleteEvent
-  | PipelineErrorEvent;
+  | PipelineErrorEvent
+  | SegmentationCompleteEvent;
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
 
@@ -224,6 +239,7 @@ export interface ApparatusObject {
   angle_count: number;
   reference_frame_paths: string[];
   segmented_reference_path?: string;
+  segmented_frame_paths?: Record<string, string>;
 }
 
 export interface StepContext {

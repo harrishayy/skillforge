@@ -10,6 +10,8 @@ import {
   rerunStepPipeline,
   updateApparatusObject,
   rebuildWorkflowMemories,
+  regenerateAll as apiRegenerateAll,
+  getWorkflowTaskStatus,
   getWorkflow,
 } from "@/lib/api-client";
 import type { RerunPipelineOptions } from "@/lib/api-client";
@@ -18,6 +20,7 @@ import { showErrorToast } from "@/store/toast-store";
 interface WorkflowStore {
   workflow: Workflow | null;
   selectedStepId: string | null;
+  selectedApparatusObjectId: string | null;
   isLoading: boolean;
 
   // SAM3 segmentation state
@@ -34,11 +37,15 @@ interface WorkflowStore {
   // Apparatus memory rebuild state
   rebuildingMemories: boolean;
 
+  // Full regeneration state
+  regeneratingAll: boolean;
+
   // Active filmstrip frame per step
   activeFramePath: Record<string, string>;
 
   setWorkflow: (wf: Workflow) => void;
   selectStep: (stepId: string | null) => void;
+  selectApparatusObject: (objectId: string | null) => void;
   updateStepLocal: (stepId: string, fields: Partial<Step>) => void;
   addAnnotationLocal: (stepId: string, ann: Annotation) => void;
   updateAnnotationLocal: (annId: string, ann: Partial<Annotation>) => void;
@@ -66,14 +73,29 @@ interface WorkflowStore {
   updateApparatusObjectLocal: (objectId: string, fields: Partial<ApparatusObject>) => void;
   saveApparatusObject: (objectId: string, fields: Partial<Pick<ApparatusObject, "object_name" | "description" | "visual_cues" | "sam3_prompt">>) => Promise<void>;
   rebuildMemories: () => Promise<void>;
+  regenerateAll: () => Promise<void>;
 
   // Filmstrip
   setActiveFrame: (stepId: string, framePath: string) => void;
 }
 
+async function _pollUntilDone(workflowId: string): Promise<void> {
+  const POLL_INTERVAL = 2000;
+  const MAX_POLLS = 300; // 10 minutes max
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+    const status = await getWorkflowTaskStatus(workflowId);
+    if (status.status === "done") return;
+    if (status.status === "error") throw new Error(status.error ?? "Task failed");
+    if (status.status === "idle") return;
+  }
+  throw new Error("Task timed out");
+}
+
 export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   workflow: null,
   selectedStepId: null,
+  selectedApparatusObjectId: null,
   isLoading: false,
   segmentsByStep: {},
   segmentPromptByStep: {},
@@ -81,11 +103,14 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   regeneratingStepId: null,
   rerunningStepId: null,
   rebuildingMemories: false,
+  regeneratingAll: false,
   activeFramePath: {},
 
   setWorkflow: (wf) => set({ workflow: wf }),
 
-  selectStep: (stepId) => set({ selectedStepId: stepId }),
+  selectStep: (stepId) => set({ selectedStepId: stepId, selectedApparatusObjectId: null }),
+
+  selectApparatusObject: (objectId) => set({ selectedApparatusObjectId: objectId, selectedStepId: null }),
 
   updateStepLocal: (stepId, fields) =>
     set((state) => {
@@ -275,11 +300,27 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     set({ rebuildingMemories: true });
     try {
       await rebuildWorkflowMemories(wf.id);
+      await _pollUntilDone(wf.id);
       const updated = await getWorkflow(wf.id);
       set({ workflow: updated, rebuildingMemories: false });
     } catch (e) {
       showErrorToast(e);
       set({ rebuildingMemories: false });
+    }
+  },
+
+  regenerateAll: async () => {
+    const wf = get().workflow;
+    if (!wf) return;
+    set({ regeneratingAll: true });
+    try {
+      await apiRegenerateAll(wf.id);
+      await _pollUntilDone(wf.id);
+      const updated = await getWorkflow(wf.id);
+      set({ workflow: updated, regeneratingAll: false });
+    } catch (e) {
+      showErrorToast(e);
+      set({ regeneratingAll: false });
     }
   },
 
@@ -291,3 +332,6 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
 
 export const selectedStep = (state: { workflow: Workflow | null; selectedStepId: string | null }) =>
   state.workflow?.steps.find((s) => s.id === state.selectedStepId) ?? null;
+
+export const selectedApparatusObject = (state: { workflow: Workflow | null; selectedApparatusObjectId: string | null }) =>
+  state.workflow?.apparatus_objects?.find((o) => o.id === state.selectedApparatusObjectId) ?? null;

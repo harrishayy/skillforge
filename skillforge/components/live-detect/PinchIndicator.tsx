@@ -6,12 +6,12 @@ interface PinchIndicatorProps {
 }
 
 /**
- * Simple L / R indicator that highlights when left or right hand pinch is detected.
+ * Simple L / R indicator that highlights when left or right hand gesture is detected.
  */
 export function PinchIndicator({ leftPressed, rightPressed }: PinchIndicatorProps) {
   return (
     <div className="flex items-center gap-2" style={{ color: "#555" }}>
-      <span className="text-xs font-medium">Pinch:</span>
+      <span className="text-xs font-medium">Gesture:</span>
       <span
         className="w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold transition-colors"
         style={{

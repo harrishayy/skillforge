@@ -2,13 +2,10 @@
 
 import { useRef, useEffect } from "react";
 import type { HandData } from "@/hooks/useLiveDetect";
-import { computePinchState } from "@/lib/pinch-detection";
+import { computePhoneGestureState } from "@/lib/phone-gesture-detection";
 
-/** Two taps within this window (ms) count as double-tap. */
-const DOUBLE_TAP_WINDOW_MS = 400;
-
-/** Sentinel: no previous tap in window. */
-const NO_PREV_TAP = 0;
+/** Minimum ms between gesture-triggered actions (debounce). */
+const GESTURE_DEBOUNCE_MS = 1000;
 
 export interface UseDoubleTapDetectionOptions {
   onSkipForward: () => void;
@@ -16,18 +13,17 @@ export interface UseDoubleTapDetectionOptions {
 }
 
 /**
- * Detects double-tap (two quick index-thumb pinches with release in between) per hand.
- * Right hand double-tap → onSkipForward; left hand double-tap → onSkipBackward.
- * Uses release-to-retrigger: a press is when pinch goes from off to on.
+ * Detects Spider-Man / web-slinging gesture (thumb, index, pinky extended; middle, ring closed) per hand.
+ * Right hand → onSkipForward; left hand → onSkipBackward.
+ * Rising edge only: when hand transitions into pose, fire callback once. Debounced to one action per second.
  */
 export function useDoubleTapDetection(
   hands: HandData | null,
   { onSkipForward, onSkipBackward }: UseDoubleTapDetectionOptions
 ) {
-  const leftPinchPrevRef = useRef(false);
-  const rightPinchPrevRef = useRef(false);
-  const leftLastPressAtRef = useRef(0);
-  const rightLastPressAtRef = useRef(0);
+  const leftPrevRef = useRef(false);
+  const rightPrevRef = useRef(false);
+  const lastFiredAtRef = useRef(0);
 
   const onSkipForwardRef = useRef(onSkipForward);
   const onSkipBackwardRef = useRef(onSkipBackward);
@@ -36,30 +32,22 @@ export function useDoubleTapDetection(
     onSkipBackwardRef.current = onSkipBackward;
   }, [onSkipForward, onSkipBackward]);
 
-  const pinch = computePinchState(hands);
-  const now = Date.now();
+  const gesture = computePhoneGestureState(hands);
 
-  // Left hand: transition from !pressed to pressed = one press
-  if (!leftPinchPrevRef.current && pinch.leftPressed) {
-    const last = leftLastPressAtRef.current;
-    if (last !== NO_PREV_TAP && now - last <= DOUBLE_TAP_WINDOW_MS) {
+  useEffect(() => {
+    const now = Date.now();
+    const debounceOk = now - lastFiredAtRef.current >= GESTURE_DEBOUNCE_MS;
+
+    if (debounceOk && !leftPrevRef.current && gesture.leftPressed) {
+      lastFiredAtRef.current = now;
       onSkipBackwardRef.current();
-      leftLastPressAtRef.current = NO_PREV_TAP;
-    } else {
-      leftLastPressAtRef.current = now;
     }
-  }
-  leftPinchPrevRef.current = pinch.leftPressed;
+    leftPrevRef.current = gesture.leftPressed;
 
-  // Right hand: same
-  if (!rightPinchPrevRef.current && pinch.rightPressed) {
-    const last = rightLastPressAtRef.current;
-    if (last !== NO_PREV_TAP && now - last <= DOUBLE_TAP_WINDOW_MS) {
+    if (debounceOk && !rightPrevRef.current && gesture.rightPressed) {
+      lastFiredAtRef.current = now;
       onSkipForwardRef.current();
-      rightLastPressAtRef.current = NO_PREV_TAP;
-    } else {
-      rightLastPressAtRef.current = now;
     }
-  }
-  rightPinchPrevRef.current = pinch.rightPressed;
+    rightPrevRef.current = gesture.rightPressed;
+  }, [gesture.leftPressed, gesture.rightPressed]);
 }
