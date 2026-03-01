@@ -20,7 +20,7 @@ import anthropic
 
 from services.video_processor import extract_frames
 from services.nemotron_client import detect_object_in_frames_batch
-from services.sam3_service import segment_concept
+from services.sam3_service import segment_concept, generate_segmented_image
 from services.memory_layer import save_apparatus_object, clear_apparatus_catalog
 
 
@@ -62,7 +62,7 @@ async def run_apparatus_analysis(
     if on_progress:
         await on_progress(f"Running SAM3 reference segmentation...", 60)
 
-    objects = await _sam3_reference_segmentation(frames, objects)
+    objects = await _sam3_reference_segmentation(frames, objects, workflow_id=workflow_id)
 
     if on_progress:
         await on_progress(f"Saving {len(objects)} apparatus objects to catalog...", 80)
@@ -78,6 +78,8 @@ async def run_apparatus_analysis(
             sam3_prompt=obj.get("sam3_prompt", obj["object_name"]),
             angle_count=obj.get("angle_count", 0),
             reference_frame_paths=obj.get("reference_frames", []),
+            description=obj.get("visual_cues", ""),
+            segmented_reference_path=obj.get("segmented_reference_path", ""),
         )
         saved.append({**obj, "id": obj_id})
 
@@ -248,11 +250,16 @@ async def _nemotron_verify_objects(
 async def _sam3_reference_segmentation(
     frames: list[dict],
     objects: list[dict],
+    workflow_id: str = "",
 ) -> list[dict]:
     """
     Run SAM3 on the best frame for each object to get a reference segmentation.
     Picks the middle frame from the object's positive frames.
+    Saves an overlay image to disk and sets segmented_reference_path.
     """
+    apparatus_dir = UPLOADS_DIR / workflow_id / "apparatus"
+    apparatus_dir.mkdir(parents=True, exist_ok=True)
+
     for obj in objects:
         fpaths = obj.get("_frame_paths", [])
         if not fpaths:
@@ -273,6 +280,17 @@ async def _sam3_reference_segmentation(
                     f"segmented at {score:.0%}",
                     flush=True,
                 )
+
+                safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", obj["object_name"])
+                out_filename = f"{safe_name}_segmented.jpg"
+                out_path = str(apparatus_dir / out_filename)
+                saved = generate_segmented_image(
+                    best_frame, result["segments"], out_path,
+                    label=obj["object_name"],
+                )
+                if saved:
+                    obj["segmented_reference_path"] = f"uploads/{workflow_id}/apparatus/{out_filename}"
+                    print(f"[ApparatusPipeline] Saved segmented ref: {obj['segmented_reference_path']}", flush=True)
         except Exception as e:
             print(f"[ApparatusPipeline] SAM3 reference failed for {obj['object_name']}: {e}", flush=True)
 

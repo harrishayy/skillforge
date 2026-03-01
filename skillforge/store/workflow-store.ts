@@ -1,6 +1,6 @@
 "use client";
 import { create } from "zustand";
-import type { Workflow, Step, Annotation, Sam3Segment } from "@/types";
+import type { Workflow, Step, Annotation, Sam3Segment, ApparatusObject } from "@/types";
 import {
   updateStep,
   updateAnnotation,
@@ -8,6 +8,9 @@ import {
   segmentPoint,
   regenerateStep,
   rerunStepPipeline,
+  updateApparatusObject,
+  rebuildWorkflowMemories,
+  getWorkflow,
 } from "@/lib/api-client";
 import type { RerunPipelineOptions } from "@/lib/api-client";
 import { showErrorToast } from "@/store/toast-store";
@@ -27,6 +30,9 @@ interface WorkflowStore {
 
   // Pipeline rerun state
   rerunningStepId: string | null;
+
+  // Apparatus memory rebuild state
+  rebuildingMemories: boolean;
 
   // Active filmstrip frame per step
   activeFramePath: Record<string, string>;
@@ -56,6 +62,11 @@ interface WorkflowStore {
   // Pipeline rerun
   rerunPipeline: (stepId: string, options: RerunPipelineOptions) => Promise<boolean>;
 
+  // Apparatus objects
+  updateApparatusObjectLocal: (objectId: string, fields: Partial<ApparatusObject>) => void;
+  saveApparatusObject: (objectId: string, fields: Partial<Pick<ApparatusObject, "object_name" | "description" | "visual_cues" | "sam3_prompt">>) => Promise<void>;
+  rebuildMemories: () => Promise<void>;
+
   // Filmstrip
   setActiveFrame: (stepId: string, framePath: string) => void;
 }
@@ -69,6 +80,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   segmentingStepId: null,
   regeneratingStepId: null,
   rerunningStepId: null,
+  rebuildingMemories: false,
   activeFramePath: {},
 
   setWorkflow: (wf) => set({ workflow: wf }),
@@ -232,6 +244,42 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       showErrorToast(e);
       set({ rerunningStepId: null });
       return false;
+    }
+  },
+
+  updateApparatusObjectLocal: (objectId, fields) =>
+    set((state) => {
+      if (!state.workflow?.apparatus_objects) return state;
+      return {
+        workflow: {
+          ...state.workflow,
+          apparatus_objects: state.workflow.apparatus_objects.map((obj) =>
+            obj.id === objectId ? { ...obj, ...fields } : obj
+          ),
+        },
+      };
+    }),
+
+  saveApparatusObject: async (objectId, fields) => {
+    get().updateApparatusObjectLocal(objectId, fields);
+    try {
+      await updateApparatusObject(objectId, fields);
+    } catch (e) {
+      showErrorToast(e);
+    }
+  },
+
+  rebuildMemories: async () => {
+    const wf = get().workflow;
+    if (!wf) return;
+    set({ rebuildingMemories: true });
+    try {
+      await rebuildWorkflowMemories(wf.id);
+      const updated = await getWorkflow(wf.id);
+      set({ workflow: updated, rebuildingMemories: false });
+    } catch (e) {
+      showErrorToast(e);
+      set({ rebuildingMemories: false });
     }
   },
 

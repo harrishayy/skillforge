@@ -677,6 +677,65 @@ async def re_record_step(
     return await _get_step(step_id)
 
 
+# ─── Apparatus object editing ─────────────────────────────────────────────────
+
+@router.patch("/api/apparatus-objects/{object_id}")
+async def update_apparatus_object(object_id: str, body: dict):
+    """Update editable fields on an apparatus object."""
+    row = await fetchone("SELECT * FROM workflow_objects WHERE id=?", (object_id,))
+    if not row:
+        raise HTTPException(404, "Apparatus object not found")
+
+    allowed = {"object_name", "description", "visual_cues", "sam3_prompt"}
+    updates = {k: v for k, v in body.items() if k in allowed and v is not None}
+    if not updates:
+        raise HTTPException(400, "No valid fields to update")
+
+    set_clauses = ", ".join(f"{k}=${i+1}" for i, k in enumerate(updates))
+    values = list(updates.values()) + [object_id]
+    await execute(
+        f"UPDATE workflow_objects SET {set_clauses} WHERE id=${len(values)}",
+        tuple(values),
+    )
+
+    updated = await fetchone("SELECT * FROM workflow_objects WHERE id=?", (object_id,))
+    import json as _json
+    raw = updated.get("reference_frame_paths")
+    if isinstance(raw, str):
+        try:
+            updated["reference_frame_paths"] = _json.loads(raw)
+        except Exception:
+            updated["reference_frame_paths"] = []
+    elif raw is None:
+        updated["reference_frame_paths"] = []
+    return updated
+
+
+# ─── Rebuild all memories ─────────────────────────────────────────────────────
+
+@router.post("/api/workflows/{workflow_id}/rebuild-memories")
+async def rebuild_memories(workflow_id: str, background_tasks: BackgroundTasks):
+    """Invalidate all step contexts and re-run the multi-agent pipeline for every step."""
+    from services.memory_layer import invalidate_contexts_from
+
+    wf = await fetchone("SELECT * FROM workflows WHERE id=?", (workflow_id,))
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+
+    steps = await fetchall(
+        "SELECT * FROM steps WHERE workflow_id=? ORDER BY step_number",
+        (workflow_id,),
+    )
+    steps_count = len(steps)
+    if steps_count == 0:
+        return {"status": "no_steps", "steps_count": 0}
+
+    await invalidate_contexts_from(workflow_id, 1)
+    background_tasks.add_task(_rebuild_downstream_contexts, workflow_id, 1)
+
+    return {"status": "rebuilding", "steps_count": steps_count}
+
+
 # ─── Context rebuild for downstream steps after re-record ────────────────────
 
 async def _rebuild_downstream_contexts(workflow_id: str, from_step: int):
