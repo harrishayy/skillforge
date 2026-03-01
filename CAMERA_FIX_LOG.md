@@ -33,9 +33,9 @@ Laptop  ──ws://localhost:8001/ws/camera/UUID──────────�
 
 ### How to start (3 terminals)
 ```bash
-# Terminal 1 — AR backend
+# Terminal 1 — AR backend  (MEDIAPIPE_DELEGATE=cpu required — GPU crashes on M4 Pro)
 cd /path/to/skillforge/skillforge/backend
-/path/to/skillforge/skillforge-api/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001
+MEDIAPIPE_DELEGATE=cpu /path/to/skillforge/skillforge-api/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001
 
 # Terminal 2 — Next.js
 cd /path/to/skillforge/skillforge
@@ -172,6 +172,17 @@ Code 1002 = **Protocol Error** — the phone's browser (iOS Safari) received a W
 ### Fix 13 — `server.mjs`: log close reason string
 - Status: ✅ Done
 - phoneWs and arWs close handlers now log `reason` string in addition to code
+
+### Fix 15 — AR backend: force CPU mode (`MEDIAPIPE_DELEGATE=cpu`)
+- Status: ✅ Done (runtime fix — start command updated)
+- **Crash:** MediaPipe GPU delegate (`[Hand Landmarker VIDEO] Using GPU delegate`) crashes on Apple M4 Pro with fatal error: `Check failed: status_or_buffer is OK (UNKNOWN: unsupported ImageFrame format: 1)` in `gpu_buffer_storage_cv_pixel_buffer.cc:154`
+- The `try/except` around `create_from_options` does NOT catch this — it only catches initialization errors. The crash happens during the FIRST inference call (`detect_for_video`)
+- **Fix:** Start uvicorn with `MEDIAPIPE_DELEGATE=cpu` → skips GPU path entirely, uses stable CPU inference
+- **Start command:** `MEDIAPIPE_DELEGATE=cpu uvicorn main:app --host 0.0.0.0 --port 8001`
+
+### Fix 16 — `server.mjs`: improve AR backend error logging
+- Status: ✅ Done
+- `err.message` is empty string for ECONNREFUSED on some Node.js versions — now falls back to `err.code || String(err)` so the error is never silently blank
 
 ### Fix 14 — `next.config.ts`: remove `/ws/:path*` rewrite ← ROOT CAUSE FIX
 - Status: ✅ Done

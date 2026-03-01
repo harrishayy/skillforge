@@ -105,7 +105,7 @@ app.prepare().then(() => {
     });
 
     arWs.on("error", (err) => {
-      console.error("[WS proxy] AR backend error:", err.message);
+      console.error("[WS proxy] AR backend error:", err.message || err.code || String(err));
       if (phoneWs.readyState === WebSocket.OPEN) phoneWs.close(1011, "Backend error");
     });
   });
