@@ -149,7 +149,10 @@ export default function RecordingSessionPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRecorder.stream, recordingSource]);
 
-  // Attach webcam stream to the laptop PiP video element once (stable ref, no flickering)
+  // Attach webcam stream to the laptop PiP video element.
+  // Must also depend on recordingSource so the effect re-runs after the PiP <video>
+  // mounts (when switching to phone mode) — at stream-ready time the element isn't in
+  // the DOM yet, so we need a second run once it is.
   useEffect(() => {
     const pip = laptopPipVideoRef.current;
     const stream = webcamRecorder.stream;
@@ -157,7 +160,7 @@ export default function RecordingSessionPage() {
       pip.srcObject = stream;
       pip.play().catch(() => {});
     }
-  }, [webcamRecorder.stream]);
+  }, [webcamRecorder.stream, recordingSource]);
 
   // ---------------------------------------------------------------------------
   // Read config from sessionStorage, or check IndexedDB for crash recovery
