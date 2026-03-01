@@ -21,6 +21,8 @@ import { Spinner } from "@/components/ui/Spinner";
 import { Button } from "@/components/ui/Button";
 import { TaskTypeBadge } from "@/components/shared/TaskTypeBadge";
 import { SubtitleOverlay } from "@/components/ui/SubtitleOverlay";
+import { usePhoneCameraSession } from "@/hooks/usePhoneCameraSession";
+import PhoneCameraQRModal from "@/components/camera/PhoneCameraQRModal";
 
 interface LearnViewProps {
   workflowId: string;
@@ -57,6 +59,17 @@ export function LearnView({
   const sam3MaskCacheRef = useRef<Map<string, ImageBitmap>>(new Map());
   const [cameraHands, setCameraHands] = useState<import("@/hooks/useLiveDetect").HandData | null>(null);
   const cameraHandsRef = useRef<import("@/hooks/useLiveDetect").HandData | null>(null);
+
+  // Phone camera session
+  const phone = usePhoneCameraSession();
+  const [showPhoneModal, setShowPhoneModal] = useState(false);
+  // Stable ref so polling closure can access latest frame without stale capture
+  const phoneFrameRef = useRef<{ data: string; ts: number } | null>(null);
+
+  // Auto-close QR modal as soon as phone connects
+  useEffect(() => {
+    if (phone.isPhoneConnected) setShowPhoneModal(false);
+  }, [phone.isPhoneConnected]);
   const [lastDetectionResult, setLastDetectionResult] = useState<{
     hands: { hands: Array<{ landmarks: Array<{ x: number; y: number; z?: number }> }> } | null;
     sam3_segments: Array<{ mask_base64?: string; bbox: number[]; score: number }>;
@@ -391,7 +404,8 @@ export function LearnView({
   const SUGGEST_REQUIRED_DETECTIONS = 2;
   const SUGGEST_WINDOW_MS = 1000;
   useEffect(() => {
-    if (!isTrainingMode || !workflow || !currentStep?.sam3_prompt || !cameraRef.current || !cameraStream) {
+    const hasCamera = phone.isPhoneConnected || (!!cameraRef.current && !!cameraStream);
+    if ((!isTrainingMode && !phone.isPhoneConnected) || !workflow || !currentStep?.sam3_prompt || !hasCamera) {
       if (suggestPollRef.current) {
         clearInterval(suggestPollRef.current);
         suggestPollRef.current = null;
@@ -401,17 +415,24 @@ export function LearnView({
     }
     recentSuggestDetectionsRef.current = [];
     const captureAndCheck = async () => {
-      const video = cameraRef.current;
-      if (!video || video.readyState < 2) return;
-      if (!captureCanvasRef.current) captureCanvasRef.current = document.createElement("canvas");
-      const canvas = captureCanvasRef.current;
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      ctx.drawImage(video, 0, 0);
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
-      const base64 = dataUrl.split(",")[1];
+      let base64: string | null = null;
+      // Prefer phone frame (already JPEG) over capturing from local webcam
+      const pf = phoneFrameRef.current;
+      if (pf) {
+        base64 = pf.data;
+      } else {
+        const video = cameraRef.current;
+        if (!video || video.readyState < 2) return;
+        if (!captureCanvasRef.current) captureCanvasRef.current = document.createElement("canvas");
+        const canvas = captureCanvasRef.current;
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.drawImage(video, 0, 0);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+        base64 = dataUrl.split(",")[1];
+      }
       if (!base64) return;
       try {
         const res = await checkStepSuggest(workflowId, currentStep.id, base64);
@@ -443,7 +464,7 @@ export function LearnView({
         suggestPollRef.current = null;
       }
     };
-  }, [isTrainingMode, workflow, workflowId, currentStep, cameraStream, setSuggestComplete]);
+  }, [isTrainingMode, workflow, workflowId, currentStep, cameraStream, phone.isPhoneConnected, setSuggestComplete]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleToggleTraining = useCallback(() => {
     setIsTrainingMode((prev) => !prev);
@@ -458,7 +479,7 @@ export function LearnView({
     videoRef: cameraRef,
     handsEnabled: true,
     objectsEnabled: false,
-    enabled: isTrainingMode && !!cameraStream,
+    enabled: isTrainingMode && !!cameraStream && !phone.isPhoneConnected,
     onResult: (r) => {
       cameraHandsRef.current = r.hands;
       setCameraHands(r.hands);
@@ -471,7 +492,15 @@ export function LearnView({
     }
   }, [isTrainingMode]);
 
-  useDoubleTapDetection(isTrainingMode ? cameraHands : null, {
+  // Keep phoneFrameRef in sync so the polling interval closure reads the latest frame
+  useEffect(() => { phoneFrameRef.current = phone.remoteFrame; }, [phone.remoteFrame]);
+
+  // Prefer phone hands for gesture detection when phone is connected, else local camera
+  const activeHands = phone.isPhoneConnected && phone.remoteDetection?.hands
+    ? phone.remoteDetection.hands
+    : isTrainingMode ? cameraHands : null;
+
+  useDoubleTapDetection(activeHands, {
     onSkipForward: handleVoiceNextStep,
     onSkipBackward: handleVoicePrevStep,
   });
@@ -516,7 +545,7 @@ export function LearnView({
   }, [lastDetectionResult?.sam3_segments]);
 
   useEffect(() => {
-    if (!isTrainingMode || !cameraRef.current) return;
+    if (!isTrainingMode || !cameraRef.current || phone.isPhoneConnected) return;
     const video = cameraRef.current;
     const canvas = cameraOverlayCanvasRef.current;
     if (!canvas) return;
@@ -588,7 +617,7 @@ export function LearnView({
     };
     cameraOverlayRafRef.current = requestAnimationFrame(render);
     return () => cancelAnimationFrame(cameraOverlayRafRef.current);
-  }, [isTrainingMode, lastDetectionResult, currentStep?.sam3_prompt]);
+  }, [isTrainingMode, lastDetectionResult, currentStep?.sam3_prompt, phone.isPhoneConnected]);
 
   if (isLoading) {
     return (
@@ -684,6 +713,27 @@ export function LearnView({
             >
               {isTrainingMode ? "Stop training" : "Start training"}
             </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                if (phone.remoteSessionId) {
+                  phone.stopRemoteSession();
+                } else {
+                  phone.startRemoteSession();
+                  setShowPhoneModal(true);
+                }
+              }}
+              style={{
+                color: phone.isPhoneConnected
+                  ? "rgba(239,68,68,0.9)"
+                  : phone.remoteSessionId
+                    ? "var(--sf-yellow)"
+                    : undefined,
+              }}
+            >
+              {phone.isPhoneConnected ? "Stop phone" : phone.remoteSessionId ? "Phone: Waiting…" : "Phone cam"}
+            </Button>
             <button
               type="button"
               onClick={() => voice.startListening?.()}
@@ -731,8 +781,8 @@ export function LearnView({
           </div>
 
           <div className="flex-1 min-h-0 flex gap-3">
-            {/* Reference: step video (or left half when training) */}
-            <div className={isTrainingMode ? "w-1/2 min-w-0 flex flex-col gap-1" : "flex-1 min-h-0 flex flex-col gap-1"}>
+            {/* Reference: step video (or left half when training or phone camera active) */}
+            <div className={isTrainingMode || phone.isPhoneConnected ? "w-1/2 min-w-0 flex flex-col gap-1" : "flex-1 min-h-0 flex flex-col gap-1"}>
               {stepVideoPath ? (
                 <div className="relative flex-1 min-h-0 flex items-center justify-center bg-black rounded-xl overflow-hidden">
                   <video
@@ -799,25 +849,43 @@ export function LearnView({
                 </div>
               )}
             </div>
-            {/* Camera feed (training mode only) */}
-            {isTrainingMode && (
+            {/* Camera feed (training mode or phone camera active) */}
+            {(isTrainingMode || phone.isPhoneConnected) && (
               <div className="w-1/2 min-w-0 flex flex-col rounded-xl overflow-hidden bg-black">
                 <div className="relative flex-1 min-h-0">
-                  <video
-                    ref={cameraRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="absolute inset-0 w-full h-full object-contain"
-                  />
-                  <canvas
-                    ref={cameraOverlayCanvasRef}
-                    className="absolute inset-0 w-full h-full pointer-events-none"
-                    style={{ objectFit: "contain" }}
-                  />
+                  {phone.isPhoneConnected && phone.remoteFrame ? (
+                    <>
+                      {/* Phone frame — shown as img, updated on every incoming frame */}
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={`data:image/jpeg;base64,${phone.remoteFrame.data}`}
+                        alt="Phone camera"
+                        className="absolute inset-0 w-full h-full object-contain"
+                      />
+                      {/* Keep video ref valid so polling refs don't break */}
+                      <video ref={cameraRef} autoPlay playsInline muted style={{ display: "none" }} />
+                    </>
+                  ) : (
+                    <>
+                      <video
+                        ref={cameraRef}
+                        autoPlay
+                        playsInline
+                        muted
+                        className="absolute inset-0 w-full h-full object-contain"
+                      />
+                      <canvas
+                        ref={cameraOverlayCanvasRef}
+                        className="absolute inset-0 w-full h-full pointer-events-none"
+                        style={{ objectFit: "contain" }}
+                      />
+                    </>
+                  )}
                 </div>
                 <span className="text-xs px-2 py-1 text-center" style={{ color: "#555" }}>
-                  Your camera — detection runs every 2s
+                  {phone.isPhoneConnected
+                    ? "Phone camera — gesture detection via AR backend"
+                    : "Your camera — detection runs every 2s"}
                 </span>
               </div>
             )}
@@ -889,6 +957,16 @@ export function LearnView({
           <CopilotPanel currentStep={currentStep} onSendMessage={handleSendMessage} />
         </div>
       </div>
+
+      {/* QR modal for phone camera */}
+      {showPhoneModal && phone.remoteSessionId && (
+        <PhoneCameraQRModal
+          qrUrl={phone.qrUrl}
+          viewerStatus={phone.viewerStatus}
+          isPhoneConnected={phone.isPhoneConnected}
+          onClose={() => setShowPhoneModal(false)}
+        />
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { useWebcamRecorder } from "@/hooks/useWebcamRecorder";
+import { usePhoneVideoRecorder } from "@/hooks/usePhoneVideoRecorder";
 import { useVoiceCommands } from "@/hooks/useVoiceCommands";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
 import type { MPResult } from "@/hooks/useMediaPipeDetect";
@@ -24,6 +25,8 @@ import { HelpAndChatPanel } from "@/components/recording-session/HelpAndChatPane
 import { StepSavedToast } from "@/components/recording-session/StepSavedToast";
 import { FinishConfirmation } from "@/components/recording-session/FinishConfirmation";
 import { SubtitleOverlay } from "@/components/ui/SubtitleOverlay";
+import { usePhoneCameraSession } from "@/hooks/usePhoneCameraSession";
+import PhoneCameraQRModal from "@/components/camera/PhoneCameraQRModal";
 
 type SessionState = "mounting" | "recovering" | "apparatus_showcase" | "recording" | "confirming_finish" | "uploading" | "processing";
 
@@ -91,7 +94,22 @@ export default function RecordingSessionPage() {
 
   // Hand data as state so useDoubleTapDetection re-runs on each new frame
   const [handData, setHandData] = useState<MPResult["hands"]>(null);
-  const pinchState = computePinchState(handData);
+
+  // Phone camera session (Strategy A: phone as detection source, laptop still records)
+  const phone = usePhoneCameraSession();
+  const [showPhoneModal, setShowPhoneModal] = useState(false);
+
+  // Auto-close QR modal as soon as phone connects
+  useEffect(() => {
+    if (phone.isPhoneConnected) setShowPhoneModal(false);
+  }, [phone.isPhoneConnected]);
+
+  // Prefer phone hands for gesture detection when phone is connected
+  const activeHands = phone.isPhoneConnected && phone.remoteDetection?.hands
+    ? phone.remoteDetection.hands
+    : handData;
+
+  const pinchState = computePinchState(activeHands);
 
   const handleSaveNote = useCallback((stepNumber: number, text: string) => {
     setStepNotes((prev) => ({ ...prev, [stepNumber]: text }));
@@ -104,17 +122,30 @@ export default function RecordingSessionPage() {
   const [micEnabled, setMicEnabled] = useState(true);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(false);
   const [gesturesEnabled, setGesturesEnabled] = useState(true);
+
+  // Recording source: "laptop" (default) or "phone"
+  const [recordingSource, setRecordingSource] = useState<"laptop" | "phone">("laptop");
+  // Lock switching once the first step has been snapshotted
+  const sourceLocked = useRef(false);
+
   const webcamRecorder = useWebcamRecorder();
+  const phoneRecorder = usePhoneVideoRecorder(phone.remoteFrame, recordingSource === "phone");
+
+  // All snapshot/stop/duration/pause/resume calls route through activeRecorder
+  const activeRecorder = recordingSource === "phone" ? phoneRecorder : webcamRecorder;
+
   const snapshotTranscriptRef = useRef<() => string>(() => "");
 
-  // Reactively attach the stream to the video element whenever either becomes available
+  // Reactively attach whichever source stream is active to the video element
   useEffect(() => {
     const video = videoRef.current;
-    if (video && webcamRecorder.stream) {
-      video.srcObject = webcamRecorder.stream;
+    const stream = activeRecorder.stream;
+    if (video && stream) {
+      video.srcObject = stream;
       video.play().catch((err: unknown) => console.warn("[Session] Video autoplay blocked by browser policy:", err));
     }
-  }, [webcamRecorder.stream]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRecorder.stream, recordingSource]);
 
   // ---------------------------------------------------------------------------
   // Read config from sessionStorage, or check IndexedDB for crash recovery
@@ -193,10 +224,11 @@ export default function RecordingSessionPage() {
     const transcript = snapshotTranscriptRef.current();
     stepTranscriptsRef.current.push(transcript);
 
+    sourceLocked.current = true; // lock source after first step is snapshotted
     setIsSnapshotting(true);
     try {
-      const snapshotTime = webcamRecorder.getDurationMs();
-      const blob = await webcamRecorder.snapshot();
+      const snapshotTime = activeRecorder.getDurationMs();
+      const blob = await activeRecorder.snapshot();
       const durationMs = snapshotTime - stepStartTimeRef.current;
       stepVideosRef.current.push({ stepNumber: prevStepNum, blob, durationMs });
 
@@ -255,9 +287,13 @@ export default function RecordingSessionPage() {
 
     try {
       pushUploadLog("upload", "Stopping recorder and packaging video...");
-      console.log("[FinishRecording] Stopping webcam recorder...");
-      const finalSnapshotTime = webcamRecorder.getDurationMs();
-      const finalBlob = await webcamRecorder.stop();
+      console.log("[FinishRecording] Stopping recorder...");
+      const finalSnapshotTime = activeRecorder.getDurationMs();
+      const finalBlob = await activeRecorder.stop();
+      // Also release laptop cam tracks if phone was the active recorder
+      if (recordingSource === "phone") {
+        webcamRecorder.stop().catch((err: unknown) => console.warn("[FinishRecording] Laptop cam cleanup failed:", err));
+      }
       const finalDurationMs = finalSnapshotTime - stepStartTimeRef.current;
       console.log(`[FinishRecording] Final blob: ${(finalBlob.size / 1024).toFixed(0)} KB`);
       stepVideosRef.current.push({ stepNumber: currentStepNumber, blob: finalBlob, durationMs: finalDurationMs });
@@ -446,9 +482,13 @@ export default function RecordingSessionPage() {
   // ---------------------------------------------------------------------------
   const handleExit = useCallback(() => {
     webcamRecorder.stop().catch((err: unknown) => console.warn("[Session] Webcam recorder stop failed during exit:", err));
+    if (recordingSource === "phone") {
+      phoneRecorder.stop().catch((err: unknown) => console.warn("[Session] Phone recorder stop failed during exit:", err));
+    }
     stepStorage.clearSession().catch((err: unknown) => console.warn("[Session] IndexedDB cleanup failed during exit:", err));
+    phone.stopRemoteSession();
     router.push("/record/setup");
-  }, [webcamRecorder, router]);
+  }, [webcamRecorder, phoneRecorder, recordingSource, router, phone.stopRemoteSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---------------------------------------------------------------------------
   // Apparatus showcase handlers (defined before voice commands so wrappers work)
@@ -463,25 +503,27 @@ export default function RecordingSessionPage() {
   }, []);
 
   const handleApparatusDone = useCallback(async () => {
+    sourceLocked.current = true; // apparatus captured — lock source
     try {
-      const blob = await webcamRecorder.snapshot();
+      const blob = await activeRecorder.snapshot();
       apparatusBlobRef.current = blob;
       console.log(`[Session] Apparatus showcase captured: ${(blob.size / 1024).toFixed(0)} KB`);
     } catch (err) {
       console.warn("[Session] Failed to snapshot apparatus video:", err);
     }
 
-    stepStartTimeRef.current = webcamRecorder.getDurationMs();
+    stepStartTimeRef.current = activeRecorder.getDurationMs();
     setSessionState("recording");
     fetchStepPrompt(1, []);
-  }, [webcamRecorder, fetchStepPrompt]);
+  }, [activeRecorder, fetchStepPrompt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleApparatusSkip = useCallback(() => {
+    sourceLocked.current = true; // apparatus skipped — lock source at step 1 start
     apparatusBlobRef.current = null;
-    stepStartTimeRef.current = webcamRecorder.getDurationMs();
+    stepStartTimeRef.current = activeRecorder.getDurationMs();
     setSessionState("recording");
     fetchStepPrompt(1, []);
-  }, [webcamRecorder, fetchStepPrompt]);
+  }, [activeRecorder, fetchStepPrompt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---------------------------------------------------------------------------
   // Voice-aware wrappers: route "next" / "finish" based on current phase
@@ -517,7 +559,7 @@ export default function RecordingSessionPage() {
     onFinish: voiceFinish,
     enabled: micEnabled && (sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase"),
     transcriptionSource: "browser",
-    audioStream: webcamRecorder.audioStream,
+    audioStream: activeRecorder.audioStream,
   });
 
   snapshotTranscriptRef.current = voice.snapshotTranscript;
@@ -536,7 +578,7 @@ export default function RecordingSessionPage() {
     },
   });
 
-  useDoubleTapDetection(gesturesEnabled ? handData : null, {
+  useDoubleTapDetection(gesturesEnabled ? activeHands : null, {
     onSkipForward: voiceNext,
     onSkipBackward: () => {},
   });
@@ -743,7 +785,7 @@ export default function RecordingSessionPage() {
 
       {/* Top bar: REC badge + step badge + pinch + mic toggle */}
       {isRecordingActive && (
-        <div className="fixed top-4 left-4 z-50 flex items-center gap-3">
+        <div className="fixed top-4 left-4 z-50 flex items-start gap-3">
           <div
             className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-white"
             style={{
@@ -895,8 +937,42 @@ export default function RecordingSessionPage() {
             {subtitlesEnabled ? "CC" : "CC off"}
           </button>
 
+          {/* Phone camera button — click again to stop */}
+          <button
+            onClick={() => {
+              if (phone.remoteSessionId) {
+                phone.stopRemoteSession();
+              } else {
+                phone.startRemoteSession();
+                setShowPhoneModal(true);
+              }
+            }}
+            className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition-all hover:scale-105"
+            style={{
+              backgroundColor: phone.isPhoneConnected
+                ? "rgba(239, 68, 68, 0.2)"
+                : phone.remoteSessionId
+                  ? "rgba(245, 158, 11, 0.25)"
+                  : "rgba(255, 255, 255, 0.08)",
+              color: phone.isPhoneConnected
+                ? "rgba(239,68,68,0.9)"
+                : phone.remoteSessionId
+                  ? "var(--sf-yellow)"
+                  : "rgba(255,255,255,0.4)",
+              backdropFilter: "blur(20px)",
+              border: `1px solid ${phone.isPhoneConnected ? "rgba(239,68,68,0.3)" : "rgba(255,255,255,0.1)"}`,
+            }}
+            title={phone.remoteSessionId ? "Stop phone camera" : "Use phone as camera"}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="5" y="2" width="14" height="20" rx="2" />
+              <circle cx="12" cy="18" r="1" />
+            </svg>
+            {phone.isPhoneConnected ? "Stop phone" : phone.remoteSessionId ? "Connecting…" : "Phone cam"}
+          </button>
+
           {/* Pinch indicator */}
-          {gesturesEnabled && handData && (
+          {gesturesEnabled && activeHands && (
             <div
               className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs"
               style={{
@@ -906,6 +982,34 @@ export default function RecordingSessionPage() {
               }}
             >
               <PinchIndicator leftPressed={pinchState.leftPressed} rightPressed={pinchState.rightPressed} />
+            </div>
+          )}
+
+          {/* Phone camera PiP — inline after pinch indicator, auto-sizes to 16:9 at 224px wide */}
+          {phone.isPhoneConnected && phone.remoteFrame && (
+            <div
+              className="relative rounded-xl overflow-hidden flex-shrink-0"
+              style={{
+                width: 224,
+                border: "2px solid rgba(190,242,100,0.45)",
+                cursor: "pointer",
+                boxShadow: "0 0 12px rgba(190,242,100,0.15)",
+              }}
+              onClick={() => setShowPhoneModal(true)}
+              title="Phone camera — click to view QR"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={`data:image/jpeg;base64,${phone.remoteFrame.data}`}
+                alt="Phone camera"
+                className="w-full block"
+              />
+              <div
+                className="absolute top-1 left-1 text-[9px] font-bold px-1.5 py-0.5 rounded"
+                style={{ backgroundColor: "rgba(0,0,0,0.65)", color: "var(--sf-lime)" }}
+              >
+                PHONE
+              </div>
             </div>
           )}
         </div>
@@ -1010,6 +1114,16 @@ export default function RecordingSessionPage() {
         onConfirm={handleConfirmFinish}
         onCancel={handleCancelFinish}
       />
+
+      {/* QR modal for phone camera */}
+      {showPhoneModal && phone.remoteSessionId && (
+        <PhoneCameraQRModal
+          qrUrl={phone.qrUrl}
+          viewerStatus={phone.viewerStatus}
+          isPhoneConnected={phone.isPhoneConnected}
+          onClose={() => setShowPhoneModal(false)}
+        />
+      )}
     </div>
   );
 }

@@ -205,14 +205,34 @@ New features taken from main:
 
 ---
 
-## Remaining Tasks
+### Fix 24 — Integrate phone camera into trainer recording (`session/page.tsx`) + trainee learning (`LearnView.tsx`)
+**Strategy A:** Phone camera is a detection/preview source only. Laptop webcam still records step videos — recording pipeline unchanged.
 
-### Next feature: integrate camera feed into trainer recording + trainee learning
-Both the trainer (recording sessions) and trainee (learning view) need the same phone-as-camera capability that `live/page.tsx` already has. The plan:
-- **Trainer:** option to use phone camera during `record/session` — phone feeds real-time video, hand detection overlays on recording canvas, gestures/voice still control step advancement
-- **Trainee:** option to use phone camera during `learn/[workflowId]` — phone feed shows alongside the step video, gesture detection and voice commands work via remote feed
+**New shared files:**
+- `skillforge/hooks/usePhoneCameraSession.ts` — encapsulates session ID generation, QR URL (useEffect pattern matching `live/page.tsx`), `useCameraRoomViewer` integration. Exposes `startRemoteSession()`, `stopRemoteSession()`, `remoteSessionId`, `qrUrl`, `viewerStatus`, `remoteFrame`, `remoteDetection`, `isPhoneConnected`.
+- `skillforge/components/camera/PhoneCameraQRModal.tsx` — shared full-screen overlay modal with QR code, connection status, Done/Close button. Used by both trainer and trainee pages.
 
-Key files to touch: `record/(expert)/session/page.tsx`, `components/player/LearnView.tsx`, possibly new `useCameraRoomProducer`/`useCameraRoomViewer` integration in those pages.
+**Trainer recording page (`session/page.tsx`):**
+- Added `usePhoneCameraSession()` hook
+- `activeHands = phone.isPhoneConnected ? phone.remoteDetection.hands : handData` — phone hands used for gesture/double-tap detection when phone is connected
+- `computePinchState(activeHands)` and `useDoubleTapDetection(gesturesEnabled ? activeHands : null, ...)` use merged hands
+- "Phone cam" button added to top-left toolbar bar (alongside mic, gesture, subtitle toggles) — clicking starts phone session + shows QR modal
+- Phone PiP preview shown at bottom-right (160px wide `<img>` with live base64 JPEG frames, click to re-open QR modal)
+- QR modal rendered at end of JSX
+- `phone.stopRemoteSession()` called on exit
+
+**Trainee learning view (`LearnView.tsx`):**
+- Added `usePhoneCameraSession()` hook
+- `activeHands = phone.isPhoneConnected ? phone.remoteDetection.hands : isTrainingMode ? cameraHands : null` — gestures work from phone even without training mode
+- `useDoubleTapDetection(activeHands, ...)` — double-tap navigation works from phone
+- `useMediaPipeDetect` disabled when phone connected (avoid conflicting local detections)
+- `checkStepSuggest` polling: uses `phoneFrameRef.current.data` (latest phone frame) when phone is connected; falls back to local camera canvas capture otherwise
+- Polling runs when `phone.isPhoneConnected` OR local training mode + camera — no training mode required for phone
+- RAF canvas overlay loop skipped when phone is connected (phone shows `<img>`, not local video)
+- "Phone cam" button added to header bar alongside "Start training"
+- Camera panel shown when `isTrainingMode || phone.isPhoneConnected`; shows live phone frames (`<img>`) when phone connected, local video+canvas when not
+- Layout splits to w-1/2 / w-1/2 when `isTrainingMode || phone.isPhoneConnected`
+- QR modal rendered at end of JSX
 
 ### NVIDIA GPU server for faster inference (optional)
 CPU inference at 640×360 is ~30–60ms/frame. If real-time hand detection needs to be faster:
