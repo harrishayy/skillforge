@@ -33,10 +33,13 @@ const nextConfig: NextConfig = {
         source: "/api/python/:path*",
         destination: "http://localhost:8000/api/:path*",
       },
-      {
-        source: "/ws/:path*",
-        destination: "http://localhost:8001/ws/:path*",
-      },
+      // NOTE: Do NOT add a /ws/:path* rewrite here.
+      // server.mjs handles all /ws/* WebSocket upgrades directly at the HTTP server
+      // level (before Next.js sees them). Adding a rewrite causes Next.js to ALSO
+      // proxy the WebSocket upgrade to localhost:8001 with perMessageDeflate enabled
+      // by default, creating two simultaneous connections to the AR backend and
+      // leaking RSV1-set (compressed) frames to clients that never negotiated
+      // compression → "RSV1 must be clear" / "Invalid frame header" error.
     ];
   },
   images: {

@@ -49,7 +49,25 @@ ngrok http 3000
 
 ---
 
-## Current Unresolved Issue: Code 1002 (Protocol Error)
+## ✅ ROOT CAUSE FOUND AND FIXED (Fix 14)
+
+**The `/ws/:path*` rewrite in `next.config.ts` was also proxying WebSocket upgrades to localhost:8001.**
+
+Next.js 15/16 applies `rewrites()` to WebSocket upgrade requests in addition to HTTP requests. This caused TWO simultaneous connections to the AR backend for every phone/browser connection:
+1. Our `server.mjs` proxy → localhost:8001 (perMessageDeflate: false — correct)
+2. Next.js rewrite proxy → localhost:8001 (perMessageDeflate default-enabled — wrong)
+
+The second connection negotiated WebSocket compression with the AR backend. The AR backend then sent RSV1=1 (compressed) frames. Our server.mjs proxy forwarded these raw frames to the phone/browser, but the phone/browser had never negotiated compression → **"RSV1 must be clear" / "Invalid frame header" / code 1006**.
+
+**Fix:** Removed the `/ws/:path*` rewrite entirely. `server.mjs` handles all WebSocket upgrades at the HTTP server level before Next.js sees them. The rewrite was never needed.
+
+**Verification:** Direct ws://localhost:3000 test showed:
+- Before fix: two AR backend connections, `ERROR: Invalid WebSocket frame: RSV1 must be clear`, closed 1006
+- After fix: ONE AR backend connection, `OPENED`, `CLOSED: 1000` — clean
+
+---
+
+## Previous Unresolved Issue (now resolved): Code 1002 (Protocol Error)
 
 ### Observed log — repeats in a loop
 ```
@@ -154,7 +172,14 @@ Code 1002 = **Protocol Error** — the phone's browser (iOS Safari) received a W
 ### Fix 13 — `server.mjs`: log close reason string
 - Status: ✅ Done
 - phoneWs and arWs close handlers now log `reason` string in addition to code
-- Needed to diagnose the 1002 root cause in next test
+
+### Fix 14 — `next.config.ts`: remove `/ws/:path*` rewrite ← ROOT CAUSE FIX
+- Status: ✅ Done
+- Next.js 15/16 applies `rewrites()` to WebSocket upgrades, not just HTTP
+- The `/ws/:path*` rewrite was creating a second connection to AR backend with compression enabled
+- This caused RSV1-set (compressed) frames to leak to clients that never negotiated compression
+- Removing the rewrite leaves all /ws/* handling exclusively to `server.mjs`
+- **Verified:** ws://localhost:3000 test now shows one connection, CLOSED:1000, no RSV1 error
 
 ---
 
