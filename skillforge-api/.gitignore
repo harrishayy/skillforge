@@ -1,0 +1,11 @@
+# Large model weights — do not commit
+models/*.pth
+models/*.pt
+models/*.bin
+models/*.safetensors
+
+# Runtime frame outputs
+current_frame.jpg
+dino_test_output.jpg
+*.jpg
+*.jpeg
