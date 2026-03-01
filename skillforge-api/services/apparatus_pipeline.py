@@ -141,12 +141,15 @@ async def _claude_identify_apparatus(
         "text": (
             "These are frames from an apparatus showcase video where a trainer shows all "
             "tools, parts, and components needed for a hands-on tutorial.\n\n"
-            "Identify ALL distinct physical objects/tools/parts shown. For each, provide:\n"
+            "Identify ONLY the tools, parts, and components the trainer is deliberately "
+            "presenting for the tutorial. For each, provide:\n"
             "- object_name: concise name\n"
-            "- object_type: tool|part|connector|cable|component|container|material|other\n"
+            "- object_type: tool|part|connector|cable|component|container|material\n"
             "- visual_cues: color, shape, markings, labels that distinguish it\n"
             "- sam3_prompt: a visually descriptive phrase for image segmentation (no verbs)\n"
             "- frame_numbers: which frame numbers (1-indexed) show this object\n\n"
+            "EXCLUDE: the trainer's body, hands, clothing, eyeglasses, jewelry, "
+            "anything the trainer is NOT deliberately showcasing as a tutorial component.\n\n"
             "Reply ONLY with a JSON array, no markdown fences:\n"
             '[{"object_name": "...", "object_type": "...", "visual_cues": "...", '
             '"sam3_prompt": "...", "frame_numbers": [1, 3, 5]}]'
@@ -160,7 +163,10 @@ async def _claude_identify_apparatus(
             max_tokens=2000,
             system=(
                 "You are an expert at identifying physical tools, parts, and components "
-                "from video frames. Be thorough — identify every distinct object visible. "
+                "from video frames. ONLY identify objects that are clearly tutorial apparatus "
+                "— tools, electronic components, wires, boards, mechanical parts, materials, "
+                "and connectors. NEVER include personal items (glasses, watches, bottles, phones), "
+                "body parts, clothing, or environmental objects (walls, furniture, screens). "
                 "Reply with ONLY a JSON array."
             ),
             messages=[{"role": "user", "content": image_content}],
@@ -176,8 +182,29 @@ async def _claude_identify_apparatus(
 
         raw_objects = json.loads(arr_match.group())
 
+        _VALID_TYPES = {"tool", "part", "connector", "cable", "component", "container", "material"}
+        _REJECT_KEYWORDS = {
+            "glasses", "eyeglasses", "spectacles", "sunglasses",
+            "watch", "ring", "bracelet", "necklace", "earring",
+            "bottle", "cup", "mug", "phone", "laptop", "shirt",
+            "pants", "shoe", "hat", "cap", "bag", "backpack",
+            "wall", "table", "desk", "chair", "floor", "ceiling",
+            "door", "window", "hand", "finger", "face", "hair",
+        }
+
         objects = []
+        skipped = []
         for obj in raw_objects:
+            obj_type = obj.get("object_type", "other").lower()
+            obj_name = obj.get("object_name", "unknown").lower()
+
+            if obj_type not in _VALID_TYPES:
+                skipped.append(obj.get("object_name", "unknown"))
+                continue
+            if any(kw in obj_name for kw in _REJECT_KEYWORDS):
+                skipped.append(obj.get("object_name", "unknown"))
+                continue
+
             frame_nums = obj.get("frame_numbers", [])
             ref_frames = []
             for fn in frame_nums:
@@ -187,7 +214,7 @@ async def _claude_identify_apparatus(
 
             objects.append({
                 "object_name": obj.get("object_name", "unknown"),
-                "object_type": obj.get("object_type", "other"),
+                "object_type": obj_type,
                 "visual_cues": obj.get("visual_cues", ""),
                 "sam3_prompt": obj.get("sam3_prompt", obj.get("object_name", "object")),
                 "angle_count": len(ref_frames),
@@ -198,6 +225,13 @@ async def _claude_identify_apparatus(
                     if fn in frame_index_map
                 ],
             })
+
+        if skipped:
+            print(
+                f"[ApparatusPipeline] Filtered out {len(skipped)} irrelevant objects: "
+                + ", ".join(skipped),
+                flush=True,
+            )
 
         print(
             f"[ApparatusPipeline] Claude identified {len(objects)} objects: "
@@ -313,7 +347,8 @@ async def _segment_one_apparatus_frame(
                 if coords and coords[0] is not None and coords[1] is not None:
                     cx, cy = coords
                     result = await segment_point(
-                        frame_bytes, cx, cy, box_radius=0.12,
+                        frame_bytes, cx, cy, box_radius=0.10,
+                        confidence_threshold=0.20, best_only=True,
                     )
 
             if not result or not result.get("segments"):

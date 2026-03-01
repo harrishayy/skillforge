@@ -125,6 +125,8 @@ async def segment_point(
     y: float,
     label: int = 1,
     box_radius: float = _POINT_BOX_RADIUS,
+    confidence_threshold: float = 0.15,
+    best_only: bool = False,
 ) -> dict | None:
     """
     Segment the object at a specific click coordinate by generating a small
@@ -134,6 +136,11 @@ async def segment_point(
         x, y: Normalized coordinates (0-1) of the click point.
         label: 1 = foreground (segment the object here), 0 = background (exclude).
         box_radius: Half-size of the box in normalized coords (default 5%).
+        confidence_threshold: Minimum score to keep a mask.
+        best_only: If True, return only the single highest-scoring mask.
+            Use this for pipeline fallbacks where one object mask is expected,
+            to avoid returning wall/background masks from SAM3's multi-
+            granularity output.
     """
     if not SAM3_URL:
         return None
@@ -169,11 +176,15 @@ async def segment_point(
             data.get("boxes", []),
             data.get("scores", []),
         ):
-            results.append({
-                "mask_base64": mask_b64,
-                "bbox": box,
-                "score": score,
-            })
+            if score >= confidence_threshold:
+                results.append({
+                    "mask_base64": mask_b64,
+                    "bbox": box,
+                    "score": score,
+                })
+
+        if best_only and results:
+            results = [max(results, key=lambda r: r["score"])]
 
         if results:
             print(f"[SAM3] ✓ Point ({x:.2f}, {y:.2f}) — {len(results)} mask(s) in {elapsed_ms}ms", flush=True)
