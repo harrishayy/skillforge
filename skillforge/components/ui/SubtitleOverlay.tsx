@@ -15,11 +15,11 @@ export function SubtitleOverlay({ transcript, visible }: SubtitleOverlayProps) {
     <AnimatePresence>
       {show && (
         <motion.div
-          initial={{ opacity: 0, y: 8 }}
+          initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 8 }}
+          exit={{ opacity: 0, y: -8 }}
           transition={{ duration: 0.2 }}
-          className="absolute bottom-20 left-1/2 -translate-x-1/2 z-30 max-w-[70%] pointer-events-none"
+          className="absolute top-20 left-1/2 -translate-x-1/2 z-30 max-w-[70%] pointer-events-none"
         >
           <div
             className="px-5 py-2.5 rounded-xl text-center text-sm leading-relaxed"

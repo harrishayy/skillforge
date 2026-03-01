@@ -32,7 +32,7 @@ def _get_client() -> httpx.AsyncClient:
     if _client is None or _client.is_closed:
         _client = httpx.AsyncClient(
             timeout=30.0,
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+            limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
         )
     return _client
 
@@ -408,6 +408,58 @@ def _remap_crop_results(
         })
 
     return results
+
+
+# ── Synthetic point-highlight for tiny objects SAM3 can't segment ─────────────
+
+_POINT_HIGHLIGHT_RADIUS_FRAC = 0.025  # 2.5% of frame → ~32px circle on 1280px
+
+
+def generate_point_highlight(
+    frame_bytes: bytes,
+    center_x: float,
+    center_y: float,
+    radius_frac: float = _POINT_HIGHLIGHT_RADIUS_FRAC,
+) -> dict:
+    """
+    Create a synthetic circular mask at known coordinates for objects too
+    small for SAM3 to segment (individual pins, SMD components, etc.).
+
+    Returns a segment dict with mask_base64, bbox, and score=1.0 (coordinates
+    are trusted from Nemotron, not from SAM3 inference).
+    """
+    img = Image.open(io.BytesIO(frame_bytes))
+    w, h = img.size
+
+    cx_px = center_x * w
+    cy_px = center_y * h
+    r_px = radius_frac * max(w, h)
+
+    mask = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse(
+        [cx_px - r_px, cy_px - r_px, cx_px + r_px, cy_px + r_px],
+        fill=255,
+    )
+
+    mask_buf = io.BytesIO()
+    mask.save(mask_buf, format="PNG")
+    mask_b64 = base64.b64encode(mask_buf.getvalue()).decode()
+
+    bbox_r = radius_frac * 1.2
+    bbox = [
+        max(0.0, center_x - bbox_r),
+        max(0.0, center_y - bbox_r),
+        min(1.0, center_x + bbox_r),
+        min(1.0, center_y + bbox_r),
+    ]
+
+    print(
+        f"[SAM3] Point-highlight at ({center_x:.2f}, {center_y:.2f}) "
+        f"— {int(r_px * 2)}px diameter on {w}x{h} frame",
+        flush=True,
+    )
+    return {"mask_base64": mask_b64, "bbox": bbox, "score": 1.0}
 
 
 # ── Multi-concept segmentation ────────────────────────────────────────────────
