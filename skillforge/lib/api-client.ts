@@ -5,6 +5,7 @@ import type {
   Step,
   Annotation,
   ClickTarget,
+  ApparatusObject,
   RegenerateStepResponse,
   SegmentPointResponse,
 } from "@/types";
@@ -286,6 +287,27 @@ export async function rerunStepPipeline(
       run_sam3: options.run_sam3 ?? true,
     }),
   });
+}
+
+// ─── Apparatus Objects ────────────────────────────────────────────────────────
+
+export async function updateApparatusObject(
+  objectId: string,
+  fields: Partial<Pick<ApparatusObject, "object_name" | "description" | "visual_cues" | "sam3_prompt">>
+): Promise<ApparatusObject> {
+  return apiFetch<ApparatusObject>(`/api/apparatus-objects/${objectId}`, {
+    method: "PATCH",
+    body: JSON.stringify(fields),
+  });
+}
+
+export async function rebuildWorkflowMemories(
+  workflowId: string
+): Promise<{ status: string; steps_count: number }> {
+  return apiFetch<{ status: string; steps_count: number }>(
+    `/api/workflows/${workflowId}/rebuild-memories`,
+    { method: "POST" }
+  );
 }
 
 // ─── Copilot ──────────────────────────────────────────────────────────────────

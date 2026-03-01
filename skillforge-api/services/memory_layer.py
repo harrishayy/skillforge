@@ -35,9 +35,11 @@ async def get_apparatus_catalog(workflow_id: str) -> list[dict]:
             "object_name": row["object_name"],
             "object_type": row.get("object_type", "other"),
             "visual_cues": row.get("visual_cues", ""),
+            "description": row.get("description", ""),
             "sam3_prompt": row.get("sam3_prompt", row["object_name"]),
             "angle_count": row.get("angle_count", 0),
             "reference_frames": ref_paths,
+            "segmented_reference_path": row.get("segmented_reference_path", ""),
         })
     return catalog
 
@@ -228,6 +230,8 @@ async def save_apparatus_object(
     sam3_prompt: str = "",
     angle_count: int = 0,
     reference_frame_paths: list[str] | None = None,
+    description: str = "",
+    segmented_reference_path: str = "",
 ) -> str:
     """Insert a single apparatus object into the catalog. Returns its id."""
     obj_id = new_id()
@@ -236,10 +240,12 @@ async def save_apparatus_object(
     await execute(
         """INSERT INTO workflow_objects
            (id, workflow_id, object_name, object_type, visual_cues, sam3_prompt,
-            angle_count, reference_frame_paths, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+            angle_count, reference_frame_paths, description, segmented_reference_path,
+            created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (obj_id, workflow_id, object_name, object_type, visual_cues,
-         sam3_prompt or object_name, angle_count, ref_json, ts),
+         sam3_prompt or object_name, angle_count, ref_json,
+         description, segmented_reference_path, ts),
     )
     return obj_id
 

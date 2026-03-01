@@ -55,12 +55,12 @@ async def extract_frames(
             hist = _grayscale_histogram(frame)
             should_save = False
 
-            if current_ms - last_sampled_ms >= 1000:
+            if current_ms - last_sampled_ms >= 1500:
                 should_save = True
 
             if prev_hist is not None:
                 diff = _bhattacharyya_distance(prev_hist, hist)
-                if diff > 0.3 and current_ms - last_sampled_ms >= 200:
+                if diff > 0.3 and current_ms - last_sampled_ms >= 400:
                     should_save = True
 
             prev_hist = hist
@@ -100,13 +100,24 @@ def get_video_duration_ms(video_path: str) -> int:
 
 
 def _duration_via_pyav(video_path: str) -> int | None:
-    """Duration via PyAV container metadata (microseconds → ms)."""
+    """Duration via PyAV — tries container metadata, then stream metadata."""
     try:
         container = av.open(video_path)
+
+        # 1. Container-level duration (works for mp4, most formats)
         if container.duration and container.duration > 0:
             dur_ms = int(container.duration / 1000)
             container.close()
             return dur_ms
+
+        # 2. Stream-level duration (works for webm where container duration is absent)
+        for stream in container.streams:
+            if stream.duration and stream.time_base:
+                dur_s = float(stream.duration * stream.time_base)
+                if dur_s > 0:
+                    container.close()
+                    return int(dur_s * 1000)
+
         container.close()
         return None
     except Exception as e:

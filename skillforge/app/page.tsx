@@ -29,7 +29,7 @@ export default function LandingPage() {
         <div className="max-w-5xl mx-auto">
           <div className="inline-flex items-center gap-2 mb-8 px-4 py-1.5 rounded-full border text-xs font-medium" style={{ borderColor: "#333", color: "#888" }}>
             <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: "var(--sf-purple)" }} />
-            NVIDIA Nemotron · Claude AI · YOLOv12 · MediaPipe
+            SAM 3 · Nemotron VL · Parakeet ASR · Claude AI · Grounding DINO · MediaPipe
           </div>
 
           <h1
@@ -104,7 +104,7 @@ export default function LandingPage() {
                   Live Camera Detection
                 </h2>
                 <p className="text-sm leading-relaxed" style={{ color: "rgba(0,0,0,0.65)" }}>
-                  Hand tracking, YOLO object detection, and custom text detection — all running
+                  Hand tracking, Grounding DINO object detection, and custom text detection — all running
                   in real-time through your webcam with no setup needed.
                 </p>
               </div>

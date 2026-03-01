@@ -225,9 +225,11 @@ export interface ApparatusObject {
   object_name: string;
   object_type: string;
   visual_cues: string;
+  description?: string;
   sam3_prompt: string;
   angle_count: number;
   reference_frame_paths: string[];
+  segmented_reference_path?: string;
 }
 
 export interface StepContext {

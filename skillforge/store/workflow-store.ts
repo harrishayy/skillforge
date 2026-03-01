@@ -1,6 +1,6 @@
 "use client";
 import { create } from "zustand";
-import type { Workflow, Step, Annotation, Sam3Segment } from "@/types";
+import type { Workflow, Step, Annotation, Sam3Segment, ApparatusObject } from "@/types";
 import {
   updateStep,
   updateAnnotation,
@@ -8,6 +8,9 @@ import {
   segmentPoint,
   regenerateStep,
   rerunStepPipeline,
+  updateApparatusObject,
+  rebuildWorkflowMemories,
+  getWorkflow,
 } from "@/lib/api-client";
 import type { RerunPipelineOptions } from "@/lib/api-client";
 import { showErrorToast } from "@/store/toast-store";
@@ -15,6 +18,7 @@ import { showErrorToast } from "@/store/toast-store";
 interface WorkflowStore {
   workflow: Workflow | null;
   selectedStepId: string | null;
+  selectedApparatusObjectId: string | null;
   isLoading: boolean;
 
   // SAM3 segmentation state
@@ -28,11 +32,15 @@ interface WorkflowStore {
   // Pipeline rerun state
   rerunningStepId: string | null;
 
+  // Apparatus memory rebuild state
+  rebuildingMemories: boolean;
+
   // Active filmstrip frame per step
   activeFramePath: Record<string, string>;
 
   setWorkflow: (wf: Workflow) => void;
   selectStep: (stepId: string | null) => void;
+  selectApparatusObject: (objectId: string | null) => void;
   updateStepLocal: (stepId: string, fields: Partial<Step>) => void;
   addAnnotationLocal: (stepId: string, ann: Annotation) => void;
   updateAnnotationLocal: (annId: string, ann: Partial<Annotation>) => void;
@@ -56,6 +64,11 @@ interface WorkflowStore {
   // Pipeline rerun
   rerunPipeline: (stepId: string, options: RerunPipelineOptions) => Promise<boolean>;
 
+  // Apparatus objects
+  updateApparatusObjectLocal: (objectId: string, fields: Partial<ApparatusObject>) => void;
+  saveApparatusObject: (objectId: string, fields: Partial<Pick<ApparatusObject, "object_name" | "description" | "visual_cues" | "sam3_prompt">>) => Promise<void>;
+  rebuildMemories: () => Promise<void>;
+
   // Filmstrip
   setActiveFrame: (stepId: string, framePath: string) => void;
 }
@@ -63,17 +76,21 @@ interface WorkflowStore {
 export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   workflow: null,
   selectedStepId: null,
+  selectedApparatusObjectId: null,
   isLoading: false,
   segmentsByStep: {},
   segmentPromptByStep: {},
   segmentingStepId: null,
   regeneratingStepId: null,
   rerunningStepId: null,
+  rebuildingMemories: false,
   activeFramePath: {},
 
   setWorkflow: (wf) => set({ workflow: wf }),
 
-  selectStep: (stepId) => set({ selectedStepId: stepId }),
+  selectStep: (stepId) => set({ selectedStepId: stepId, selectedApparatusObjectId: null }),
+
+  selectApparatusObject: (objectId) => set({ selectedApparatusObjectId: objectId, selectedStepId: null }),
 
   updateStepLocal: (stepId, fields) =>
     set((state) => {
@@ -235,6 +252,42 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     }
   },
 
+  updateApparatusObjectLocal: (objectId, fields) =>
+    set((state) => {
+      if (!state.workflow?.apparatus_objects) return state;
+      return {
+        workflow: {
+          ...state.workflow,
+          apparatus_objects: state.workflow.apparatus_objects.map((obj) =>
+            obj.id === objectId ? { ...obj, ...fields } : obj
+          ),
+        },
+      };
+    }),
+
+  saveApparatusObject: async (objectId, fields) => {
+    get().updateApparatusObjectLocal(objectId, fields);
+    try {
+      await updateApparatusObject(objectId, fields);
+    } catch (e) {
+      showErrorToast(e);
+    }
+  },
+
+  rebuildMemories: async () => {
+    const wf = get().workflow;
+    if (!wf) return;
+    set({ rebuildingMemories: true });
+    try {
+      await rebuildWorkflowMemories(wf.id);
+      const updated = await getWorkflow(wf.id);
+      set({ workflow: updated, rebuildingMemories: false });
+    } catch (e) {
+      showErrorToast(e);
+      set({ rebuildingMemories: false });
+    }
+  },
+
   setActiveFrame: (stepId, framePath) =>
     set((s) => ({
       activeFramePath: { ...s.activeFramePath, [stepId]: framePath },
@@ -243,3 +296,6 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
 
 export const selectedStep = (state: { workflow: Workflow | null; selectedStepId: string | null }) =>
   state.workflow?.steps.find((s) => s.id === state.selectedStepId) ?? null;
+
+export const selectedApparatusObject = (state: { workflow: Workflow | null; selectedApparatusObjectId: string | null }) =>
+  state.workflow?.apparatus_objects?.find((o) => o.id === state.selectedApparatusObjectId) ?? null;

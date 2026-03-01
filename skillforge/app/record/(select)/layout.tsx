@@ -3,9 +3,9 @@ import Link from "next/link";
 
 export default function SelectLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: "var(--sf-white)", color: "var(--sf-black)" }}>
+    <div className="h-full flex flex-col" style={{ backgroundColor: "var(--sf-white)", color: "var(--sf-black)" }}>
       <nav
-        className="shrink-0 flex items-center px-6 py-3 border-b"
+        className="shrink-0 z-50 flex items-center px-6 py-3 border-b"
         style={{ backgroundColor: "var(--sf-black)", borderColor: "#222" }}
       >
         <Link
@@ -16,7 +16,7 @@ export default function SelectLayout({ children }: { children: React.ReactNode }
           SkillForge
         </Link>
       </nav>
-      <main className="flex-1 min-h-0 overflow-hidden">{children}</main>
+      <main className="flex-1 min-h-0 overflow-y-auto">{children}</main>
     </div>
   );
 }

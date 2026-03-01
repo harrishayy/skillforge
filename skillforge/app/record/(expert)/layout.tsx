@@ -1,11 +1,16 @@
 "use client";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 export default function RecordExpertLayout({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const isSession = pathname === "/record/session";
+
   return (
-    <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: "var(--sf-white)", color: "var(--sf-black)" }}>
-      <nav
-        className="shrink-0 flex items-center gap-6 px-6 py-3 border-b"
+    <div className="h-full flex flex-col" style={{ backgroundColor: "var(--sf-white)", color: "var(--sf-black)" }}>
+      {!isSession && (
+        <nav
+          className="shrink-0 z-50 flex items-center gap-6 px-6 py-3 border-b"
         style={{ backgroundColor: "var(--sf-black)", borderColor: "#222" }}
       >
         <Link
@@ -44,7 +49,8 @@ export default function RecordExpertLayout({ children }: { children: React.React
           </span>
         </div>
       </nav>
-      <main className="flex-1 min-h-0 overflow-hidden">{children}</main>
+      )}
+      <main className="flex-1 min-h-0 overflow-y-auto">{children}</main>
     </div>
   );
 }

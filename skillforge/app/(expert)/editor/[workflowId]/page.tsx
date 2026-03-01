@@ -8,6 +8,7 @@ import { useWorkflowStore } from "@/store/workflow-store";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { StepList } from "@/components/editor/StepList";
 import { StepFrameViewer } from "@/components/editor/StepFrameViewer";
+import { ApparatusFrameViewer } from "@/components/editor/ApparatusFrameViewer";
 import { StepDetailPanel } from "@/components/editor/StepDetailPanel";
 import { PipelineStatus } from "@/components/recording/PipelineStatus";
 import { Spinner } from "@/components/ui/Spinner";
@@ -20,7 +21,7 @@ export default function EditorPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isPublishing, setIsPublishing] = useState(false);
-  const { workflow, setWorkflow, selectedStepId, selectStep } = useWorkflowStore();
+  const { workflow, setWorkflow, selectedStepId, selectedApparatusObjectId, selectStep } = useWorkflowStore();
 
   const leftPanel = useResizablePanel({
     initialWidth: 240,
@@ -156,7 +157,7 @@ export default function EditorPage() {
 
         {/* Center: Frame viewer with SAM3 + filmstrip + video */}
         <div className="flex-1 flex flex-col overflow-hidden p-4 min-w-0">
-          <StepFrameViewer />
+          {selectedApparatusObjectId ? <ApparatusFrameViewer /> : <StepFrameViewer />}
         </div>
 
         {/* Right resize handle */}

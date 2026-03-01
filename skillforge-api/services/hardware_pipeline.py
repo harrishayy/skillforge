@@ -4,6 +4,8 @@ HARDWARE (webcam/guided) WORKFLOW PIPELINE — processes per-step video segments
 Each step arrives as its own video file. The pipeline:
   1. (Optional) Runs apparatus showcase analysis to build object catalog
   2. Extracts key frames from each step video
+  2b. Refines voice transcript: extracts audio from video → Parakeet ASR →
+     Claude reconciles browser + server transcripts with workflow context
   3. Uses Claude to generate titles and descriptions per step
   4. Runs multi-agent key object analysis with persistent memory:
      a. Builds context chain (apparatus catalog + previous steps)
@@ -26,9 +28,28 @@ from services.memory_layer import (
     build_step_context,
     save_step_context,
     update_context_with_observations,
+    get_apparatus_catalog,
 )
+from services.asr_service import extract_audio_from_video, transcribe_wav
 
 UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
+
+DETECTION_RATE_MS = 2500  # ~1 detection frame per 2.5 seconds of video
+MIN_DETECTION_FRAMES = 3
+MAX_DETECTION_FRAMES = 15
+
+
+def _detection_frame_budget(duration_ms: int) -> int:
+    """Compute how many frames to send to the detection pipeline based on video length."""
+    return min(MAX_DETECTION_FRAMES, max(MIN_DETECTION_FRAMES, duration_ms // DETECTION_RATE_MS))
+
+
+def _subsample_frames(frame_paths: list[str], max_frames: int) -> list[str]:
+    """Evenly subsample frame_paths down to *max_frames*, always keeping first and last."""
+    if len(frame_paths) <= max_frames:
+        return frame_paths
+    indices = [round(i * (len(frame_paths) - 1) / (max_frames - 1)) for i in range(max_frames)]
+    return [frame_paths[i] for i in dict.fromkeys(indices)]
 
 
 async def _log(workflow_id: str, stage: str, message: str, progress: int):
@@ -134,6 +155,38 @@ async def run_hardware_pipeline(
         )
         await _log(workflow_id, "frame_extraction", "Frame extraction complete", 35)
 
+        # ── Transcript refinement (browser + Parakeet + Claude) ───────────
+        await _log(workflow_id, "claude_decompose", "Refining voice transcripts...", 36)
+        apparatus_catalog = await get_apparatus_catalog(workflow_id)
+        refined_transcripts: list[str] = []
+
+        for i, sd in enumerate(step_data):
+            step_num = sd["step_number"]
+            previous = refined_transcripts[:i]
+
+            try:
+                refined = await _refine_transcript(
+                    browser_transcript=sd["transcript"],
+                    video_path=sd["video_path"],
+                    step_number=step_num,
+                    workflow_title=wf_title,
+                    workflow_description=wf_description,
+                    apparatus_catalog=apparatus_catalog,
+                    previous_transcripts=previous,
+                    note=sd["note"],
+                )
+                original = step_transcripts[i] if i < len(step_transcripts) else ""
+                sd["transcript"] = refined
+                refined_transcripts.append(refined)
+                if refined != original:
+                    await _log(
+                        workflow_id, "claude_decompose",
+                        f"Step {step_num} transcript refined", 36 + int((step_num / total_steps) * 4),
+                    )
+            except Exception as e:
+                print(f"[HardwarePipeline] Transcript refinement failed for step {step_num}: {e}", flush=True)
+                refined_transcripts.append(sd["transcript"])
+
         # ── Claude step annotation ────────────────────────────────────────
         await _log(workflow_id, "claude_decompose", "Generating step titles and annotations...", 40)
 
@@ -204,7 +257,9 @@ async def run_hardware_pipeline(
                 try:
                     context = await build_step_context(workflow_id, step_num)
 
-                    frame_paths = [frm["path"] for frm in sd["frames"]]
+                    all_frame_paths = [frm["path"] for frm in sd["frames"]]
+                    budget = _detection_frame_budget(sd["duration_ms"])
+                    frame_paths = _subsample_frames(all_frame_paths, max_frames=budget)
                     analysis = await run_key_object_analysis_multi(
                         frame_paths=frame_paths,
                         step_title=title,
@@ -389,6 +444,112 @@ async def execute_fetch_workflow(workflow_id: str) -> dict | None:
     """Fetch workflow row for context (avoids circular import with database)."""
     from models.database import fetchone
     return await fetchone("SELECT * FROM workflows WHERE id=?", (workflow_id,))
+
+
+async def _refine_transcript(
+    browser_transcript: str,
+    video_path: str,
+    step_number: int,
+    workflow_title: str = "",
+    workflow_description: str = "",
+    apparatus_catalog: list[dict] | None = None,
+    previous_transcripts: list[str] | None = None,
+    note: str = "",
+) -> str:
+    """
+    Produce a refined transcript by:
+      1. Extracting audio from the step video → Parakeet server transcript
+      2. Sending both transcripts + context to Claude for reconciliation
+
+    Falls back to the browser transcript if any step fails.
+    """
+    browser_text = browser_transcript.strip()
+
+    # Step 1: get a server-side transcript from the video audio
+    server_text = ""
+    wav_bytes = extract_audio_from_video(video_path)
+    if wav_bytes:
+        try:
+            server_text = await transcribe_wav(wav_bytes)
+        except Exception as e:
+            print(f"[HardwarePipeline] Parakeet transcription failed for step {step_number}: {e}", flush=True)
+        if server_text:
+            print(
+                f'[HardwarePipeline] Step {step_number} Parakeet transcript: "{server_text[:100]}"',
+                flush=True,
+            )
+
+    # If neither source produced anything, return whatever we have
+    if not browser_text and not server_text:
+        return browser_text
+    # If only one source, and no API key for Claude, just return the best one
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return server_text or browser_text
+
+    # Step 2: Claude reconciliation
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+
+        user_content = ""
+        if workflow_title:
+            user_content += f'Workflow: "{workflow_title}"'
+            if workflow_description:
+                user_content += f"\nDescription: {workflow_description}"
+            user_content += "\n\n"
+
+        if apparatus_catalog:
+            obj_names = [o.get("object_name", "") for o in apparatus_catalog if o.get("object_name")]
+            if obj_names:
+                user_content += f"Known tools/parts in this workflow: {', '.join(obj_names)}\n\n"
+
+        if previous_transcripts:
+            summaries = [
+                f"Step {i + 1}: {t[:120]}"
+                for i, t in enumerate(previous_transcripts) if t.strip()
+            ]
+            if summaries:
+                user_content += "Previous steps:\n" + "\n".join(summaries) + "\n\n"
+
+        user_content += f"This is step {step_number}.\n\n"
+        user_content += f'Browser speech recognition (Chrome Web Speech API): "{browser_text}"\n'
+        if server_text:
+            user_content += f'Server ASR (NVIDIA Parakeet CTC 1.1B): "{server_text}"\n'
+        if note.strip():
+            user_content += f'Expert note (typed, reliable): "{note.strip()}"\n'
+        user_content += "\nProduce the refined transcript."
+
+        response = client.messages.create(
+            model="claude-haiku-4-20250514",
+            max_tokens=10000,
+            system=(
+                "You are a transcript refinement assistant. You receive one or two speech-to-text "
+                "transcripts of the same audio (from different ASR engines) along with contextual "
+                "information about the workflow being recorded.\n\n"
+                "Your job is to produce ONE clean, accurate transcript that represents what the "
+                "expert actually said. Rules:\n"
+                "- Cross-reference both transcripts to resolve ambiguities and correct ASR errors.\n"
+                "- Use the workflow context (title, known objects/tools, previous steps) to fix "
+                "domain-specific words that ASR commonly mangles (e.g. tool names, technical terms).\n"
+                "- Remove filler words (um, uh, like, so, you know) and false starts.\n"
+                "- Fix punctuation and capitalization.\n"
+                "- Preserve the expert's actual words and meaning — do NOT rephrase or summarize.\n"
+                "- If the expert gives a voice command (e.g. 'next step', 'object done'), "
+                "exclude it from the transcript.\n"
+                "- Reply with ONLY the refined transcript text, nothing else."
+            ),
+            messages=[{"role": "user", "content": user_content}],
+        )
+
+        refined = response.content[0].text.strip()
+        if refined and len(refined) >= 3:
+            return refined
+
+    except Exception as e:
+        print(f"[HardwarePipeline] Transcript refinement failed: {e}", flush=True)
+
+    return server_text or browser_text
 
 
 async def _generate_step_metadata(

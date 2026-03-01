@@ -204,6 +204,8 @@ async def _run_migrations(conn):
         "ALTER TABLE step_frames ADD COLUMN IF NOT EXISTS segmented_frame_path TEXT",
         "ALTER TABLE steps ADD COLUMN IF NOT EXISTS is_apparatus_step INTEGER DEFAULT 0",
         "ALTER TABLE click_targets ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'primary'",
+        "ALTER TABLE workflow_objects ADD COLUMN IF NOT EXISTS description TEXT",
+        "ALTER TABLE workflow_objects ADD COLUMN IF NOT EXISTS segmented_reference_path TEXT",
     ]
     for sql in migrations:
         try:

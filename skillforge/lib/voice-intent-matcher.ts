@@ -6,17 +6,17 @@
 export type VoiceIntent = "next" | "prev" | "finish" | "elaborate" | null;
 
 const NEXT_PATTERN =
-  /(?:^|\s)(?:go\s+to\s+(?:the\s+)?)?next\s+step(?:\s|$)|(?:^|\s)next(?:\s|$)/i;
+  /(?:^|\s)(?:go\s+to\s+(?:the\s+)?)?next\s+step(?:\s|$)|(?:^|\s)next(?:\s|$)|(?:^|\s)(?:next\s+step|object\s+done|next\s+object)(?:\s|$)/i;
 const PREV_PATTERN =
   /(?:^|\s)(?:previous|back|go\s*back|last|prior)\s*(?:step|phase|part|stage)?(?:\s|$)|(?:^|\s)(?:go\s*back|previous)\s*(?:\s|$)/i;
 const FINISH_PATTERN =
-  /(?:^|\s)(?:finish|done|complete|that'?s\s*it|done\s+with\s+this|end\s*recording|stop\s*recording)(?:\s|$)/i;
+  /(?:^|\s)(?:finish|done|complete|that'?s\s*it|done\s+with\s+this|end\s*recording|stop\s*recording|move\s+to\s+steps?)(?:\s|$)/i;
 const ELABORATE_PATTERN =
   /(?:^|\s)(?:elaborate|break\s+it\s+down|more\s+detail|break\s+down\s+this\s+step)(?:\s|$)/i;
 
-const NEXT_SEEDS = ["next step"];
+const NEXT_SEEDS = ["next step", "object done", "next object"];
 const PREV_SEEDS = ["previous step", "previous", "back", "go back"];
-const FINISH_SEEDS = ["finish", "done", "complete", "end recording", "stop recording"];
+const FINISH_SEEDS = ["finish", "done", "complete", "end recording", "stop recording", "move to step", "move to steps"];
 const ELABORATE_SEEDS = ["elaborate", "break it down", "more detail"];
 
 const LLM_FALLBACK_MIN_LENGTH = 50;
