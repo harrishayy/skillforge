@@ -14,7 +14,7 @@ import { useSam3Detect, type Sam3Result } from "@/hooks/useSam3Detect";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
 import { useDoubleTapDetection } from "@/hooks/useDoubleTapDetection";
 import { useVoiceCommands } from "@/hooks/useVoiceCommands";
-import { computePinchState } from "@/lib/pinch-detection";
+import { computePhoneGestureState } from "@/lib/phone-gesture-detection";
 import { DetectorSidebar } from "@/components/live-detect/DetectorSidebar";
 import { PinchIndicator } from "@/components/live-detect/PinchIndicator";
 import { ImmersiveOverlay } from "@/components/live-detect/ImmersiveOverlay";
@@ -233,7 +233,7 @@ export default function LiveDetectPage() {
           }
         : null;
 
-  const pinchState = computePinchState(result?.hands ?? null);
+  const gestureState = computePhoneGestureState(result?.hands ?? null);
 
   const lastSkipRewindAtRef = useRef<number>(0);
   const SKIP_REWIND_COOLDOWN_MS = 1000;
@@ -699,55 +699,62 @@ export default function LiveDetectPage() {
             </button>
             {gesturesEnabled && (
               <PinchIndicator
-                leftPressed={pinchState.leftPressed}
-                rightPressed={pinchState.rightPressed}
+                leftPressed={gestureState.leftPressed}
+                rightPressed={gestureState.rightPressed}
               />
             )}
           </>
         )}
         {isActive && (
-          <button
-            onClick={() => setMicEnabled((v) => !v)}
-            className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg transition-all hover:scale-105"
-            style={{
-              backgroundColor: voice.status === "unavailable"
-                ? "rgba(239, 68, 68, 0.2)"
-                : micEnabled && voice.isListening
-                  ? "rgba(190, 242, 100, 0.2)"
-                  : "rgba(255, 255, 255, 0.08)",
-              color: voice.status === "unavailable"
-                ? "rgba(239, 68, 68, 0.8)"
-                : micEnabled && voice.isListening
-                  ? "var(--sf-lime)"
-                  : immersiveActive ? "rgba(255,255,255,0.5)" : "#666",
-              border: `1px solid ${micEnabled && voice.isListening ? "rgba(190,242,100,0.3)" : "#333"}`,
-            }}
-            title={voice.unavailableReason ?? (micEnabled ? "Mute voice commands" : "Unmute voice commands")}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              {micEnabled ? (
-                <>
-                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                  <line x1="12" x2="12" y1="19" y2="22" />
-                </>
-              ) : (
-                <>
-                  <line x1="2" x2="22" y1="2" y2="22" />
-                  <path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2" />
-                  <path d="M5 10v2a7 7 0 0 0 12 0" />
-                  <path d="M15 9.34V5a3 3 0 0 0-5.68-1.33" />
-                  <path d="M9 9v3a3 3 0 0 0 5.12 2.12" />
-                  <line x1="12" x2="12" y1="19" y2="22" />
-                </>
-              )}
-            </svg>
-            {voice.status === "unavailable"
-              ? "Unavailable"
-              : micEnabled
-                ? voice.isListening ? "Listening" : "Starting..."
-                : "Muted"}
-          </button>
+          <>
+            <button
+              onClick={() => setMicEnabled((v) => !v)}
+              className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg transition-all hover:scale-105"
+              style={{
+                backgroundColor: voice.status === "unavailable"
+                  ? "rgba(239, 68, 68, 0.2)"
+                  : micEnabled && voice.isListening
+                    ? "rgba(190, 242, 100, 0.2)"
+                    : "rgba(255, 255, 255, 0.08)",
+                color: voice.status === "unavailable"
+                  ? "rgba(239, 68, 68, 0.8)"
+                  : micEnabled && voice.isListening
+                    ? "var(--sf-lime)"
+                    : immersiveActive ? "rgba(255,255,255,0.5)" : "#666",
+                border: `1px solid ${micEnabled && voice.isListening ? "rgba(190,242,100,0.3)" : "#333"}`,
+              }}
+              title={voice.unavailableReason ?? (micEnabled ? "Mute voice commands" : "Unmute voice commands")}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                {micEnabled ? (
+                  <>
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" x2="12" y1="19" y2="22" />
+                  </>
+                ) : (
+                  <>
+                    <line x1="2" x2="22" y1="2" y2="22" />
+                    <path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2" />
+                    <path d="M5 10v2a7 7 0 0 0 12 0" />
+                    <path d="M15 9.34V5a3 3 0 0 0-5.68-1.33" />
+                    <path d="M9 9v3a3 3 0 0 0 5.12 2.12" />
+                    <line x1="12" x2="12" y1="19" y2="22" />
+                  </>
+                )}
+              </svg>
+              {voice.status === "unavailable"
+                ? "Unavailable"
+                : micEnabled
+                  ? voice.isListening ? "Listening" : "Starting..."
+                  : "Muted"}
+            </button>
+            {voice.status === "unavailable" && voice.unavailableReason && (
+              <span className="text-[10px] text-red-400/90 max-w-[180px]" title={voice.unavailableReason}>
+                {voice.unavailableReason.includes("HTTPS") ? "Use HTTPS or localhost" : voice.unavailableReason}
+              </span>
+            )}
+          </>
         )}
       </div>
       <button

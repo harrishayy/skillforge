@@ -78,7 +78,8 @@ function HelpSection() {
                 }
                 title="Hand Gestures"
                 items={[
-                  "Double-tap pinch (right hand) → next step",
+                  "Spider-Man gesture (thumb, index, pinky out; right hand) → next step",
+                  "Spider-Man gesture (left hand) → previous step",
                 ]}
               />
               <HelpItem

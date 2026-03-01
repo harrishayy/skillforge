@@ -2,9 +2,23 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "SSH Tunnel",
+      "label": "SSH Tunnel 8090",
       "type": "shell",
-      "command": "ssh -L 8090:localhost:8080 -L 8091:localhost:8081 -L 8092:localhost:8082 sam3-server",
+      "command": "ssh -L 8090:localhost:8080 sam3-server",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "SSH Tunnel 8091",
+      "type": "shell",
+      "command": "ssh -L 8091:localhost:8081 sam3-server",
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "SSH Tunnel 8092",
+      "type": "shell",
+      "command": "ssh -L 8092:localhost:8082 sam3-server",
       "isBackground": true,
       "problemMatcher": []
     },
@@ -58,7 +72,15 @@
     },
     {
       "label": "Start All",
-      "dependsOn": ["SSH Tunnel", "ngrok", "skillforge dev", "skillforge backend", "skillforge-api"],
+      "dependsOn": [
+        "SSH Tunnel 8090",
+        "SSH Tunnel 8091",
+        "SSH Tunnel 8092",
+        "ngrok",
+        "skillforge dev",
+        "skillforge backend",
+        "skillforge-api"
+      ],
       "dependsOrder": "parallel"
     }
   ]

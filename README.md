@@ -379,7 +379,7 @@ SkillForge is designed to be fully functional with only an `ANTHROPIC_API_KEY` a
 
 1. Expert navigates to `/record` and selects a recording mode.
 2. Expert enters a title and description, then records via webcam with voice narration at `/record/session`.
-3. Steps are captured using "Next Step" (button, voice command, or double-tap gesture).
+3. Steps are captured using "Next Step" (button, voice command, or Spider-Man hand gesture).
 4. On finish, the AI pipeline runs: frame extraction, Nemotron VL analysis, MediaPipe hand tracking, Claude step decomposition.
 5. Expert lands in the workflow editor at `/editor/[id]` to refine steps, add annotations, and publish.
 

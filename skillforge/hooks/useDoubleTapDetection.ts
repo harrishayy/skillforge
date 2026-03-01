@@ -2,13 +2,7 @@
 
 import { useRef, useEffect } from "react";
 import type { HandData } from "@/hooks/useLiveDetect";
-import { computePinchState } from "@/lib/pinch-detection";
-
-/** Two taps within this window (ms) count as double-tap. */
-const DOUBLE_TAP_WINDOW_MS = 400;
-
-/** Sentinel: no previous tap in window. */
-const NO_PREV_TAP = 0;
+import { computePhoneGestureState } from "@/lib/phone-gesture-detection";
 
 export interface UseDoubleTapDetectionOptions {
   onSkipForward: () => void;
@@ -16,19 +10,16 @@ export interface UseDoubleTapDetectionOptions {
 }
 
 /**
- * Detects double-tap (two quick index-thumb pinches with release in between) per hand.
- * Right hand double-tap → onSkipForward; left hand double-tap → onSkipBackward.
- * Uses release-to-retrigger: a press is when pinch goes from off to on.
- * Runs in useEffect to avoid setState-during-render.
+ * Detects Spider-Man / web-slinging gesture (thumb, index, pinky extended; middle, ring closed) per hand.
+ * Right hand → onSkipForward; left hand → onSkipBackward.
+ * Rising edge only: when hand transitions into phone pose, fire callback once.
  */
 export function useDoubleTapDetection(
   hands: HandData | null,
   { onSkipForward, onSkipBackward }: UseDoubleTapDetectionOptions
 ) {
-  const leftPinchPrevRef = useRef(false);
-  const rightPinchPrevRef = useRef(false);
-  const leftLastPressAtRef = useRef(0);
-  const rightLastPressAtRef = useRef(0);
+  const leftPrevRef = useRef(false);
+  const rightPrevRef = useRef(false);
 
   const onSkipForwardRef = useRef(onSkipForward);
   const onSkipBackwardRef = useRef(onSkipBackward);
@@ -37,33 +28,17 @@ export function useDoubleTapDetection(
     onSkipBackwardRef.current = onSkipBackward;
   }, [onSkipForward, onSkipBackward]);
 
-  const pinch = computePinchState(hands);
+  const gesture = computePhoneGestureState(hands);
 
   useEffect(() => {
-    const now = Date.now();
-
-    // Left hand: transition from !pressed to pressed = one press
-    if (!leftPinchPrevRef.current && pinch.leftPressed) {
-      const last = leftLastPressAtRef.current;
-      if (last !== NO_PREV_TAP && now - last <= DOUBLE_TAP_WINDOW_MS) {
-        onSkipBackwardRef.current();
-        leftLastPressAtRef.current = NO_PREV_TAP;
-      } else {
-        leftLastPressAtRef.current = now;
-      }
+    if (!leftPrevRef.current && gesture.leftPressed) {
+      onSkipBackwardRef.current();
     }
-    leftPinchPrevRef.current = pinch.leftPressed;
+    leftPrevRef.current = gesture.leftPressed;
 
-    // Right hand: same
-    if (!rightPinchPrevRef.current && pinch.rightPressed) {
-      const last = rightLastPressAtRef.current;
-      if (last !== NO_PREV_TAP && now - last <= DOUBLE_TAP_WINDOW_MS) {
-        onSkipForwardRef.current();
-        rightLastPressAtRef.current = NO_PREV_TAP;
-      } else {
-        rightLastPressAtRef.current = now;
-      }
+    if (!rightPrevRef.current && gesture.rightPressed) {
+      onSkipForwardRef.current();
     }
-    rightPinchPrevRef.current = pinch.rightPressed;
-  }, [pinch.leftPressed, pinch.rightPressed]);
+    rightPrevRef.current = gesture.rightPressed;
+  }, [gesture.leftPressed, gesture.rightPressed]);
 }

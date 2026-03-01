@@ -8,7 +8,7 @@ import { useVoiceCommands } from "@/hooks/useVoiceCommands";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
 import type { MPResult } from "@/hooks/useMediaPipeDetect";
 import { useDoubleTapDetection } from "@/hooks/useDoubleTapDetection";
-import { computePinchState } from "@/lib/pinch-detection";
+import { computePhoneGestureState } from "@/lib/phone-gesture-detection";
 import { renderHandLandmarks } from "@/lib/annotation-renderer";
 import { uploadStepVideos, getGuidedStepPrompt } from "@/lib/api-client";
 import { showErrorToast } from "@/store/toast-store";
@@ -91,7 +91,7 @@ export default function RecordingSessionPage() {
 
   // Hand data as state so useDoubleTapDetection re-runs on each new frame
   const [handData, setHandData] = useState<MPResult["hands"]>(null);
-  const pinchState = computePinchState(handData);
+  const gestureState = computePhoneGestureState(handData);
 
   const handleSaveNote = useCallback((stepNumber: number, text: string) => {
     setStepNotes((prev) => ({ ...prev, [stepNumber]: text }));
@@ -905,7 +905,7 @@ export default function RecordingSessionPage() {
                 border: "1px solid rgba(255,255,255,0.1)",
               }}
             >
-              <PinchIndicator leftPressed={pinchState.leftPressed} rightPressed={pinchState.rightPressed} />
+              <PinchIndicator leftPressed={gestureState.leftPressed} rightPressed={gestureState.rightPressed} />
             </div>
           )}
         </div>
@@ -989,7 +989,7 @@ export default function RecordingSessionPage() {
                     finishLabel: "✓ Done with Showcase",
                     voiceHint: micEnabled
                       ? <>Say &ldquo;object done&rdquo; to advance &middot; Say &ldquo;move to step&rdquo; to finish showcase</>
-                      : <>Voice muted &middot; Double-tap pinch to advance</>,
+                      : <>Voice muted &middot; Spider-Man gesture to advance</>,
                     onNextStep: voiceNext,
                     onFinish: voiceFinish,
                     onSkip: handleApparatusSkip,
