@@ -23,6 +23,7 @@ import { StepHistoryPanel, type CompletedStep } from "@/components/recording-ses
 import { HelpAndChatPanel } from "@/components/recording-session/HelpAndChatPanel";
 import { StepSavedToast } from "@/components/recording-session/StepSavedToast";
 import { FinishConfirmation } from "@/components/recording-session/FinishConfirmation";
+import { SubtitleOverlay } from "@/components/ui/SubtitleOverlay";
 
 type SessionState = "mounting" | "recovering" | "apparatus_showcase" | "recording" | "confirming_finish" | "uploading" | "processing";
 
@@ -101,6 +102,7 @@ export default function RecordingSessionPage() {
   }, []);
 
   const [micEnabled, setMicEnabled] = useState(true);
+  const [subtitlesEnabled, setSubtitlesEnabled] = useState(false);
   const [gesturesEnabled, setGesturesEnabled] = useState(true);
   const webcamRecorder = useWebcamRecorder();
   const snapshotTranscriptRef = useRef<() => string>(() => "");
@@ -869,6 +871,30 @@ export default function RecordingSessionPage() {
             {gesturesEnabled ? "Gestures" : "Gestures off"}
           </button>
 
+          {/* Subtitles toggle */}
+          <button
+            onClick={() => setSubtitlesEnabled((v) => !v)}
+            className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition-all hover:scale-105"
+            style={{
+              backgroundColor: subtitlesEnabled
+                ? "rgba(190, 242, 100, 0.25)"
+                : "rgba(255, 255, 255, 0.08)",
+              color: subtitlesEnabled ? "var(--sf-lime)" : "rgba(255,255,255,0.4)",
+              backdropFilter: "blur(20px)",
+              border: `1px solid ${subtitlesEnabled ? "rgba(190,242,100,0.3)" : "rgba(255,255,255,0.1)"}`,
+            }}
+            title={subtitlesEnabled ? "Hide subtitles" : "Show subtitles"}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="1" y="4" width="22" height="16" rx="2" />
+              <path d="M7 15h4" />
+              <path d="M15 15h2" />
+              <path d="M7 11h2" />
+              <path d="M13 11h4" />
+            </svg>
+            {subtitlesEnabled ? "CC" : "CC off"}
+          </button>
+
           {/* Pinch indicator */}
           {gesturesEnabled && handData && (
             <div
@@ -888,6 +914,13 @@ export default function RecordingSessionPage() {
       {/* Step saved toast */}
       <StepSavedToast key={toastKeyRef.current} stepNumber={savedStepToast} />
 
+      {/* Live subtitles */}
+      {isRecordingActive && (
+        <SubtitleOverlay
+          transcript={voice.displayTranscript}
+          visible={subtitlesEnabled}
+        />
+      )}
 
       {/* Left panel: step history */}
       <StepHistoryPanel
@@ -955,7 +988,7 @@ export default function RecordingSessionPage() {
                       : "→ Next Object",
                     finishLabel: "✓ Done with Showcase",
                     voiceHint: micEnabled
-                      ? <>Say &ldquo;next&rdquo; to advance &middot; Say &ldquo;done&rdquo; to finish showcase</>
+                      ? <>Say &ldquo;object done&rdquo; to advance &middot; Say &ldquo;move to step&rdquo; to finish showcase</>
                       : <>Voice muted &middot; Double-tap pinch to advance</>,
                     onNextStep: voiceNext,
                     onFinish: voiceFinish,

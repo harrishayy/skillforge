@@ -310,6 +310,31 @@ export async function rebuildWorkflowMemories(
   );
 }
 
+export async function regenerateAll(
+  workflowId: string
+): Promise<{ status: string; steps_count: number }> {
+  return apiFetch<{ status: string; steps_count: number }>(
+    `/api/workflows/${workflowId}/regenerate-all`,
+    { method: "POST" }
+  );
+}
+
+export interface TaskStatus {
+  task?: string;
+  status: "idle" | "running" | "done" | "error";
+  progress?: number;
+  total?: number;
+  error?: string | null;
+}
+
+export async function getWorkflowTaskStatus(
+  workflowId: string
+): Promise<TaskStatus> {
+  return apiFetch<TaskStatus>(
+    `/api/workflows/${workflowId}/task-status`
+  );
+}
+
 // ─── Copilot ──────────────────────────────────────────────────────────────────
 
 export async function getStepInstruction(
@@ -323,9 +348,54 @@ export async function getStepInstruction(
   return data.instruction;
 }
 
+export interface ElaborateSubtask {
+  title: string;
+  description?: string;
+}
+
+export async function elaborateStep(
+  workflowId: string,
+  stepId: string,
+  userMessage?: string
+): Promise<{ subtasks: ElaborateSubtask[] }> {
+  return apiFetch<{ subtasks: ElaborateSubtask[] }>("/api/copilot/elaborate-step", {
+    method: "POST",
+    body: JSON.stringify({
+      workflow_id: workflowId,
+      step_id: stepId,
+      user_message: userMessage ?? null,
+    }),
+  });
+}
+
+export interface CheckStepSuggestResult {
+  suggest_complete: boolean;
+  message: string;
+  hands?: { hands: Array<{ landmarks: Array<{ x: number; y: number; z?: number }> }> } | null;
+  sam3_segments?: Array<{ mask_base64?: string; bbox: number[]; score: number }>;
+}
+
+export async function checkStepSuggest(
+  workflowId: string,
+  stepId: string,
+  frameBase64: string
+): Promise<CheckStepSuggestResult> {
+  return apiFetch<CheckStepSuggestResult>(
+    "/api/trainee/check-step-suggest",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        workflow_id: workflowId,
+        step_id: stepId,
+        frame_base64: frameBase64,
+      }),
+    }
+  );
+}
+
 // ─── Voice intent (LLM fallback) ────────────────────────────────────────────
 
-export type VoiceIntentResult = "next" | "prev" | "finish" | "none";
+export type VoiceIntentResult = "next" | "prev" | "finish" | "elaborate" | "none";
 
 export async function classifyVoiceIntent(transcript: string): Promise<VoiceIntentResult> {
   const data = await apiFetch<{ intent: VoiceIntentResult }>("/api/voice/intent", {

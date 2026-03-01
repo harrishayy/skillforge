@@ -20,7 +20,7 @@ import asyncio
 import anthropic
 
 from services.nemotron_client import detect_object_in_frames_batch
-from services.sam3_service import segment_multi_concept
+from services.sam3_service import segment_multi_concept, segment_point, segment_concept
 
 
 # ── Agent 1: Claude — decide which objects to detect and segment ─────────────
@@ -92,13 +92,16 @@ async def identify_key_objects(
                 "visual_cues": obj.get("visual_cues", ""),
                 "sam3_prompt": obj.get("sam3_prompt", obj.get("label", step_title)),
                 "role": obj.get("role", "primary"),
+                "size_hint": obj.get("size_hint", "medium"),
                 "reasoning": obj.get("reasoning", ""),
             })
 
         if not objects:
             objects = [_fallback_key_object(step_title)]
 
-        labels_str = ", ".join(f'"{o["label"]}" ({o["role"]})' for o in objects)
+        labels_str = ", ".join(
+            f'"{o["label"]}" ({o["role"]}, {o["size_hint"]})' for o in objects
+        )
         print(f"[KeyObjectPipeline] Claude identified {len(objects)} target(s): {labels_str}", flush=True)
         return objects
 
@@ -122,11 +125,19 @@ def _build_system_prompt(context: dict | None) -> str:
         '"visual_cues": "color, shape, markings that help identify it", '
         '"sam3_prompt": "visually descriptive phrase for image segmentation (no verbs)", '
         '"role": "primary|context|warning", '
+        '"size_hint": "large|medium|small", '
         '"reasoning": "why this object matters for this step"}]\n\n'
         "ROLE rules:\n"
         "- primary: the object the trainee directly acts on or uses\n"
         "- context: a supporting element (port, slot, target location)\n"
         "- warning: safety-critical element to be aware of\n\n"
+        "SIZE_HINT rules (controls how the segmentation model finds the object):\n"
+        "- large: easily visible objects that dominate a region of the frame "
+        "(circuit boards, motors, tools, housings, containers)\n"
+        "- medium: moderate-sized objects (wires, cables, large connectors, buttons)\n"
+        "- small: tiny or precise components that occupy a very small area "
+        "(individual pins, labeled ports like VIN/GND, SMD components, small switches, "
+        "DIP switch positions, screw terminals, LED indicators)\n\n"
         "Keep the total to 1-4 objects. Every step must have at least one primary."
     )
     return base
@@ -296,17 +307,23 @@ async def segment_positive_frames_multi(
     frame_paths: list[str],
     target_objects: list[dict],
     detection_results: dict[str, list[dict]],
-    confidence_threshold: float = 0.35,
+    confidence_threshold: float = 0.15,
 ) -> list[dict]:
     """
     For each frame, determine which target objects are present (from Nemotron
-    results), then call SAM3 once per present object and merge all segments.
+    results), then segment using the best available SAM3 mode:
+      - Small objects with Nemotron coordinates → point-prompt SAM3
+      - Everything else → text-prompt SAM3
+
+    Falls back across modes: point→text if point fails, text→point if text
+    returns nothing but coordinates are available.
 
     Returns list of {frame_path, segments} where each segment includes
     label and role metadata.
     """
     from pathlib import Path
 
+    # Build per-frame object list, enriched with Nemotron spatial data
     frame_object_map: dict[str, list[dict]] = {fp: [] for fp in frame_paths}
 
     for obj in target_objects:
@@ -314,7 +331,11 @@ async def segment_positive_frames_multi(
         detections = detection_results.get(label, [])
         for det in detections:
             if det["present"] and det["frame_path"] in frame_object_map:
-                frame_object_map[det["frame_path"]].append(obj)
+                frame_object_map[det["frame_path"]].append({
+                    **obj,
+                    "_nemotron_cx": det.get("center_x"),
+                    "_nemotron_cy": det.get("center_y"),
+                })
 
     results = []
     for frame_path, objects_present in frame_object_map.items():
@@ -323,20 +344,81 @@ async def segment_positive_frames_multi(
 
         try:
             frame_bytes = Path(frame_path).read_bytes()
-            prompts = [
-                {
-                    "label": obj["label"],
-                    "sam3_prompt": obj["sam3_prompt"],
-                    "role": obj.get("role", "primary"),
-                }
-                for obj in objects_present
+            all_segments: list[dict] = []
+
+            # Split into spatial (small + has coords) vs text-promptable
+            spatial_objs = [
+                o for o in objects_present
+                if o.get("size_hint") == "small"
+                and o.get("_nemotron_cx") is not None
             ]
-            seg_result = await segment_multi_concept(
-                frame_bytes, prompts, confidence_threshold,
-            )
-            segments = seg_result.get("segments", [])
-            if segments:
-                results.append({"frame_path": frame_path, "segments": segments})
+            text_objs = [o for o in objects_present if o not in spatial_objs]
+
+            # ── Text-prompt path (large/medium objects) ──
+            if text_objs:
+                prompts = [
+                    {
+                        "label": obj["label"],
+                        "sam3_prompt": obj["sam3_prompt"],
+                        "role": obj.get("role", "primary"),
+                    }
+                    for obj in text_objs
+                ]
+                seg_result = await segment_multi_concept(
+                    frame_bytes, prompts, confidence_threshold,
+                )
+                text_segments = seg_result.get("segments", [])
+
+                # Fallback: text produced nothing but we have coords → try point
+                for obj in text_objs:
+                    obj_label = obj["label"]
+                    obj_has_seg = any(s.get("label") == obj_label for s in text_segments)
+                    if not obj_has_seg and obj.get("_nemotron_cx") is not None:
+                        print(
+                            f"[KeyObjectPipeline] Text-prompt miss for \"{obj_label}\" — "
+                            f"retrying with point prompt at ({obj['_nemotron_cx']:.2f}, {obj['_nemotron_cy']:.2f})",
+                            flush=True,
+                        )
+                        fallback = await _point_segment_with_label(
+                            frame_bytes, obj, confidence_threshold,
+                        )
+                        text_segments.extend(fallback)
+
+                all_segments.extend(text_segments)
+
+            # ── Point-prompt path (small objects with spatial data) ──
+            for obj in spatial_objs:
+                cx, cy = obj["_nemotron_cx"], obj["_nemotron_cy"]
+                print(
+                    f"[KeyObjectPipeline] Point-prompt for \"{obj['label']}\" "
+                    f"at ({cx:.2f}, {cy:.2f})",
+                    flush=True,
+                )
+                point_segs = await _point_segment_with_label(
+                    frame_bytes, obj, confidence_threshold,
+                )
+
+                # Fallback: point produced nothing → try text prompt
+                if not point_segs:
+                    print(
+                        f"[KeyObjectPipeline] Point-prompt miss for \"{obj['label']}\" — "
+                        f"falling back to text prompt",
+                        flush=True,
+                    )
+                    text_fallback = await segment_concept(
+                        frame_bytes, obj["sam3_prompt"], confidence_threshold,
+                    )
+                    if text_fallback and text_fallback.get("segments"):
+                        for seg in text_fallback["segments"]:
+                            seg["label"] = obj["label"]
+                            seg["role"] = obj.get("role", "primary")
+                        point_segs = text_fallback["segments"]
+
+                all_segments.extend(point_segs)
+
+            if all_segments:
+                results.append({"frame_path": frame_path, "segments": all_segments})
+
         except Exception as e:
             print(f"[KeyObjectPipeline] Multi-object segmentation failed: {e}", flush=True)
             results.append({"frame_path": frame_path, "segments": []})
@@ -344,17 +426,40 @@ async def segment_positive_frames_multi(
     return results
 
 
+async def _point_segment_with_label(
+    frame_bytes: bytes,
+    obj: dict,
+    confidence_threshold: float = 0.15,
+) -> list[dict]:
+    """Call segment_point using Nemotron's coordinates and attach label/role."""
+    cx = obj.get("_nemotron_cx")
+    cy = obj.get("_nemotron_cy")
+    if cx is None or cy is None:
+        return []
+
+    result = await segment_point(frame_bytes, cx, cy)
+    if not result or not result.get("segments"):
+        return []
+
+    segments = []
+    for seg in result["segments"]:
+        if seg.get("score", 0) >= confidence_threshold:
+            seg["label"] = obj["label"]
+            seg["role"] = obj.get("role", "primary")
+            segments.append(seg)
+    return segments
+
+
 async def segment_positive_frames(
     positive_frames: list[dict],
     sam3_prompt: str,
-    confidence_threshold: float = 0.35,
+    confidence_threshold: float = 0.15,
 ) -> list[dict]:
     """
     Legacy single-prompt segmentation. Kept for backward compatibility with
     editor rerun-pipeline and other callers.
     """
     from pathlib import Path
-    from services.sam3_service import segment_concept
 
     results = []
     for frame_info in positive_frames:

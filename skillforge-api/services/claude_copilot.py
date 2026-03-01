@@ -149,3 +149,67 @@ Workflow ID: {workflow_id}"""
     ) as stream:
         for text in stream.text_stream:
             yield text
+
+
+async def elaborate_step_to_subtasks(
+    workflow_id: str,
+    step_id: str,
+    user_message: str | None = None,
+) -> list[dict]:
+    """
+    Use Claude to break a step into 3-8 concrete subtasks.
+    Returns list of {title: str, description?: str}. No DB write; stateless.
+    """
+    step = await fetchone("SELECT * FROM steps WHERE id=?", (step_id,))
+    if not step:
+        return []
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return []
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    context = f"""Step title: {step.get('title', '')}
+Step description: {step.get('description', '') or '(none)'}
+Step transcript (expert narration): {step.get('transcript', '') or '(none)'}
+Step note: {step.get('note', '') or '(none)'}"""
+    if user_message:
+        context += f"\nTrainee request: {user_message}"
+
+    prompt = """You are a training assistant. Given the step above, break it into 3-8 concrete, ordered subtasks that a trainee can follow one by one. Each subtask should be a single actionable item (a few seconds to a minute of work).
+
+Reply with ONLY a valid JSON array, no markdown or preamble. Each element must have "title" (short, imperative) and optionally "description" (one line). Example:
+[{"title": "Locate the screw", "description": "Find the Phillips head screw on the left panel"}, {"title": "Loosen the screw", "description": "Turn counterclockwise with a screwdriver"}]"""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1024,
+            messages=[
+                {"role": "user", "content": context + "\n\n" + prompt},
+            ],
+        )
+        raw = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                raw = block.text.strip()
+                break
+        if not raw:
+            return []
+        # Strip markdown code fence if present
+        raw = raw.removeprefix("```json").removeprefix("```").strip().rstrip("`")
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            return []
+        result = []
+        for item in data:
+            if isinstance(item, dict) and isinstance(item.get("title"), str):
+                result.append({
+                    "title": item["title"],
+                    "description": item.get("description") or "",
+                })
+        return result[:8]
+    except Exception as e:
+        print(f"[ClaudeCopilot] elaborate_step_to_subtasks failed: {e}", flush=True)
+        return []

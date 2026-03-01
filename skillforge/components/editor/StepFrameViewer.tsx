@@ -6,6 +6,17 @@ import { StepVideoOverlay } from "@/components/player/StepVideoOverlay";
 
 type ViewTab = "frames" | "video";
 
+const SEGMENT_COLORS = [
+  { border: "#FFC412", fill: "rgba(255,196,18,0.18)" },
+  { border: "#00FF80", fill: "rgba(0,255,128,0.18)" },
+  { border: "#00C8FF", fill: "rgba(0,200,255,0.18)" },
+  { border: "#FF64FF", fill: "rgba(255,100,255,0.18)" },
+  { border: "#FF5050", fill: "rgba(255,80,80,0.18)" },
+  { border: "#648CFF", fill: "rgba(100,140,255,0.18)" },
+  { border: "#E879F9", fill: "rgba(232,121,249,0.18)" },
+  { border: "#34D399", fill: "rgba(52,211,153,0.18)" },
+];
+
 export function StepFrameViewer() {
   const store = useWorkflowStore();
   const step = selectedStep(store);
@@ -221,21 +232,32 @@ export function StepFrameViewer() {
                 />
 
                 {/* Manual SAM3 segment overlays (click-to-segment) */}
-                {segments.map((seg, i) => (
-                  <div
-                    key={i}
-                    className="absolute pointer-events-none"
-                    style={{
-                      left: `${seg.bbox[0] * 100}%`,
-                      top: `${seg.bbox[1] * 100}%`,
-                      width: `${(seg.bbox[2] - seg.bbox[0]) * 100}%`,
-                      height: `${(seg.bbox[3] - seg.bbox[1]) * 100}%`,
-                      border: "2px solid var(--sf-yellow)",
-                      borderRadius: 4,
-                      backgroundColor: "rgba(255,196,18,0.15)",
-                    }}
-                  />
-                ))}
+                {segments.map((seg, i) => {
+                  const palette = SEGMENT_COLORS[i % SEGMENT_COLORS.length];
+                  return (
+                    <div
+                      key={i}
+                      className="absolute pointer-events-none"
+                      style={{
+                        left: `${seg.bbox[0] * 100}%`,
+                        top: `${seg.bbox[1] * 100}%`,
+                        width: `${(seg.bbox[2] - seg.bbox[0]) * 100}%`,
+                        height: `${(seg.bbox[3] - seg.bbox[1]) * 100}%`,
+                        border: `2px solid ${palette.border}`,
+                        borderRadius: 4,
+                        backgroundColor: palette.fill,
+                        boxShadow: `0 0 8px ${palette.border}40`,
+                      }}
+                    >
+                      <span
+                        className="absolute -top-5 left-0 text-[9px] font-bold px-1.5 py-0.5 rounded"
+                        style={{ backgroundColor: palette.border, color: "#000" }}
+                      >
+                        {seg.score ? `${Math.round(seg.score * 100)}%` : `#${i + 1}`}
+                      </span>
+                    </div>
+                  );
+                })}
 
                 {isSegmenting && (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded-lg">

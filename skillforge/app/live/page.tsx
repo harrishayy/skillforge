@@ -786,13 +786,13 @@ export default function LiveDetectPage() {
 
   return (
     <div
-      className="min-h-screen flex flex-col"
+      className="min-h-screen flex flex-col overflow-y-auto"
       style={{ backgroundColor: "var(--sf-black)", color: "var(--sf-white)" }}
     >
       {/* ── Header (hidden in immersive) ── */}
       {!immersiveActive && (
         <header
-          className="px-6 py-3 flex items-center gap-4 shrink-0"
+          className="px-6 py-3 flex items-center gap-4"
           style={{ borderBottom: "1px solid #222" }}
         >
           <Link

@@ -80,6 +80,7 @@ async def run_apparatus_analysis(
             reference_frame_paths=obj.get("reference_frames", []),
             description=obj.get("visual_cues", ""),
             segmented_reference_path=obj.get("segmented_reference_path", ""),
+            segmented_frame_paths=obj.get("segmented_frame_paths"),
         )
         saved.append({**obj, "id": obj_id})
 
@@ -247,57 +248,91 @@ async def _nemotron_verify_objects(
     return objects
 
 
+MAX_SEGMENTED_FRAMES_PER_OBJECT = 4
+
+
 async def _sam3_reference_segmentation(
     frames: list[dict],
     objects: list[dict],
     workflow_id: str = "",
 ) -> list[dict]:
     """
-    Run SAM3 on the best frame for each object to get a reference segmentation.
-    Picks the middle frame from the object's positive frames.
-    Saves an overlay image to disk and sets segmented_reference_path.
+    Run SAM3 on all positive frames for each object (up to a limit).
+    Generates overlay images for each segmented frame and builds a mapping
+    from original reference_frame_path → segmented_frame_path.
+    Also keeps the single best segmented_reference_path for backward compat.
     """
     apparatus_dir = UPLOADS_DIR / workflow_id / "apparatus"
     apparatus_dir.mkdir(parents=True, exist_ok=True)
+    path_to_rel = {f["path"]: f["relative_path"] for f in frames}
 
     for obj in objects:
         fpaths = obj.get("_frame_paths", [])
         if not fpaths:
             continue
 
-        best_frame = fpaths[len(fpaths) // 2]
-        try:
-            frame_bytes = Path(best_frame).read_bytes()
-            result = await segment_concept(
-                frame_bytes,
-                obj["sam3_prompt"],
-                confidence_threshold=0.3,
-            )
-            if result and result.get("segments"):
-                score = max(s.get("score", 0) for s in result["segments"])
-                print(
-                    f"[ApparatusPipeline] SAM3 reference: \"{obj['object_name']}\" "
-                    f"segmented at {score:.0%}",
-                    flush=True,
-                )
+        sampled = _subsample_list(fpaths, MAX_SEGMENTED_FRAMES_PER_OBJECT)
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", obj["object_name"])
+        seg_map: dict[str, str] = {}
+        best_score = 0.0
+        best_seg_path = ""
 
-                safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", obj["object_name"])
-                out_filename = f"{safe_name}_segmented.jpg"
+        for i, frame_path in enumerate(sampled):
+            try:
+                frame_bytes = Path(frame_path).read_bytes()
+                result = await segment_concept(
+                    frame_bytes,
+                    obj["sam3_prompt"],
+                    confidence_threshold=0.3,
+                )
+                if not result or not result.get("segments"):
+                    continue
+
+                score = max(s.get("score", 0) for s in result["segments"])
+                out_filename = f"{safe_name}_seg_{i}.jpg"
                 out_path = str(apparatus_dir / out_filename)
                 saved = generate_segmented_image(
-                    best_frame, result["segments"], out_path,
+                    frame_path, result["segments"], out_path,
                     label=obj["object_name"],
                 )
                 if saved:
-                    obj["segmented_reference_path"] = f"uploads/{workflow_id}/apparatus/{out_filename}"
-                    print(f"[ApparatusPipeline] Saved segmented ref: {obj['segmented_reference_path']}", flush=True)
-        except Exception as e:
-            print(f"[ApparatusPipeline] SAM3 reference failed for {obj['object_name']}: {e}", flush=True)
+                    rel_seg = f"uploads/{workflow_id}/apparatus/{out_filename}"
+                    rel_orig = path_to_rel.get(frame_path, "")
+                    if rel_orig:
+                        seg_map[rel_orig] = rel_seg
+                    if score > best_score:
+                        best_score = score
+                        best_seg_path = rel_seg
+
+            except Exception as e:
+                print(
+                    f"[ApparatusPipeline] SAM3 failed for \"{obj['object_name']}\" "
+                    f"frame {i+1}/{len(sampled)}: {e}",
+                    flush=True,
+                )
+
+        obj["segmented_frame_paths"] = seg_map
+        obj["segmented_reference_path"] = best_seg_path
+
+        if seg_map:
+            print(
+                f"[ApparatusPipeline] SAM3: \"{obj['object_name']}\" — "
+                f"{len(seg_map)}/{len(sampled)} frames segmented (best {best_score:.0%})",
+                flush=True,
+            )
 
     for obj in objects:
         obj.pop("_frame_paths", None)
 
     return objects
+
+
+def _subsample_list(items: list, max_items: int) -> list:
+    """Evenly subsample a list, always keeping first and last."""
+    if len(items) <= max_items:
+        return items
+    indices = [round(i * (len(items) - 1) / (max_items - 1)) for i in range(max_items)]
+    return [items[i] for i in dict.fromkeys(indices)]
 
 
 def _sample_frames(frames: list[dict], max_frames: int = 20) -> list[dict]:

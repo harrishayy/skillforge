@@ -12,6 +12,10 @@ from models.schemas import (
 
 router = APIRouter(tags=["editor"])
 
+# In-memory tracker for long-running background tasks (rebuild / regenerate).
+# Maps workflow_id → {"task": str, "status": str, "progress": int, "total": int, "error": str|None}
+_active_tasks: dict[str, dict] = {}
+
 _STEP_TOOLS = [
     {
         "name": "create_workflow_step",
@@ -711,6 +715,17 @@ async def update_apparatus_object(object_id: str, body: dict):
     return updated
 
 
+# ─── Background task status polling ───────────────────────────────────────────
+
+@router.get("/api/workflows/{workflow_id}/task-status")
+async def get_task_status(workflow_id: str):
+    """Poll the status of a running background task (rebuild-memories / regenerate-all)."""
+    task = _active_tasks.get(workflow_id)
+    if not task:
+        return {"status": "idle"}
+    return task
+
+
 # ─── Rebuild all memories ─────────────────────────────────────────────────────
 
 @router.post("/api/workflows/{workflow_id}/rebuild-memories")
@@ -722,6 +737,9 @@ async def rebuild_memories(workflow_id: str, background_tasks: BackgroundTasks):
     if not wf:
         raise HTTPException(404, "Workflow not found")
 
+    if workflow_id in _active_tasks and _active_tasks[workflow_id]["status"] == "running":
+        raise HTTPException(409, "A background task is already running for this workflow")
+
     steps = await fetchall(
         "SELECT * FROM steps WHERE workflow_id=? ORDER BY step_number",
         (workflow_id,),
@@ -730,10 +748,51 @@ async def rebuild_memories(workflow_id: str, background_tasks: BackgroundTasks):
     if steps_count == 0:
         return {"status": "no_steps", "steps_count": 0}
 
+    _active_tasks[workflow_id] = {
+        "task": "rebuild-memories",
+        "status": "running",
+        "progress": 0,
+        "total": steps_count,
+        "error": None,
+    }
+
     await invalidate_contexts_from(workflow_id, 1)
     background_tasks.add_task(_rebuild_downstream_contexts, workflow_id, 1)
 
     return {"status": "rebuilding", "steps_count": steps_count}
+
+
+# ─── Regenerate all (full pipeline re-run) ───────────────────────────────────
+
+@router.post("/api/workflows/{workflow_id}/regenerate-all")
+async def regenerate_all(workflow_id: str, background_tasks: BackgroundTasks):
+    """Re-run the entire processing pipeline for all steps and apparatus objects."""
+    wf = await fetchone("SELECT * FROM workflows WHERE id=?", (workflow_id,))
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+
+    if workflow_id in _active_tasks and _active_tasks[workflow_id]["status"] == "running":
+        raise HTTPException(409, "A background task is already running for this workflow")
+
+    steps = await fetchall(
+        "SELECT * FROM steps WHERE workflow_id=? ORDER BY step_number",
+        (workflow_id,),
+    )
+    steps_count = len(steps)
+    if steps_count == 0:
+        return {"status": "no_steps", "steps_count": 0}
+
+    _active_tasks[workflow_id] = {
+        "task": "regenerate-all",
+        "status": "running",
+        "progress": 0,
+        "total": steps_count,
+        "error": None,
+    }
+
+    background_tasks.add_task(_regenerate_all_steps, workflow_id)
+
+    return {"status": "regenerating", "steps_count": steps_count}
 
 
 # ─── Context rebuild for downstream steps after re-record ────────────────────
@@ -750,8 +809,12 @@ async def _rebuild_downstream_contexts(workflow_id: str, from_step: int):
         "SELECT * FROM steps WHERE workflow_id=? AND step_number>=? ORDER BY step_number",
         (workflow_id, from_step),
     )
-    for step in steps:
+    total = len(steps)
+    for i, step in enumerate(steps):
         try:
+            if workflow_id in _active_tasks:
+                _active_tasks[workflow_id]["progress"] = i
+
             context = await build_step_context(workflow_id, step["step_number"])
             frames = await fetchall(
                 "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms",
@@ -792,6 +855,245 @@ async def _rebuild_downstream_contexts(workflow_id: str, from_step: int):
                 f"[Editor] Failed to rebuild context for step {step['step_number']}: {e}",
                 flush=True,
             )
+
+    if workflow_id in _active_tasks and _active_tasks[workflow_id]["task"] == "rebuild-memories":
+        _active_tasks[workflow_id]["status"] = "done"
+        _active_tasks[workflow_id]["progress"] = total
+
+
+async def _regenerate_all_steps(workflow_id: str):
+    """
+    Full re-processing: re-run apparatus analysis (if video exists),
+    re-generate step metadata via Claude, and re-run the multi-agent
+    key object pipeline + SAM3 for every step.
+    """
+    import os
+    import re
+    import json
+    import shutil
+    import base64 as b64mod
+    from pathlib import Path
+    from services.memory_layer import (
+        build_step_context,
+        update_context_with_observations,
+        invalidate_contexts_from,
+        clear_apparatus_catalog,
+    )
+    from services.key_object_pipeline import run_key_object_analysis_multi
+    from services.sam3_service import generate_segmented_image
+
+    uploads_dir = Path(__file__).parent.parent
+    UPLOADS_DIR = uploads_dir / "uploads"
+
+    try:
+        wf = await fetchone("SELECT * FROM workflows WHERE id=?", (workflow_id,))
+        wf_title = wf.get("title", "") if wf else ""
+        wf_description = wf.get("description", "") if wf else ""
+
+        # ── Re-run apparatus analysis if video exists ─────────────────────
+        video_dir = UPLOADS_DIR / "videos" / workflow_id
+        apparatus_video = video_dir / "apparatus.webm" if video_dir.exists() else None
+        if apparatus_video and apparatus_video.exists():
+            try:
+                await clear_apparatus_catalog(workflow_id)
+                from services.apparatus_pipeline import run_apparatus_analysis
+                await run_apparatus_analysis(
+                    workflow_id=workflow_id,
+                    apparatus_video_path=str(apparatus_video),
+                )
+                print(f"[Regenerate] Re-ran apparatus analysis for {workflow_id}", flush=True)
+            except Exception as e:
+                print(f"[Regenerate] Apparatus re-analysis failed: {e}", flush=True)
+
+        # ── Invalidate all step contexts ──────────────────────────────────
+        await invalidate_contexts_from(workflow_id, 1)
+
+        steps = await fetchall(
+            "SELECT * FROM steps WHERE workflow_id=? ORDER BY step_number",
+            (workflow_id,),
+        )
+        total = len(steps)
+
+        for i, step in enumerate(steps):
+            step_id = step["id"]
+            step_num = step["step_number"]
+
+            if workflow_id in _active_tasks:
+                _active_tasks[workflow_id]["progress"] = i
+
+            try:
+                # ── Re-generate title/description via Claude ──────────────
+                from services.hardware_pipeline import _generate_step_metadata
+                title, description, ai_summary = await _generate_step_metadata(
+                    step.get("transcript", ""),
+                    step_num,
+                    step.get("note", ""),
+                    total_steps=total,
+                    workflow_title=wf_title,
+                    workflow_description=wf_description,
+                )
+                await execute(
+                    "UPDATE steps SET title=?, description=?, ai_description=?, updated_at=? WHERE id=?",
+                    (title, description, ai_summary, now_ms(), step_id),
+                )
+
+                # ── Re-run key object pipeline ────────────────────────────
+                frames = await fetchall(
+                    "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms",
+                    (step_id,),
+                )
+                if not frames:
+                    continue
+
+                frame_paths = [str(uploads_dir / f["frame_path"]) for f in frames]
+                frame_id_by_path = {str(uploads_dir / f["frame_path"]): f["id"] for f in frames}
+
+                context = await build_step_context(workflow_id, step_num)
+                analysis = await run_key_object_analysis_multi(
+                    frame_paths=frame_paths,
+                    step_title=title,
+                    step_description=description,
+                    transcript=step.get("transcript", ""),
+                    note=step.get("note", ""),
+                    context=context,
+                )
+
+                target_objects = analysis["target_objects"]
+                primary_obj = next(
+                    (o for o in target_objects if o["role"] == "primary"),
+                    target_objects[0] if target_objects else {"label": title, "sam3_prompt": title},
+                )
+
+                sam3_prompt = primary_obj.get("sam3_prompt", "")
+                if sam3_prompt:
+                    await execute(
+                        "UPDATE steps SET sam3_prompt=? WHERE id=?",
+                        (sam3_prompt, step_id),
+                    )
+
+                # Update frame detection flags
+                for label, detections in analysis["detection_results"].items():
+                    for det in detections:
+                        fid = frame_id_by_path.get(det["frame_path"])
+                        if fid:
+                            await execute(
+                                "UPDATE step_frames SET object_detected=?, object_description=? WHERE id=?",
+                                (1 if det["present"] else 0, det.get("description", ""), fid),
+                            )
+
+                # ── Re-run SAM3 segmentation ──────────────────────────────
+                await execute("DELETE FROM click_targets WHERE step_id=?", (step_id,))
+
+                masks_dir = UPLOADS_DIR / workflow_id / "masks" / step_id
+                if masks_dir.exists():
+                    shutil.rmtree(masks_dir)
+                masks_dir.mkdir(parents=True, exist_ok=True)
+
+                seg_dir = UPLOADS_DIR / workflow_id / "segmented" / step_id
+                if seg_dir.exists():
+                    shutil.rmtree(seg_dir)
+
+                await execute(
+                    "UPDATE step_frames SET segmented_frame_path=NULL WHERE step_id=?",
+                    (step_id,),
+                )
+
+                seg_by_frame: dict[str, list[dict]] = {}
+                for seg_result in analysis["segmentations"]:
+                    seg_frame_abs = seg_result.get("frame_path", "")
+                    seg_frame_rel = (
+                        str(Path(seg_frame_abs).relative_to(uploads_dir))
+                        if seg_frame_abs else None
+                    )
+
+                    if seg_frame_abs:
+                        seg_by_frame.setdefault(seg_frame_abs, []).extend(seg_result["segments"])
+
+                    for seg in seg_result["segments"]:
+                        bbox = seg.get("bbox", [0, 0, 0, 0])
+                        ct_id = new_id()
+                        seg_label = seg.get("label", primary_obj.get("label", title))
+                        seg_role = seg.get("role", "primary")
+                        is_primary = 1 if seg_role == "primary" else 0
+
+                        mask_path = None
+                        mask_b64 = seg.get("mask_base64")
+                        if mask_b64:
+                            mask_file = masks_dir / f"{ct_id}.png"
+                            mask_file.write_bytes(b64mod.b64decode(mask_b64))
+                            mask_path = str(mask_file.relative_to(uploads_dir))
+
+                        await execute(
+                            """INSERT INTO click_targets
+                               (id, step_id, element_text, element_type,
+                                bbox_x, bbox_y, bbox_width, bbox_height,
+                                action, confidence, is_primary, mask_path, frame_path, role)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (
+                                ct_id, step_id,
+                                seg_label,
+                                primary_obj.get("object_type", "other"),
+                                bbox[0] * 100, bbox[1] * 100,
+                                (bbox[2] - bbox[0]) * 100, (bbox[3] - bbox[1]) * 100,
+                                "left_click", seg.get("score", 0), is_primary,
+                                mask_path, seg_frame_rel, seg_role,
+                            ),
+                        )
+
+                for frame_abs, segs in seg_by_frame.items():
+                    fid = frame_id_by_path.get(frame_abs)
+                    if not fid or not segs:
+                        continue
+                    out_file = seg_dir / f"{fid}.jpg"
+                    result_path = generate_segmented_image(frame_abs, segs, str(out_file))
+                    if result_path:
+                        seg_rel = str(Path(result_path).relative_to(uploads_dir))
+                        await execute(
+                            "UPDATE step_frames SET segmented_frame_path=? WHERE id=?",
+                            (seg_rel, fid),
+                        )
+
+                # ── Write context to memory layer ─────────────────────────
+                await update_context_with_observations(
+                    workflow_id=workflow_id,
+                    step_number=step_num,
+                    objects_identified=target_objects,
+                    frame_observations=[
+                        det for dets in analysis["detection_results"].values() for det in dets
+                    ],
+                    new_observations=ai_summary or "",
+                )
+
+                print(
+                    f"[Regenerate] Step {step_num}/{total} done for workflow {workflow_id}",
+                    flush=True,
+                )
+
+            except Exception as e:
+                print(
+                    f"[Regenerate] Step {step_num} failed: {e}",
+                    flush=True,
+                )
+
+        _active_tasks[workflow_id] = {
+            "task": "regenerate-all",
+            "status": "done",
+            "progress": total,
+            "total": total,
+            "error": None,
+        }
+        print(f"[Regenerate] Completed for workflow {workflow_id}", flush=True)
+
+    except Exception as e:
+        import traceback
+        print(f"[Regenerate ERROR] {e}\n{traceback.format_exc()}", flush=True)
+        _active_tasks[workflow_id] = {
+            "task": "regenerate-all",
+            "status": "error",
+            "progress": 0,
+            "total": 0,
+            "error": str(e),
+        }
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

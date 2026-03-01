@@ -19,6 +19,7 @@ export interface UseDoubleTapDetectionOptions {
  * Detects double-tap (two quick index-thumb pinches with release in between) per hand.
  * Right hand double-tap → onSkipForward; left hand double-tap → onSkipBackward.
  * Uses release-to-retrigger: a press is when pinch goes from off to on.
+ * Runs in useEffect to avoid setState-during-render.
  */
 export function useDoubleTapDetection(
   hands: HandData | null,
@@ -37,29 +38,32 @@ export function useDoubleTapDetection(
   }, [onSkipForward, onSkipBackward]);
 
   const pinch = computePinchState(hands);
-  const now = Date.now();
 
-  // Left hand: transition from !pressed to pressed = one press
-  if (!leftPinchPrevRef.current && pinch.leftPressed) {
-    const last = leftLastPressAtRef.current;
-    if (last !== NO_PREV_TAP && now - last <= DOUBLE_TAP_WINDOW_MS) {
-      onSkipBackwardRef.current();
-      leftLastPressAtRef.current = NO_PREV_TAP;
-    } else {
-      leftLastPressAtRef.current = now;
-    }
-  }
-  leftPinchPrevRef.current = pinch.leftPressed;
+  useEffect(() => {
+    const now = Date.now();
 
-  // Right hand: same
-  if (!rightPinchPrevRef.current && pinch.rightPressed) {
-    const last = rightLastPressAtRef.current;
-    if (last !== NO_PREV_TAP && now - last <= DOUBLE_TAP_WINDOW_MS) {
-      onSkipForwardRef.current();
-      rightLastPressAtRef.current = NO_PREV_TAP;
-    } else {
-      rightLastPressAtRef.current = now;
+    // Left hand: transition from !pressed to pressed = one press
+    if (!leftPinchPrevRef.current && pinch.leftPressed) {
+      const last = leftLastPressAtRef.current;
+      if (last !== NO_PREV_TAP && now - last <= DOUBLE_TAP_WINDOW_MS) {
+        onSkipBackwardRef.current();
+        leftLastPressAtRef.current = NO_PREV_TAP;
+      } else {
+        leftLastPressAtRef.current = now;
+      }
     }
-  }
-  rightPinchPrevRef.current = pinch.rightPressed;
+    leftPinchPrevRef.current = pinch.leftPressed;
+
+    // Right hand: same
+    if (!rightPinchPrevRef.current && pinch.rightPressed) {
+      const last = rightLastPressAtRef.current;
+      if (last !== NO_PREV_TAP && now - last <= DOUBLE_TAP_WINDOW_MS) {
+        onSkipForwardRef.current();
+        rightLastPressAtRef.current = NO_PREV_TAP;
+      } else {
+        rightLastPressAtRef.current = now;
+      }
+    }
+    rightPinchPrevRef.current = pinch.rightPressed;
+  }, [pinch.leftPressed, pinch.rightPressed]);
 }

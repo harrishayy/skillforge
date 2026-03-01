@@ -1,6 +1,6 @@
 "use client";
 import { create } from "zustand";
-import type { ChatMessage } from "@/types";
+import type { ChatMessage, Subtask } from "@/types";
 
 interface PlayerStore {
   currentStepIndex: number;
@@ -12,6 +12,10 @@ interface PlayerStore {
   chatHistory: ChatMessage[];
   isCopilotLoading: boolean;
   currentInstruction: string;
+  subtasksByStep: Record<string, Subtask[]>;
+  currentSubtaskIndexByStep: Record<string, number>;
+  suggestCompleteForStep: string | null;
+  suggestCompleteMessage: string | null;
 
   setCurrentStepIndex: (i: number) => void;
   setCurrentTimeMs: (ms: number) => void;
@@ -22,6 +26,10 @@ interface PlayerStore {
   updateLastAssistantMessage: (chunk: string) => void;
   setIsCopilotLoading: (v: boolean) => void;
   setCurrentInstruction: (s: string) => void;
+  setSubtasksForStep: (stepId: string, subtasks: Subtask[]) => void;
+  setCurrentSubtaskIndex: (stepId: string, index: number) => void;
+  clearSubtasksForStep: (stepId: string) => void;
+  setSuggestComplete: (stepId: string | null, message: string | null) => void;
   reset: () => void;
 }
 
@@ -34,6 +42,10 @@ const initialState = {
   chatHistory: [] as ChatMessage[],
   isCopilotLoading: false,
   currentInstruction: "",
+  subtasksByStep: {} as Record<string, Subtask[]>,
+  currentSubtaskIndexByStep: {} as Record<string, number>,
+  suggestCompleteForStep: null as string | null,
+  suggestCompleteMessage: null as string | null,
 };
 
 export const usePlayerStore = create<PlayerStore>((set) => ({
@@ -64,6 +76,27 @@ export const usePlayerStore = create<PlayerStore>((set) => ({
     }),
 
   setIsCopilotLoading: (v) => set({ isCopilotLoading: v }),
+
+  setSubtasksForStep: (stepId, subtasks) =>
+    set((s) => ({
+      subtasksByStep: { ...s.subtasksByStep, [stepId]: subtasks },
+      currentSubtaskIndexByStep: { ...s.currentSubtaskIndexByStep, [stepId]: 0 },
+    })),
+
+  setCurrentSubtaskIndex: (stepId, index) =>
+    set((s) => ({
+      currentSubtaskIndexByStep: { ...s.currentSubtaskIndexByStep, [stepId]: index },
+    })),
+
+  clearSubtasksForStep: (stepId) =>
+    set((s) => {
+      const { [stepId]: _, ...rest } = s.subtasksByStep;
+      const { [stepId]: __, ...restIdx } = s.currentSubtaskIndexByStep;
+      return { subtasksByStep: rest, currentSubtaskIndexByStep: restIdx };
+    }),
+
+  setSuggestComplete: (stepId, message) =>
+    set({ suggestCompleteForStep: stepId, suggestCompleteMessage: message }),
 
   reset: () => set(initialState),
 }));

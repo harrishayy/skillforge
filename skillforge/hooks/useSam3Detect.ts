@@ -32,7 +32,7 @@ export function useSam3Detect({
   videoRef,
   textPrompt,
   intervalMs,
-  confidenceThreshold = 0.2,
+  confidenceThreshold = 0.15,
   enabled,
   onResult,
 }: UseSam3DetectOptions) {

@@ -65,6 +65,12 @@ export interface StepFrame {
   segmented_frame_path?: string;
 }
 
+/** Session-only; from elaborate-step. */
+export interface Subtask {
+  title: string;
+  description?: string;
+}
+
 export interface Step {
   id: string;
   workflow_id: string;
@@ -224,6 +230,7 @@ export interface ApparatusObject {
   angle_count: number;
   reference_frame_paths: string[];
   segmented_reference_path?: string;
+  segmented_frame_paths?: Record<string, string>;
 }
 
 export interface StepContext {

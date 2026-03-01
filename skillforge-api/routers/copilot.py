@@ -3,8 +3,8 @@ import asyncio
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from models.database import fetchone
-from models.schemas import CopilotChatRequest, StepInstructionRequest
-from services.claude_copilot import stream_chat_response, stream_step_instruction
+from models.schemas import CopilotChatRequest, ElaborateStepRequest, StepInstructionRequest
+from services.claude_copilot import elaborate_step_to_subtasks, stream_chat_response, stream_step_instruction
 
 router = APIRouter(prefix="/api/copilot", tags=["copilot"])
 
@@ -43,3 +43,14 @@ async def copilot_chat(body: CopilotChatRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/elaborate-step")
+async def elaborate_step(body: ElaborateStepRequest):
+    """Break a step into 3-8 subtasks via Claude. Stateless; no DB write."""
+    subtasks = await elaborate_step_to_subtasks(
+        workflow_id=body.workflow_id,
+        step_id=body.step_id,
+        user_message=body.user_message,
+    )
+    return {"subtasks": subtasks}
