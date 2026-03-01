@@ -71,24 +71,7 @@ export function useCameraRoomProducer({
     canvas.height = CAPTURE_HEIGHT;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    // Phone portrait video needs +90° clockwise rotation to display landscape on the laptop.
-    // translate to top-right corner, then rotate clockwise so the portrait frame fills the
-    // landscape canvas correctly.
-    ctx.save();
-    ctx.translate(CAPTURE_WIDTH, 0);
-    ctx.rotate(Math.PI / 2);
-    ctx.drawImage(
-      video,
-      0,
-      0,
-      video.videoWidth,
-      video.videoHeight,
-      0,
-      0,
-      CAPTURE_HEIGHT,
-      CAPTURE_WIDTH
-    );
-    ctx.restore();
+    ctx.drawImage(video, 0, 0, CAPTURE_WIDTH, CAPTURE_HEIGHT);
     const dataUrl = canvas.toDataURL("image/jpeg", JPEG_QUALITY);
     const base64 = dataUrl.split(",")[1];
     if (!base64) return;
