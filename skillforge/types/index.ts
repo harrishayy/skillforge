@@ -5,11 +5,13 @@ export type WorkflowStatus = "processing" | "ready" | "failed";
 export type AnnotationType = "bounding_box" | "arrow" | "highlight" | "text_label";
 export type InputEventType = "click" | "keypress" | "scroll" | "drag";
 export type PipelineStage =
+  | "upload"
   | "frame_extraction"
   | "nemotron_vl"
   | "yolo"
   | "mediapipe"
   | "claude_decompose"
+  | "storage"
   | "complete"
   | "error";
 
@@ -33,6 +35,8 @@ export interface Annotation {
   created_at: number;
 }
 
+export type ClickTargetRole = "primary" | "context" | "warning";
+
 export interface ClickTarget {
   id: string;
   step_id: string;
@@ -45,6 +49,9 @@ export interface ClickTarget {
   action: string;
   confidence?: number;
   is_primary: boolean;
+  mask_path?: string;
+  frame_path?: string;
+  role?: ClickTargetRole;
 }
 
 export interface StepFrame {
@@ -55,6 +62,7 @@ export interface StepFrame {
   is_key_frame: boolean;
   object_detected: boolean;
   object_description?: string;
+  segmented_frame_path?: string;
 }
 
 export interface Step {
@@ -65,6 +73,8 @@ export interface Step {
   description?: string;
   start_ms: number;
   end_ms: number;
+  workflow_start_ms: number;
+  workflow_end_ms: number;
   key_frame_path?: string;
   video_path?: string;
   ai_description?: string;
@@ -90,6 +100,7 @@ export interface Workflow {
   total_steps: number;
   thumbnail_path?: string;
   steps: Step[];
+  apparatus_objects?: ApparatusObject[];
   created_at: number;
   updated_at: number;
 }
@@ -198,4 +209,42 @@ export interface PlayerState {
   chatHistory: ChatMessage[];
   isCopilotLoading: boolean;
   currentInstruction: string;
+}
+
+// ─── Apparatus / Multi-Agent Memory ──────────────────────────────────────────
+
+export interface ApparatusObject {
+  id: string;
+  workflow_id: string;
+  object_name: string;
+  object_type: string;
+  visual_cues: string;
+  description?: string;
+  sam3_prompt: string;
+  angle_count: number;
+  reference_frame_paths: string[];
+  segmented_reference_path?: string;
+}
+
+export interface StepContext {
+  workflow: { title: string; description: string };
+  apparatus_catalog: ApparatusObject[];
+  previous_steps: StepContextSummary[];
+  current_step: {
+    step_number: number;
+    title: string;
+    description: string;
+    transcript: string;
+    note: string;
+  };
+}
+
+export interface StepContextSummary {
+  step_number: number;
+  title: string;
+  description: string;
+  transcript: string;
+  objects_used: string[];
+  observations: string;
+  frame_insights: string[];
 }

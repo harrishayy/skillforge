@@ -29,6 +29,11 @@
   --font-mono: var(--font-geist-mono);
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   background: var(--sf-white);
   color: var(--sf-black);
@@ -59,4 +64,25 @@ body {
 .cb-yellow {
   background-color: var(--sf-yellow);
   color: var(--sf-black);
+}
+
+/* Step transition animations */
+@keyframes sf-pop-in {
+  0% {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.sf-transition-confetti {
+  animation: sf-pop-in 600ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 300ms;
 }

@@ -1,7 +1,8 @@
 "use client";
-import { useRef, useCallback, useState } from "react";
+import { useRef, useCallback, useState, useEffect } from "react";
 import { useWorkflowStore, selectedStep } from "@/store/workflow-store";
 import { frameUrl, videoUrl } from "@/lib/constants";
+import { StepVideoOverlay } from "@/components/player/StepVideoOverlay";
 
 type ViewTab = "frames" | "video";
 
@@ -17,7 +18,9 @@ export function StepFrameViewer() {
   } = store;
 
   const imgRef = useRef<HTMLImageElement>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const [tab, setTab] = useState<ViewTab>("frames");
+  const [showSegmented, setShowSegmented] = useState(true);
 
   const segments = step ? segmentsByStep[step.id] ?? [] : [];
   const isSegmenting = step ? segmentingStepId === step.id : false;
@@ -25,6 +28,20 @@ export function StepFrameViewer() {
   const currentFramePath = step
     ? activeFramePath[step.id] ?? step.key_frame_path
     : null;
+
+  const currentFrame = step?.frames?.find((f) => f.frame_path === currentFramePath);
+  const hasSegmentedView = !!(currentFrame?.object_detected && currentFrame?.segmented_frame_path);
+
+  const displayFramePath =
+    showSegmented && hasSegmentedView
+      ? currentFrame!.segmented_frame_path!
+      : currentFramePath;
+
+  useEffect(() => {
+    if (tab !== "video" || !videoRef.current) return;
+    videoRef.current.currentTime = 0;
+    videoRef.current.play().catch((err: unknown) => console.warn("[StepFrameViewer] Video autoplay blocked:", err));
+  }, [tab, step?.id]);
 
   const handleFrameClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -50,6 +67,8 @@ export function StepFrameViewer() {
 
   const hasVideo = !!step.video_path;
   const frames = step.frames ?? [];
+  const detectedFrames = frames.filter((f) => f.object_detected);
+  const [showAllFrames, setShowAllFrames] = useState(false);
 
   return (
     <div className="flex-1 flex flex-col gap-3 overflow-hidden">
@@ -68,73 +87,140 @@ export function StepFrameViewer() {
       {/* Main content */}
       {tab === "frames" ? (
         <div className="flex-1 flex flex-col gap-3 min-h-0">
-          {/* Filmstrip (above frame viewer) */}
-          {frames.length > 1 && (
-            <div className="shrink-0 overflow-x-auto">
-              <div className="flex gap-1.5 pb-1">
-                {frames.map((f) => {
-                  const isActive = currentFramePath === f.frame_path;
-                  return (
-                    <button
-                      key={f.id}
-                      onClick={() => setActiveFrame(step.id, f.frame_path)}
-                      className="shrink-0 rounded-md overflow-hidden transition-all"
-                      style={{
-                        width: 72,
-                        height: 48,
-                        border: isActive
-                          ? "2px solid var(--sf-yellow)"
-                          : f.is_key_frame
-                            ? "2px solid var(--sf-purple)"
-                            : "2px solid #333",
-                        opacity: isActive ? 1 : 0.7,
-                      }}
-                    >
-                      <img
-                        src={frameUrl(f.frame_path)}
-                        alt={`Frame ${f.timestamp_ms}ms`}
-                        className="w-full h-full object-cover"
-                        draggable={false}
-                      />
-                    </button>
-                  );
-                })}
+          {/* SAM3-detected frames (always visible) */}
+          {detectedFrames.length > 0 && (
+            <div className="shrink-0">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "var(--sf-lime)" }} />
+                <span className="text-[10px] font-bold" style={{ color: "var(--sf-lime)" }}>
+                  SAM3 DETECTED ({detectedFrames.length})
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <div className="flex gap-1.5 pb-1">
+                  {detectedFrames.map((f) => {
+                    const isActive = currentFramePath === f.frame_path;
+                    const thumbSrc = f.segmented_frame_path
+                      ? frameUrl(f.segmented_frame_path)
+                      : frameUrl(f.frame_path);
+                    return (
+                      <button
+                        key={f.id}
+                        onClick={() => setActiveFrame(step.id, f.frame_path)}
+                        className="relative shrink-0 rounded-md overflow-hidden transition-all"
+                        style={{
+                          width: 72,
+                          height: 48,
+                          border: isActive
+                            ? "2px solid var(--sf-yellow)"
+                            : "2px solid var(--sf-lime)",
+                          opacity: isActive ? 1 : 0.8,
+                        }}
+                      >
+                        <img
+                          src={thumbSrc}
+                          alt={`Frame ${f.timestamp_ms}ms`}
+                          className="w-full h-full object-cover"
+                          draggable={false}
+                        />
+                        <span
+                          className="absolute top-0.5 right-0.5 text-[7px] font-bold px-1 rounded"
+                          style={{ backgroundColor: "rgba(0,0,0,0.7)", color: "var(--sf-lime)" }}
+                        >
+                          SAM3
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           )}
 
-          {/* Frame viewer with SAM3 */}
+          {/* All frames (collapsible) */}
+          {frames.length > 1 && (
+            <div className="shrink-0">
+              <button
+                onClick={() => setShowAllFrames((v) => !v)}
+                className="flex items-center gap-1.5 mb-1.5 transition-colors"
+                style={{ color: "#666" }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "#aaa")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "#666")}
+              >
+                <svg
+                  width="10" height="10" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                  style={{ transform: showAllFrames ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s" }}
+                >
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+                <span className="text-[10px] font-bold">
+                  ALL FRAMES ({frames.length})
+                </span>
+              </button>
+              {showAllFrames && (
+                <div className="overflow-x-auto">
+                  <div className="flex gap-1.5 pb-1">
+                    {frames.map((f) => {
+                      const isActive = currentFramePath === f.frame_path;
+                      const thumbSrc =
+                        f.object_detected && f.segmented_frame_path
+                          ? frameUrl(f.segmented_frame_path)
+                          : frameUrl(f.frame_path);
+                      return (
+                        <button
+                          key={f.id}
+                          onClick={() => setActiveFrame(step.id, f.frame_path)}
+                          className="relative shrink-0 rounded-md overflow-hidden transition-all"
+                          style={{
+                            width: 64,
+                            height: 42,
+                            border: isActive
+                              ? "2px solid var(--sf-yellow)"
+                              : f.object_detected
+                                ? "2px solid var(--sf-lime)"
+                                : f.is_key_frame
+                                  ? "2px solid var(--sf-purple)"
+                                  : "2px solid #333",
+                            opacity: isActive ? 1 : 0.65,
+                          }}
+                        >
+                          <img
+                            src={thumbSrc}
+                            alt={`Frame ${f.timestamp_ms}ms`}
+                            className="w-full h-full object-cover"
+                            draggable={false}
+                          />
+                          {f.object_detected && (
+                            <span
+                              className="absolute top-0 right-0 text-[6px] font-bold px-0.5 rounded-bl"
+                              style={{ backgroundColor: "rgba(0,0,0,0.7)", color: "var(--sf-lime)" }}
+                            >
+                              SAM3
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Frame viewer — pre-rendered segmented image */}
           <div className="relative flex-1 flex items-center justify-center overflow-hidden rounded-xl" style={{ backgroundColor: "#111" }}>
-            {currentFramePath ? (
+            {displayFramePath ? (
               <div className="relative cursor-crosshair" onClick={handleFrameClick}>
                 <img
                   ref={imgRef}
-                  src={frameUrl(currentFramePath)}
+                  src={frameUrl(displayFramePath)}
                   alt={`Step ${step.step_number} frame`}
                   className="max-w-full max-h-[55vh] rounded-lg object-contain"
                   draggable={false}
                 />
 
-                {/* Click target overlays */}
-                {step.click_targets.map((ct) => (
-                  <div
-                    key={ct.id}
-                    className="absolute pointer-events-none"
-                    style={{
-                      left: `${ct.bbox_x}%`,
-                      top: `${ct.bbox_y}%`,
-                      width: `${ct.bbox_width}%`,
-                      height: `${ct.bbox_height}%`,
-                      border: `2px solid ${ct.is_primary ? "var(--sf-lime)" : "var(--sf-purple)"}`,
-                      borderRadius: 4,
-                      backgroundColor: ct.is_primary
-                        ? "rgba(199,255,105,0.1)"
-                        : "rgba(122,120,255,0.08)",
-                    }}
-                  />
-                ))}
-
-                {/* SAM3 segment overlays */}
+                {/* Manual SAM3 segment overlays (click-to-segment) */}
                 {segments.map((seg, i) => (
                   <div
                     key={i}
@@ -165,11 +251,29 @@ export function StepFrameViewer() {
               </div>
             )}
 
-            <div
-              className="absolute bottom-3 left-3 text-[10px] font-medium px-2 py-1 rounded-md"
-              style={{ backgroundColor: "rgba(0,0,0,0.7)", color: "#888" }}
-            >
-              Click on frame to add SAM3 segmentation
+            {/* Bottom bar: hint + segmented/original toggle */}
+            <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between">
+              <div
+                className="text-[10px] font-medium px-2 py-1 rounded-md"
+                style={{ backgroundColor: "rgba(0,0,0,0.7)", color: "#888" }}
+              >
+                Click on frame to add SAM3 segmentation
+              </div>
+              {hasSegmentedView && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowSegmented((v) => !v);
+                  }}
+                  className="text-[10px] font-bold px-2 py-1 rounded-md transition-colors"
+                  style={{
+                    backgroundColor: showSegmented ? "var(--sf-lime)" : "rgba(255,255,255,0.1)",
+                    color: showSegmented ? "var(--sf-black)" : "#888",
+                  }}
+                >
+                  {showSegmented ? "Segmented" : "Original"}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -177,12 +281,18 @@ export function StepFrameViewer() {
         /* Video tab */
         <div className="flex-1 flex items-center justify-center overflow-hidden rounded-xl" style={{ backgroundColor: "#111" }}>
           {step.video_path ? (
-            <video
-              key={step.video_path}
-              src={videoUrl(step.video_path)}
-              controls
-              className="max-w-full max-h-[60vh] rounded-lg"
-            />
+            <div className="relative">
+              <video
+                ref={videoRef}
+                key={step.video_path}
+                src={videoUrl(step.video_path)}
+                controls
+                autoPlay
+                muted
+                className="max-w-full max-h-[60vh] rounded-lg"
+              />
+              <StepVideoOverlay videoRef={videoRef} step={step} />
+            </div>
           ) : (
             <div className="text-sm" style={{ color: "#444" }}>No video available</div>
           )}

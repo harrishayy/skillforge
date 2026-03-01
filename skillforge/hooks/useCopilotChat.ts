@@ -60,7 +60,9 @@ export function useCopilotChat(workflowId: string, stepId: string) {
               const data = JSON.parse(line.slice(6));
               if (data.token) updateLastAssistantMessage(data.token);
               if (data.done) break;
-            } catch {}
+            } catch (parseErr) {
+              console.warn("[Copilot] Failed to parse streaming JSON chunk:", line, parseErr);
+            }
           }
         }
       } catch (err) {

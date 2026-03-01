@@ -12,6 +12,7 @@ import { computePinchState } from "@/lib/pinch-detection";
 import { renderHandLandmarks } from "@/lib/annotation-renderer";
 import { uploadStepVideos, getGuidedStepPrompt } from "@/lib/api-client";
 import { showErrorToast } from "@/store/toast-store";
+import type { PipelineLogEvent, PipelineStage } from "@/types";
 import * as stepStorage from "@/lib/step-storage";
 import { PinchIndicator } from "@/components/live-detect/PinchIndicator";
 import { PipelineStatus } from "@/components/recording/PipelineStatus";
@@ -23,7 +24,7 @@ import { HelpAndChatPanel } from "@/components/recording-session/HelpAndChatPane
 import { StepSavedToast } from "@/components/recording-session/StepSavedToast";
 import { FinishConfirmation } from "@/components/recording-session/FinishConfirmation";
 
-type SessionState = "mounting" | "recovering" | "recording" | "confirming_finish" | "uploading" | "processing";
+type SessionState = "mounting" | "recovering" | "apparatus_showcase" | "recording" | "confirming_finish" | "uploading" | "processing";
 
 interface RecordingConfig {
   title: string;
@@ -33,6 +34,7 @@ interface RecordingConfig {
 interface StepVideo {
   stepNumber: number;
   blob: Blob;
+  durationMs: number;
 }
 
 export default function RecordingSessionPage() {
@@ -43,6 +45,14 @@ export default function RecordingSessionPage() {
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadLogs, setUploadLogs] = useState<PipelineLogEvent[]>([]);
+
+  const pushUploadLog = useCallback((stage: PipelineStage, message: string) => {
+    setUploadLogs((prev) => [
+      ...prev,
+      { type: "pipeline_log", stage, message, progress: 0, timestamp: Date.now() },
+    ]);
+  }, []);
 
   // Step tracking
   const [currentStepNumber, setCurrentStepNumber] = useState(1);
@@ -56,6 +66,11 @@ export default function RecordingSessionPage() {
   const stepNotesRef = useRef<Record<number, string>>({});
   stepNotesRef.current = stepNotes;
   const [editingStepNumber, setEditingStepNumber] = useState<number | null>(null);
+
+  // Apparatus showcase state
+  const [apparatusPhase, setApparatusPhase] = useState<"overview" | "individual">("overview");
+  const [apparatusObjectCount, setApparatusObjectCount] = useState(0);
+  const apparatusBlobRef = useRef<Blob | null>(null);
 
   // Toast state
   const [savedStepToast, setSavedStepToast] = useState<number | null>(null);
@@ -86,6 +101,7 @@ export default function RecordingSessionPage() {
   }, []);
 
   const [micEnabled, setMicEnabled] = useState(true);
+  const [gesturesEnabled, setGesturesEnabled] = useState(true);
   const webcamRecorder = useWebcamRecorder();
   const snapshotTranscriptRef = useRef<() => string>(() => "");
 
@@ -94,7 +110,7 @@ export default function RecordingSessionPage() {
     const video = videoRef.current;
     if (video && webcamRecorder.stream) {
       video.srcObject = webcamRecorder.stream;
-      video.play().catch(() => {});
+      video.play().catch((err: unknown) => console.warn("[Session] Video autoplay blocked by browser policy:", err));
     }
   }, [webcamRecorder.stream]);
 
@@ -111,11 +127,12 @@ export default function RecordingSessionPage() {
       configLoadedRef.current = true;
       sessionStorage.removeItem("sf-recording-config");
       // New session — clear any stale recovery data
-      stepStorage.clearSession().catch(() => {});
+      stepStorage.clearSession().catch((err: unknown) => console.warn("[Session] Failed to clear previous session from IndexedDB:", err));
       try {
         const parsed: RecordingConfig = JSON.parse(raw);
         setConfig(parsed);
-      } catch {
+      } catch (err) {
+        console.warn("[Session] Failed to parse recording config JSON — redirecting to setup:", err);
         router.replace("/record/setup");
       }
       return;
@@ -129,7 +146,8 @@ export default function RecordingSessionPage() {
       } else {
         router.replace("/record/setup");
       }
-    }).catch(() => {
+    }).catch((err: unknown) => {
+      console.warn("[Session] Recovery data check failed — redirecting to setup:", err);
       router.replace("/record/setup");
     });
   }, [router]);
@@ -178,7 +196,7 @@ export default function RecordingSessionPage() {
       const snapshotTime = webcamRecorder.getDurationMs();
       const blob = await webcamRecorder.snapshot();
       const durationMs = snapshotTime - stepStartTimeRef.current;
-      stepVideosRef.current.push({ stepNumber: prevStepNum, blob });
+      stepVideosRef.current.push({ stepNumber: prevStepNum, blob, durationMs });
 
       setCompletedSteps((prev) => [...prev, { stepNumber: prevStepNum, durationMs }]);
       toastKeyRef.current += 1;
@@ -191,7 +209,10 @@ export default function RecordingSessionPage() {
         transcript,
         note: stepNotesRef.current[prevStepNum] ?? "",
         durationMs,
-      }).catch((e) => console.warn("[StepStorage] Failed to save step:", e));
+      }).catch((e) => {
+        console.warn("[StepStorage] Failed to save step:", e);
+        showErrorToast("Failed to save step to local storage. If the browser's storage is full, try clearing site data.");
+      });
 
       const nextStep = prevStepNum + 1;
       stepStartTimeRef.current = snapshotTime;
@@ -225,47 +246,72 @@ export default function RecordingSessionPage() {
     const transcript = snapshotTranscriptRef.current();
     stepTranscriptsRef.current.push(transcript);
 
+    console.log("[FinishRecording] Confirmed — transitioning to uploading state");
+    setUploadLogs([]);
+    setUploadError(null);
     setSessionState("uploading");
 
     try {
+      pushUploadLog("upload", "Stopping recorder and packaging video...");
+      console.log("[FinishRecording] Stopping webcam recorder...");
+      const finalSnapshotTime = webcamRecorder.getDurationMs();
       const finalBlob = await webcamRecorder.stop();
-      stepVideosRef.current.push({ stepNumber: currentStepNumber, blob: finalBlob });
+      const finalDurationMs = finalSnapshotTime - stepStartTimeRef.current;
+      console.log(`[FinishRecording] Final blob: ${(finalBlob.size / 1024).toFixed(0)} KB`);
+      stepVideosRef.current.push({ stepNumber: currentStepNumber, blob: finalBlob, durationMs: finalDurationMs });
 
-      // Persist final step to IndexedDB before upload attempt
+      pushUploadLog("upload", "Saving step locally as backup...");
+      console.log("[FinishRecording] Persisting final step to IndexedDB...");
       await stepStorage.saveStep({
         stepNumber: currentStepNumber,
         blob: finalBlob,
         transcript,
         note: stepNotesRef.current[currentStepNumber] ?? "",
         durationMs: 0,
-      }).catch(() => {});
+      }).catch((e) => {
+        console.warn("[FinishRecording] IndexedDB save failed:", e);
+        showErrorToast("Failed to persist recording backup. Upload may not be recoverable if it fails.");
+      });
 
       const cfg = configRef.current;
       const notesArr = stepVideosRef.current.map(
         (sv) => stepNotesRef.current[sv.stepNumber] ?? ""
       );
+      const totalMB = stepVideosRef.current.reduce((s, v) => s + v.blob.size, 0) / 1024 / 1024;
+      pushUploadLog(
+        "upload",
+        `Uploading ${stepVideosRef.current.length} step video(s) (${totalMB.toFixed(1)} MB)...`
+      );
+      console.log(`[FinishRecording] Uploading ${stepVideosRef.current.length} step video(s)...`);
       const result = await uploadStepVideos({
         stepVideos: stepVideosRef.current.map((sv) => sv.blob),
         title: cfg?.title ?? "Untitled",
         initialDescription: cfg?.description,
         stepTranscripts: stepTranscriptsRef.current,
         stepNotes: notesArr,
+        stepDurations: stepVideosRef.current.map((sv) => sv.durationMs),
+        apparatusVideo: apparatusBlobRef.current ?? undefined,
       });
 
-      // Upload succeeded — clear IndexedDB
-      await stepStorage.clearSession().catch(() => {});
+      pushUploadLog("upload", "Upload complete — starting AI pipeline...");
+      console.log("[FinishRecording] Upload succeeded, workflow_id:", result.workflow_id);
+      await stepStorage.clearSession().catch((err: unknown) => console.warn("[FinishRecording] Post-upload IndexedDB cleanup failed:", err));
 
       setWorkflowId(result.workflow_id);
       setSessionState("processing");
     } catch (err) {
-      showErrorToast(err);
+      console.error("[FinishRecording] Failed:", err);
       const msg = err instanceof Error ? err.message : "Unknown error";
+      pushUploadLog("error", msg);
+      showErrorToast(err);
       setUploadError(msg);
     }
-  }, [webcamRecorder, currentStepNumber]);
+  }, [webcamRecorder, currentStepNumber, pushUploadLog]);
 
   const retryUpload = useCallback(async () => {
+    console.log("[RetryUpload] Retrying upload...");
     setUploadError(null);
+    setUploadLogs([]);
     try {
       let videos: Blob[];
       let transcripts: string[];
@@ -273,98 +319,202 @@ export default function RecordingSessionPage() {
       let title: string;
       let description: string | undefined;
 
+      let durations: number[] | undefined;
+
+      let apparatusBlob: Blob | undefined;
+
       if (stepVideosRef.current.length > 0) {
-        // In-memory data available (normal flow)
+        console.log("[RetryUpload] Using in-memory data");
+        pushUploadLog("upload", "Retrying with in-memory data...");
         videos = stepVideosRef.current.map((sv) => sv.blob);
         transcripts = stepTranscriptsRef.current;
         notes = stepVideosRef.current.map(
           (sv) => stepNotesRef.current[sv.stepNumber] ?? ""
         );
+        durations = stepVideosRef.current.map((sv) => sv.durationMs);
+        apparatusBlob = apparatusBlobRef.current ?? undefined;
         const cfg = configRef.current;
         title = cfg?.title ?? "Untitled";
         description = cfg?.description;
       } else {
-        // Recovery path — read from IndexedDB
+        console.log("[RetryUpload] Reading from IndexedDB (recovery path)");
+        pushUploadLog("upload", "Recovering saved steps from local storage...");
         const [meta, savedSteps] = await Promise.all([
           stepStorage.getSessionMeta(),
           stepStorage.getAllSteps(),
         ]);
         if (!meta || savedSteps.length === 0) {
+          console.warn("[RetryUpload] No recovery data found, redirecting to setup");
+          showErrorToast("No saved recording data found. Starting fresh.");
           await stepStorage.clearSession();
           router.replace("/record/setup");
           return;
         }
+        console.log(`[RetryUpload] Recovered ${savedSteps.length} step(s) from IndexedDB`);
+        pushUploadLog("upload", `Recovered ${savedSteps.length} step(s)`);
         videos = savedSteps.map((s) => s.blob);
         transcripts = savedSteps.map((s) => s.transcript);
         notes = savedSteps.map((s) => s.note);
+        durations = savedSteps.map((s) => s.durationMs);
         title = meta.title;
         description = meta.description;
       }
 
+      const totalMB = videos.reduce((s, b) => s + b.size, 0) / 1024 / 1024;
+      pushUploadLog("upload", `Uploading ${videos.length} step video(s) (${totalMB.toFixed(1)} MB)...`);
+      console.log(`[RetryUpload] Uploading ${videos.length} step video(s)...`);
       const result = await uploadStepVideos({
         stepVideos: videos,
         title,
         initialDescription: description,
         stepTranscripts: transcripts,
         stepNotes: notes,
+        stepDurations: durations,
+        apparatusVideo: apparatusBlob,
       });
-      await stepStorage.clearSession().catch(() => {});
+      pushUploadLog("upload", "Upload complete — starting AI pipeline...");
+      console.log("[RetryUpload] Success, workflow_id:", result.workflow_id);
+      await stepStorage.clearSession().catch((err: unknown) => console.warn("[RetryUpload] Post-upload IndexedDB cleanup failed:", err));
       setWorkflowId(result.workflow_id);
       setSessionState("processing");
     } catch (err) {
-      showErrorToast(err);
+      console.error("[RetryUpload] Failed:", err);
       const msg = err instanceof Error ? err.message : "Unknown error";
+      pushUploadLog("error", msg);
+      showErrorToast(err);
       setUploadError(msg);
     }
-  }, [router]);
+  }, [router, pushUploadLog]);
 
   // ---------------------------------------------------------------------------
   // Recovery: upload saved steps from IndexedDB after a crash
   // ---------------------------------------------------------------------------
   const handleRecoveryUpload = useCallback(async () => {
+    console.log("[RecoveryUpload] Starting recovery upload from IndexedDB...");
+    setUploadLogs([]);
+    setUploadError(null);
     setSessionState("uploading");
     try {
+      pushUploadLog("upload", "Recovering saved steps from local storage...");
       const [meta, savedSteps] = await Promise.all([
         stepStorage.getSessionMeta(),
         stepStorage.getAllSteps(),
       ]);
       if (!meta || savedSteps.length === 0) {
+        console.warn("[RecoveryUpload] No recovery data found, redirecting to setup");
+        showErrorToast("No saved recording data found. Starting fresh.");
         await stepStorage.clearSession();
         router.replace("/record/setup");
         return;
       }
 
+      const totalMB = savedSteps.reduce((s, v) => s + v.blob.size, 0) / 1024 / 1024;
+      pushUploadLog("upload", `Recovered ${savedSteps.length} step(s) — uploading (${totalMB.toFixed(1)} MB)...`);
+      console.log(`[RecoveryUpload] Recovered ${savedSteps.length} step(s), uploading...`);
       const result = await uploadStepVideos({
         stepVideos: savedSteps.map((s) => s.blob),
         title: meta.title,
         initialDescription: meta.description,
         stepTranscripts: savedSteps.map((s) => s.transcript),
         stepNotes: savedSteps.map((s) => s.note),
+        stepDurations: savedSteps.map((s) => s.durationMs),
       });
 
-      await stepStorage.clearSession().catch(() => {});
+      pushUploadLog("upload", "Upload complete — starting AI pipeline...");
+      console.log("[RecoveryUpload] Success, workflow_id:", result.workflow_id);
+      await stepStorage.clearSession().catch((err: unknown) => console.warn("[RecoveryUpload] Post-upload IndexedDB cleanup failed:", err));
       setWorkflowId(result.workflow_id);
       setSessionState("processing");
     } catch (err) {
-      showErrorToast(err);
+      console.error("[RecoveryUpload] Failed:", err);
       const msg = err instanceof Error ? err.message : "Unknown error";
+      pushUploadLog("error", msg);
+      showErrorToast(err);
       setUploadError(msg);
     }
-  }, [router]);
+  }, [router, pushUploadLog]);
 
   const handleRecoveryDiscard = useCallback(async () => {
-    await stepStorage.clearSession().catch(() => {});
+    await stepStorage.clearSession().catch((err: unknown) => console.warn("[Session] Failed to clear session on discard:", err));
     router.replace("/record/setup");
   }, [router]);
+
+  // ---------------------------------------------------------------------------
+  // Exit (abandon recording)
+  // ---------------------------------------------------------------------------
+  const handleExit = useCallback(() => {
+    webcamRecorder.stop().catch((err: unknown) => console.warn("[Session] Webcam recorder stop failed during exit:", err));
+    stepStorage.clearSession().catch((err: unknown) => console.warn("[Session] IndexedDB cleanup failed during exit:", err));
+    router.push("/record/setup");
+  }, [webcamRecorder, router]);
+
+  // ---------------------------------------------------------------------------
+  // Apparatus showcase handlers (defined before voice commands so wrappers work)
+  // ---------------------------------------------------------------------------
+  const handleApparatusOverviewDone = useCallback(() => {
+    setApparatusPhase("individual");
+    setApparatusObjectCount(1);
+  }, []);
+
+  const handleApparatusNextObject = useCallback(() => {
+    setApparatusObjectCount((c) => c + 1);
+  }, []);
+
+  const handleApparatusDone = useCallback(async () => {
+    try {
+      const blob = await webcamRecorder.snapshot();
+      apparatusBlobRef.current = blob;
+      console.log(`[Session] Apparatus showcase captured: ${(blob.size / 1024).toFixed(0)} KB`);
+    } catch (err) {
+      console.warn("[Session] Failed to snapshot apparatus video:", err);
+    }
+
+    stepStartTimeRef.current = webcamRecorder.getDurationMs();
+    setSessionState("recording");
+    fetchStepPrompt(1, []);
+  }, [webcamRecorder, fetchStepPrompt]);
+
+  const handleApparatusSkip = useCallback(() => {
+    apparatusBlobRef.current = null;
+    stepStartTimeRef.current = webcamRecorder.getDurationMs();
+    setSessionState("recording");
+    fetchStepPrompt(1, []);
+  }, [webcamRecorder, fetchStepPrompt]);
+
+  // ---------------------------------------------------------------------------
+  // Voice-aware wrappers: route "next" / "finish" based on current phase
+  // ---------------------------------------------------------------------------
+  const apparatusPhaseRef = useRef(apparatusPhase);
+  apparatusPhaseRef.current = apparatusPhase;
+
+  const voiceNext = useCallback(() => {
+    if (sessionState === "apparatus_showcase") {
+      if (apparatusPhaseRef.current === "overview") {
+        handleApparatusOverviewDone();
+      } else {
+        handleApparatusNextObject();
+      }
+    } else {
+      handleNextStep();
+    }
+  }, [sessionState, handleApparatusOverviewDone, handleApparatusNextObject, handleNextStep]);
+
+  const voiceFinish = useCallback(() => {
+    if (sessionState === "apparatus_showcase") {
+      handleApparatusDone();
+    } else {
+      handleFinishRequest();
+    }
+  }, [sessionState, handleApparatusDone, handleFinishRequest]);
 
   // ---------------------------------------------------------------------------
   // Voice commands (auto-managed by `enabled` prop)
   // ---------------------------------------------------------------------------
   const voice = useVoiceCommands({
-    onNextStep: handleNextStep,
-    onFinish: handleFinishRequest,
-    enabled: micEnabled && (sessionState === "recording" || sessionState === "confirming_finish"),
-    transcriptionSource: "server",
+    onNextStep: voiceNext,
+    onFinish: voiceFinish,
+    enabled: micEnabled && (sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase"),
+    transcriptionSource: "browser",
     audioStream: webcamRecorder.audioStream,
   });
 
@@ -377,16 +527,15 @@ export default function RecordingSessionPage() {
     videoRef,
     handsEnabled: true,
     objectsEnabled: false,
-    enabled: sessionState === "recording" || sessionState === "confirming_finish",
+    enabled: sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase",
     onResult: (r) => {
       mpResultRef.current = r;
       setHandData(r.hands);
     },
   });
 
-  // Double-tap gesture detection (needs state-driven hand data to re-render each frame)
-  useDoubleTapDetection(handData, {
-    onSkipForward: handleNextStep,
+  useDoubleTapDetection(gesturesEnabled ? handData : null, {
+    onSkipForward: voiceNext,
     onSkipBackward: () => {},
   });
 
@@ -414,7 +563,7 @@ export default function RecordingSessionPage() {
   }, []);
 
   useEffect(() => {
-    if (sessionState === "recording" || sessionState === "confirming_finish") {
+    if (sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase") {
       animFrameRef.current = requestAnimationFrame(renderLoop);
     }
     return () => cancelAnimationFrame(animFrameRef.current);
@@ -441,7 +590,9 @@ export default function RecordingSessionPage() {
       stepVideosRef.current = [];
       stepStartTimeRef.current = 0;
       setCurrentStepNumber(1);
-      setSessionState("recording");
+      setApparatusPhase("overview");
+      setApparatusObjectCount(0);
+      setSessionState("apparatus_showcase");
 
       // Persist session meta so recovery knows the title/description
       const cfg = configRef.current;
@@ -450,26 +601,29 @@ export default function RecordingSessionPage() {
           title: cfg.title,
           description: cfg.description,
           createdAt: Date.now(),
-        }).catch(() => {});
+        }).catch((err: unknown) => console.warn("[Session] Failed to save session metadata to IndexedDB:", err));
       }
-
-      fetchStepPrompt(1, []);
     })();
   }, [config]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ---------------------------------------------------------------------------
-  // Exit (abandon recording)
-  // ---------------------------------------------------------------------------
-  const handleExit = useCallback(() => {
-    webcamRecorder.stop().catch(() => {});
-    stepStorage.clearSession().catch(() => {});
-    router.push("/record/setup");
-  }, [webcamRecorder, router]);
+  // Apparatus-specific guidance prompts
+  useEffect(() => {
+    if (sessionState !== "apparatus_showcase") return;
+    if (apparatusPhase === "overview") {
+      setStepPrompt(
+        "Place all tools and parts needed for this workflow in the frame. Show everything together so the system can build an inventory."
+      );
+    } else {
+      setStepPrompt(
+        "Show this object individually from 2\u20133 angles, rotating slowly so the system can capture it from each side."
+      );
+    }
+  }, [sessionState, apparatusPhase]);
 
   // Keyboard shortcut: Escape to exit
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && (sessionState === "recording" || sessionState === "confirming_finish")) {
+      if (e.key === "Escape" && (sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase")) {
         handleExit();
       }
     };
@@ -480,7 +634,7 @@ export default function RecordingSessionPage() {
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
-  const isRecordingActive = sessionState === "recording" || sessionState === "confirming_finish";
+  const isRecordingActive = sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase";
 
   return (
     <div className="fixed inset-0 bg-black overflow-hidden">
@@ -559,50 +713,19 @@ export default function RecordingSessionPage() {
         </div>
       )}
 
-      {/* Uploading overlay */}
-      {sessionState === "uploading" && (
-        <div className="absolute inset-0 z-50 bg-black flex items-center justify-center">
-          {uploadError ? (
-            <div className="text-center max-w-md px-6">
-              <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-red-500/20 flex items-center justify-center">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </div>
-              <h2 className="font-black text-xl text-white mb-2">Upload Failed</h2>
-              <p className="text-sm text-white/50 mb-6">{uploadError}</p>
-              <div className="flex gap-3 justify-center">
-                <button
-                  onClick={retryUpload}
-                  className="text-sm font-bold px-5 py-2.5 rounded-xl transition-colors"
-                  style={{ backgroundColor: "var(--sf-purple)", color: "var(--sf-black)" }}
-                >
-                  Retry Upload
-                </button>
-                <button
-                  onClick={() => router.push("/record/setup")}
-                  className="text-sm font-bold px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white transition-colors"
-                >
-                  Back to Setup
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="text-center">
-              <Spinner className="w-10 h-10 mx-auto mb-4 text-purple-400" />
-              <h2 className="font-black text-xl text-white mb-2">Uploading...</h2>
-              <p className="text-sm text-white/50">Sending your recording to the AI pipeline</p>
-            </div>
-          )}
-        </div>
-      )}
+      {/* (apparatus overlay removed — SessionControlBar handles it now) */}
 
-      {/* Processing overlay */}
-      {sessionState === "processing" && workflowId && (
+      {/* Unified uploading + processing overlay */}
+      {(sessionState === "uploading" || sessionState === "processing") && (
         <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: "var(--sf-white)" }}>
           <div className="w-full max-w-xl px-4">
-            <PipelineStatus workflowId={workflowId} />
+            <PipelineStatus
+              workflowId={workflowId}
+              initialLogs={uploadLogs}
+              uploadError={uploadError}
+              onRetry={retryUpload}
+              onBack={() => router.push("/record/setup")}
+            />
           </div>
         </div>
       )}
@@ -632,9 +755,16 @@ export default function RecordingSessionPage() {
           </div>
           <span
             className="text-xs font-bold px-2.5 py-1 rounded-full"
-            style={{ backgroundColor: "var(--sf-purple)", color: "var(--sf-black)" }}
+            style={{
+              backgroundColor: sessionState === "apparatus_showcase" ? "var(--sf-yellow)" : "var(--sf-purple)",
+              color: "var(--sf-black)",
+            }}
           >
-            Step {currentStepNumber}
+            {sessionState === "apparatus_showcase"
+              ? apparatusPhase === "overview"
+                ? "Apparatus — Overview"
+                : `Apparatus — Object ${apparatusObjectCount}`
+              : `Step ${currentStepNumber}`}
           </span>
 
           {/* Mic toggle */}
@@ -686,8 +816,61 @@ export default function RecordingSessionPage() {
                 : "Muted"}
           </button>
 
+          {/* Voice fallback / error badge */}
+          {voice.fallbackActive && (
+            <span
+              className="text-[10px] font-medium px-2 py-0.5 rounded-full"
+              style={{ backgroundColor: "rgba(245,158,11,0.25)", color: "var(--sf-yellow)" }}
+            >
+              Browser fallback
+            </span>
+          )}
+          {voice.status === "unavailable" && voice.unavailableReason && (
+            <span
+              className="text-[10px] font-medium px-2 py-0.5 rounded-full max-w-[200px] truncate"
+              style={{ backgroundColor: "rgba(239,68,68,0.2)", color: "rgba(239,68,68,0.8)" }}
+            >
+              {voice.unavailableReason}
+            </span>
+          )}
+
+          {/* Gesture toggle */}
+          <button
+            onClick={() => setGesturesEnabled((v) => !v)}
+            className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition-all hover:scale-105"
+            style={{
+              backgroundColor: gesturesEnabled
+                ? "rgba(168, 85, 247, 0.25)"
+                : "rgba(255, 255, 255, 0.08)",
+              color: gesturesEnabled ? "var(--sf-purple)" : "rgba(255,255,255,0.4)",
+              backdropFilter: "blur(20px)",
+              border: `1px solid ${gesturesEnabled ? "rgba(168,85,247,0.3)" : "rgba(255,255,255,0.1)"}`,
+            }}
+            title={gesturesEnabled ? "Disable gesture controls" : "Enable gesture controls"}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {gesturesEnabled ? (
+                <>
+                  <path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2" />
+                  <path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2" />
+                  <path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8" />
+                  <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" />
+                </>
+              ) : (
+                <>
+                  <line x1="2" x2="22" y1="2" y2="22" />
+                  <path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2" />
+                  <path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2" />
+                  <path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8" />
+                  <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" />
+                </>
+              )}
+            </svg>
+            {gesturesEnabled ? "Gestures" : "Gestures off"}
+          </button>
+
           {/* Pinch indicator */}
-          {handData && (
+          {gesturesEnabled && handData && (
             <div
               className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs"
               style={{
@@ -713,6 +896,11 @@ export default function RecordingSessionPage() {
         currentStepNumber={currentStepNumber}
         editingStepNumber={editingStepNumber}
         onStepClick={handleEditStep}
+        apparatus={sessionState === "apparatus_showcase" ? {
+          active: true,
+          phase: apparatusPhase,
+          objectCount: apparatusObjectCount,
+        } : undefined}
       />
 
       {/* Right panel: help & chat */}
@@ -723,6 +911,7 @@ export default function RecordingSessionPage() {
         stepNotes={stepNotes}
         onSaveNote={handleSaveNote}
         onEditStep={handleEditStep}
+        apparatusActive={sessionState === "apparatus_showcase"}
       />
 
       {/* Right toolbar */}
@@ -734,9 +923,9 @@ export default function RecordingSessionPage() {
         />
       )}
 
-      {/* Bottom control bar (hidden when confirming finish) */}
+      {/* Bottom control bar */}
       <AnimatePresence>
-        {sessionState === "recording" && (
+        {(sessionState === "recording" || sessionState === "apparatus_showcase") && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -752,11 +941,31 @@ export default function RecordingSessionPage() {
               isListening={voice.isListening}
               voiceStatus={voice.status}
               voiceUnavailableReason={voice.unavailableReason}
-              onNextStep={handleNextStep}
-              onFinish={handleFinishRequest}
               onPause={webcamRecorder.pause}
               onResume={webcamRecorder.resume}
               onToggleMic={() => setMicEnabled((v) => !v)}
+              {...(sessionState === "apparatus_showcase"
+                ? {
+                    phaseLabel: apparatusPhase === "overview"
+                      ? "Overview"
+                      : `Object ${apparatusObjectCount}`,
+                    phaseLabelColor: "var(--sf-yellow)",
+                    nextLabel: apparatusPhase === "overview"
+                      ? "→ Individual Objects"
+                      : "→ Next Object",
+                    finishLabel: "✓ Done with Showcase",
+                    voiceHint: micEnabled
+                      ? <>Say &ldquo;next&rdquo; to advance &middot; Say &ldquo;done&rdquo; to finish showcase</>
+                      : <>Voice muted &middot; Double-tap pinch to advance</>,
+                    onNextStep: voiceNext,
+                    onFinish: voiceFinish,
+                    onSkip: handleApparatusSkip,
+                  }
+                : {
+                    onNextStep: handleNextStep,
+                    onFinish: handleFinishRequest,
+                  }
+              )}
             />
           </motion.div>
         )}

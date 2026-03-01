@@ -113,7 +113,8 @@ export async function hasRecoveryData(): Promise<boolean> {
   try {
     const [meta, count] = await Promise.all([getSessionMeta(), getStepCount()]);
     return meta !== null && count > 0;
-  } catch {
+  } catch (err) {
+    console.warn("[StepStorage] Failed to check recovery data availability:", err);
     return false;
   }
 }

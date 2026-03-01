@@ -80,8 +80,8 @@ export function useSam3Detect({
         sam3_segments: data.sam3_segments ?? [],
         processing_ms: data.processing_ms ?? 0,
       });
-    } catch {
-      // non-fatal — skip this frame
+    } catch (err) {
+      console.error("[SAM3] Detection request failed — the GPU server may be unreachable. Check that SAM3_URL is set and the server is running:", err);
     } finally {
       inflightRef.current = false;
     }

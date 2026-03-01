@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Start All Dev Services",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["-e", "setInterval(()=>{},999999)"],
+      "preLaunchTask": "Start All",
+      "console": "integratedTerminal"
+    }
+  ]
+}

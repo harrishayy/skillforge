@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { showErrorToast } from "@/store/toast-store";
 
 export type FacingMode = "user" | "environment";
 
@@ -66,7 +67,8 @@ export function useCameraStream(
           video: videoConstraints,
           audio: audio ? { echoCancellation: true, noiseSuppression: true } : false,
         });
-      } catch {
+      } catch (audioErr) {
+        console.warn("[CameraStream] Could not acquire audio — retrying video-only:", audioErr);
         mediaStream = await navigator.mediaDevices.getUserMedia({
           video: videoConstraints,
           audio: false,
@@ -75,7 +77,9 @@ export function useCameraStream(
       setStream(mediaStream);
       setIsActive(true);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Camera access denied");
+      const msg = e instanceof Error ? e.message : "Camera access denied";
+      setError(msg);
+      showErrorToast(`Camera access failed: ${msg}. On mobile, HTTPS is required — use ngrok to expose the app securely.`);
     }
   }, [constraints, audio]);
 

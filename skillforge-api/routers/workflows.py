@@ -42,8 +42,28 @@ async def _get_full_workflow(workflow_id: str) -> dict:
         ]
         steps.append({**step, "annotations": annotations, "click_targets": click_targets, "frames": frames})
 
+    apparatus_objects = await fetchall(
+        "SELECT * FROM workflow_objects WHERE workflow_id=? ORDER BY created_at",
+        (workflow_id,),
+    )
+    for obj in apparatus_objects:
+        raw = obj.get("reference_frame_paths")
+        if isinstance(raw, str):
+            import json as _json
+            try:
+                obj["reference_frame_paths"] = _json.loads(raw)
+            except Exception:
+                obj["reference_frame_paths"] = []
+        elif raw is None:
+            obj["reference_frame_paths"] = []
+
     thumbnail = steps[0]["key_frame_path"] if steps else None
-    return _bool_published({**wf, "steps": steps, "thumbnail_path": thumbnail})
+    return _bool_published({
+        **wf,
+        "steps": steps,
+        "apparatus_objects": apparatus_objects,
+        "thumbnail_path": thumbnail,
+    })
 
 
 @router.get("")

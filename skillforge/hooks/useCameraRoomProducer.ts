@@ -87,8 +87,8 @@ export function useCameraRoomProducer({
     if (!base64) return;
     try {
       ws.send(JSON.stringify({ type: "frame", data: base64, ts: Date.now() }));
-    } catch {
-      // send failed
+    } catch (err) {
+      console.warn("[CameraRoom] Frame send failed — connection may have dropped:", err);
     }
   }, [videoRef]);
 
@@ -135,7 +135,8 @@ export function useCameraRoomProducer({
             if (intervalRef.current) return;
             intervalRef.current = setInterval(captureAndSend, 1000 / targetFps);
           }, 400);
-        } catch {
+        } catch (err) {
+          console.warn("[CameraRoom] Failed to send producer role:", err);
           setConnectionStatus("error");
         }
       };

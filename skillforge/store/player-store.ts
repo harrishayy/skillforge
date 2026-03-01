@@ -7,6 +7,8 @@ interface PlayerStore {
   currentTimeMs: number;
   isPlaying: boolean;
   isPausedAtStepEnd: boolean;
+  /** 0-1 float representing video progress within the current step. */
+  stepProgress: number;
   chatHistory: ChatMessage[];
   isCopilotLoading: boolean;
   currentInstruction: string;
@@ -15,6 +17,7 @@ interface PlayerStore {
   setCurrentTimeMs: (ms: number) => void;
   setIsPlaying: (v: boolean) => void;
   setIsPausedAtStepEnd: (v: boolean) => void;
+  setStepProgress: (v: number) => void;
   addChatMessage: (msg: ChatMessage) => void;
   updateLastAssistantMessage: (chunk: string) => void;
   setIsCopilotLoading: (v: boolean) => void;
@@ -27,6 +30,7 @@ const initialState = {
   currentTimeMs: 0,
   isPlaying: false,
   isPausedAtStepEnd: false,
+  stepProgress: 0,
   chatHistory: [] as ChatMessage[],
   isCopilotLoading: false,
   currentInstruction: "",
@@ -39,6 +43,7 @@ export const usePlayerStore = create<PlayerStore>((set) => ({
   setCurrentTimeMs: (ms) => set({ currentTimeMs: ms }),
   setIsPlaying: (v) => set({ isPlaying: v }),
   setIsPausedAtStepEnd: (v) => set({ isPausedAtStepEnd: v }),
+  setStepProgress: (v) => set({ stepProgress: v }),
   setCurrentInstruction: (s) => set({ currentInstruction: s }),
 
   addChatMessage: (msg) =>

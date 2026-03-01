@@ -36,3 +36,7 @@ export function showErrorToast(error: unknown) {
         : "An unknown error occurred";
   useToastStore.getState().push(msg);
 }
+
+export function showSuccessToast(message: string) {
+  useToastStore.getState().push(message);
+}

@@ -24,7 +24,7 @@ cp .env.example .env
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `DATABASE_URL` | No | *(SQLite)* | Neon PostgreSQL connection string. When unset, a local `skillforge.db` SQLite file is used |
+| `DATABASE_URL` | **Yes** | — | Neon PostgreSQL connection string (`postgresql://...`) |
 
 Example:
 
@@ -43,15 +43,17 @@ Setup details: [API Server Setup — Database](api-server-setup.md#database)
 
 ### ML Inference Servers
 
-All ML server URLs are optional. Without them, the system degrades gracefully — Claude Vision handles detection tasks, and segmentation is skipped.
+All ML server URLs are optional. Without them, the system degrades gracefully — Claude Vision handles detection tasks, segmentation is skipped, and speech recognition falls back to the browser Web Speech API.
 
 | Variable | Service | Expected Endpoint | Description |
 |---|---|---|---|
+| `SAM3_URL` | SAM 3 | `POST /segment` | Concept segmentation from text or box prompt (Brev GPU, port 8080 → local 8090) |
+| `ASR_URL` | Parakeet TDT 1.1B | `POST /transcribe` | Speech recognition / transcription (Brev GPU, port 8081 → local 8091) |
+| `NEMOTRON_URL` | Nemotron Nano 12B VL | `POST /v1/chat/completions` | Vision-language frame analysis (Brev GPU, port 8082 → local 8092) |
 | `GROUNDING_DINO_URL` | Grounding DINO 1.5 | `POST /predict` | Open-vocabulary object detection via text prompt |
 | `SAM2_URL` | SAM 2 | `POST /segment` | Object segmentation from bounding box |
-| `SAM3_URL` | SAM 3 | `POST /segment` | Concept segmentation from text or box prompt (remote GPU) |
 
-SAM 3 deployment details: [SAM 3 GPU Deployment](sam3-gpu-deployment.md)
+Port forwarding and setup: [GPU Services Setup](gpu-services-setup.md). SAM 3 deployment details: [SAM 3 GPU Deployment](sam3-gpu-deployment.md)
 
 ---
 
@@ -87,4 +89,4 @@ To run SkillForge with the least configuration:
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Everything else uses local fallbacks (SQLite, local file storage, Claude Vision for detection). No cloud infrastructure required.
+Everything else uses local fallbacks (local file storage, Claude Vision for detection). No cloud infrastructure required beyond Neon.

@@ -23,7 +23,9 @@ export function useWorkflowSocket(
         try {
           const event = JSON.parse(e.data) as PipelineEvent;
           onEventRef.current(event);
-        } catch {}
+        } catch (err) {
+          console.warn("[WorkflowSocket] Received malformed JSON from pipeline WebSocket:", err);
+        }
       };
 
       ws.onclose = (e) => {

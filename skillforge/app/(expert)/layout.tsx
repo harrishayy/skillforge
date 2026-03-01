@@ -3,9 +3,9 @@ import Link from "next/link";
 
 export default function ExpertLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen" style={{ backgroundColor: "var(--sf-white)", color: "var(--sf-black)" }}>
+    <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: "var(--sf-white)", color: "var(--sf-black)" }}>
       <nav
-        className="flex items-center gap-6 px-6 py-3 border-b"
+        className="shrink-0 flex items-center gap-6 px-6 py-3 border-b"
         style={{ backgroundColor: "var(--sf-black)", borderColor: "#222" }}
       >
         <Link
@@ -44,7 +44,7 @@ export default function ExpertLayout({ children }: { children: React.ReactNode }
           </span>
         </div>
       </nav>
-      {children}
+      <main className="flex-1 min-h-0 overflow-hidden">{children}</main>
     </div>
   );
 }

@@ -91,8 +91,8 @@ export function useLiveDetect({
           timestamp_ms: Date.now(),
         })
       );
-    } catch {
-      // non-fatal
+    } catch (err) {
+      console.warn("[LiveDetect] Frame send failed — connection may have dropped:", err);
     }
   }, [videoRef]);
 
@@ -125,8 +125,8 @@ export function useLiveDetect({
         ) {
           onResultRef.current(data as DetectionResult);
         }
-      } catch {
-        // ignore parse errors
+      } catch (err) {
+        console.warn("[LiveDetect] Malformed WebSocket response:", err);
       }
     };
 

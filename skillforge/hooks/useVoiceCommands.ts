@@ -29,6 +29,7 @@ interface UseVoiceCommandsOptions {
 
 const LLM_THROTTLE_MS = 2500;
 const CHUNK_DURATION_MS = 2000;
+const ASR_FAIL_THRESHOLD = 3;
 
 export type VoiceStatus = "off" | "starting" | "listening" | "unavailable";
 
@@ -43,8 +44,11 @@ export function useVoiceCommands({
   audioStream = null,
 }: UseVoiceCommandsOptions) {
   const transcriptRef = useRef<string>("");
+  const stepTranscriptRef = useRef<string>("");
   const [isListening, setIsListening] = useState(false);
   const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
+  const [fallbackActive, setFallbackActive] = useState(false);
+  const asrFailCountRef = useRef(0);
 
   const onNextStepRef = useRef(onNextStep);
   const onFinishRef = useRef(onFinish);
@@ -57,6 +61,8 @@ export function useVoiceCommands({
   useEffect(() => { onFinishRef.current = onFinish; }, [onFinish]);
   useEffect(() => { onPreviousStepRef.current = onPreviousStep; }, [onPreviousStep]);
 
+  const effectiveSource = fallbackActive ? "browser" : transcriptionSource;
+
   useEffect(() => {
     if (!enabled) {
       setIsListening(false);
@@ -64,7 +70,7 @@ export function useVoiceCommands({
     }
 
     let active = true;
-    let stepTranscript = "";
+    stepTranscriptRef.current = "";
 
     // ── Shared intent matcher (used by both modes) ─────────────────────────
     const runMatcher = (check: string, hasFinal: boolean) => {
@@ -100,14 +106,14 @@ export function useVoiceCommands({
       else if (intent === "prev") onPreviousStepRef.current?.();
       else if (intent === "finish") onFinishRef.current();
 
-      stepTranscript = "";
+      stepTranscriptRef.current = "";
       transcriptRef.current = "";
     };
 
     // ── Server ASR mode (Brev-hosted Parakeet CTC 1.1B) ───────────────────
-    if (transcriptionSource === "server") {
+    if (effectiveSource === "server") {
       if (!audioStream || !audioStream.active) {
-        setUnavailableReason(null);
+        setUnavailableReason("No audio stream available for server transcription");
         return;
       }
       setUnavailableReason(null);
@@ -133,12 +139,20 @@ export function useVoiceCommands({
             const blob = new Blob(chunks, { type: mimeType });
             try {
               const transcript = await transcribeAudio(blob);
+              asrFailCountRef.current = 0;
               if (!active || !transcript) return;
-              stepTranscript += transcript + " ";
-              transcriptRef.current = stepTranscript;
+              stepTranscriptRef.current += transcript + " ";
+              transcriptRef.current = stepTranscriptRef.current;
               runMatcher(transcript, true);
             } catch {
-              // Individual chunk failures are non-fatal; next chunk will retry
+              asrFailCountRef.current += 1;
+              if (asrFailCountRef.current >= ASR_FAIL_THRESHOLD && active) {
+                console.warn(
+                  `[ASR] ${ASR_FAIL_THRESHOLD} consecutive failures — falling back to browser Speech API`,
+                );
+                showErrorToast("Server ASR unavailable, switching to browser speech recognition");
+                setFallbackActive(true);
+              }
             }
           };
 
@@ -147,6 +161,7 @@ export function useVoiceCommands({
           setIsListening(true);
         } catch (err) {
           console.warn("[ASR] MediaRecorder failed:", err);
+          showErrorToast("Voice recording failed. Your browser may not support MediaRecorder.");
           setUnavailableReason("MediaRecorder not supported for audio");
         }
       };
@@ -165,7 +180,7 @@ export function useVoiceCommands({
         active = false;
         clearInterval(timer);
         if (currentRecorder?.state === "recording") {
-          try { currentRecorder.stop(); } catch { /* cleanup */ }
+          try { currentRecorder.stop(); } catch (err) { console.warn("[ASR] Cleanup: MediaRecorder.stop() failed:", err); }
         }
         setIsListening(false);
       };
@@ -175,6 +190,7 @@ export function useVoiceCommands({
     if (typeof window !== "undefined" && !window.isSecureContext) {
       setUnavailableReason("Voice commands require localhost or HTTPS. Open http://localhost:3000 instead.");
       console.warn("[VoiceCommands] Blocked: page is not a secure context. Use http://localhost:3000");
+      showErrorToast("Voice commands unavailable — HTTPS is required. Use ngrok for secure access or open http://localhost:3000.");
       return;
     }
 
@@ -193,7 +209,7 @@ export function useVoiceCommands({
 
     recognition.onend = () => {
       if (active) {
-        try { recognition.start(); } catch {}
+        try { recognition.start(); } catch (err) { console.warn("[VoiceCommands] SpeechRecognition restart failed:", err); }
       }
     };
 
@@ -217,32 +233,33 @@ export function useVoiceCommands({
         const isFinal = event.results[i].isFinal;
         if (isFinal) {
           final += text + " ";
-          stepTranscript += text + " ";
+          stepTranscriptRef.current += text + " ";
           hasFinal = true;
         }
       }
 
-      transcriptRef.current = stepTranscript;
+      transcriptRef.current = stepTranscriptRef.current;
 
       if (hasFinal) runMatcher(final.trim(), true);
     };
 
     const timer = setTimeout(() => {
       if (!active) return;
-      try { recognition.start(); } catch {}
+      try { recognition.start(); } catch (err) { console.warn("[VoiceCommands] SpeechRecognition initial start failed:", err); }
     }, 120);
 
     return () => {
       active = false;
       clearTimeout(timer);
-      try { recognition.stop(); } catch {}
+      try { recognition.stop(); } catch (err) { console.warn("[VoiceCommands] SpeechRecognition cleanup stop failed:", err); }
       setIsListening(false);
     };
-  }, [enabled, useFuzzy, useLLMFallback, transcriptionSource, audioStream]);
+  }, [enabled, useFuzzy, useLLMFallback, effectiveSource, audioStream, fallbackActive]);
 
   const snapshotTranscript = useCallback((): string => {
     const t = transcriptRef.current.trim();
     transcriptRef.current = "";
+    stepTranscriptRef.current = "";
     return t;
   }, []);
 
@@ -254,5 +271,5 @@ export function useVoiceCommands({
         ? "listening"
         : "starting";
 
-  return { isListening, snapshotTranscript, status, unavailableReason };
+  return { isListening, snapshotTranscript, status, unavailableReason, fallbackActive };
 }

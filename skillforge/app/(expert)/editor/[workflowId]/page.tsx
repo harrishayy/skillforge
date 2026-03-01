@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { getWorkflow, publishWorkflow, unpublishWorkflow } from "@/lib/api-client";
@@ -9,6 +9,7 @@ import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { StepList } from "@/components/editor/StepList";
 import { StepFrameViewer } from "@/components/editor/StepFrameViewer";
 import { StepDetailPanel } from "@/components/editor/StepDetailPanel";
+import { PipelineStatus } from "@/components/recording/PipelineStatus";
 import { Spinner } from "@/components/ui/Spinner";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -60,9 +61,18 @@ export default function EditorPage() {
       .finally(() => setIsLoading(false));
   }, [workflowId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const handlePipelineComplete = useCallback(() => {
+    getWorkflow(workflowId)
+      .then((wf) => {
+        setWorkflow(wf);
+        if (wf.steps.length > 0 && !selectedStepId) selectStep(wf.steps[0].id);
+      })
+      .catch((e) => { showErrorToast(e); setError(e.message); });
+  }, [workflowId, selectedStepId, setWorkflow, selectStep]);
+
   if (isLoading) {
     return (
-      <div className="h-screen flex items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
+      <div className="h-full flex items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
         <span style={{ color: "var(--sf-purple)" }}><Spinner className="w-8 h-8" /></span>
       </div>
     );
@@ -70,7 +80,7 @@ export default function EditorPage() {
 
   if (error || !workflow) {
     return (
-      <div className="h-screen flex items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
+      <div className="h-full flex items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
         <div className="text-center">
           <p className="mb-4" style={{ color: "var(--sf-orange)" }}>{error ?? "Workflow not found"}</p>
           <Link href="/workflows">
@@ -81,8 +91,16 @@ export default function EditorPage() {
     );
   }
 
+  if (workflow.status === "processing") {
+    return (
+      <div className="h-full flex flex-col items-center justify-center" style={{ backgroundColor: "var(--sf-black)" }}>
+        <PipelineStatus workflowId={workflowId} onComplete={handlePipelineComplete} />
+      </div>
+    );
+  }
+
   return (
-    <div className="h-screen flex flex-col overflow-hidden" style={{ backgroundColor: "var(--sf-black)" }}>
+    <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: "var(--sf-black)" }}>
       {/* Header */}
       <div
         className="flex items-center gap-4 px-6 py-3 shrink-0"
@@ -118,7 +136,7 @@ export default function EditorPage() {
             {isPublishing ? "..." : workflow.published ? "Unpublish" : "Publish"}
           </Button>
         )}
-        <Link href={`/learn/${workflow.id}`}>
+        <Link href={`/editor/${workflow.id}/preview`}>
           <Button size="sm">Preview as Trainee →</Button>
         </Link>
       </div>

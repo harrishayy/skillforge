@@ -2,22 +2,31 @@
 HARDWARE (webcam/guided) WORKFLOW PIPELINE — processes per-step video segments.
 
 Each step arrives as its own video file. The pipeline:
-  1. Extracts key frames from each step video
-  2. Uses Claude to generate titles and descriptions per step
-  3. Runs multi-agent key object analysis:
-     a. Claude identifies the key object from step context
-     b. Nemotron VL scans ALL frames for object presence
-     c. SAM3 segments the object in frames where it was found
+  1. (Optional) Runs apparatus showcase analysis to build object catalog
+  2. Extracts key frames from each step video
+  3. Uses Claude to generate titles and descriptions per step
+  4. Runs multi-agent key object analysis with persistent memory:
+     a. Builds context chain (apparatus catalog + previous steps)
+     b. Claude identifies N target objects per step
+     c. Nemotron VL scans ALL frames for each target object
+     d. SAM3 segments each object in its positive frames
+  5. Writes step context back to the memory layer for downstream steps
 
 Called as a FastAPI BackgroundTask from routers/recording.py (upload-steps endpoint).
 """
 import os
+import re
 import json
 from pathlib import Path
-from models.database import execute, fetchall, new_id, now_ms
-from websockets.pipeline_ws import broadcast
+from models.database import execute, fetchone, new_id, now_ms
+from app_ws.pipeline_ws import broadcast
 from services.video_processor import extract_frames, get_video_duration_ms
-from services.key_object_pipeline import run_key_object_analysis
+from services.key_object_pipeline import run_key_object_analysis_multi
+from services.memory_layer import (
+    build_step_context,
+    save_step_context,
+    update_context_with_observations,
+)
 
 UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
 
@@ -48,6 +57,8 @@ async def run_hardware_pipeline(
     step_video_paths: list[str],
     step_transcripts: list[str],
     step_notes: list[str] | None = None,
+    client_durations: list[int] | None = None,
+    apparatus_video_path: str | None = None,
 ):
     """
     Process per-step video segments for a hardware/webcam guided recording.
@@ -56,13 +67,30 @@ async def run_hardware_pipeline(
     step_notes = step_notes or []
     total_steps = len(step_video_paths)
 
-    # Fetch workflow-level context for the multi-agent pipeline
     wf = await execute_fetch_workflow(workflow_id)
     wf_title = wf.get("title", "") if wf else ""
     wf_description = wf.get("description", "") if wf else ""
 
     try:
-        await _log(workflow_id, "frame_extraction", f"Processing {total_steps} step videos...", 2)
+        # ── Apparatus showcase analysis (if video provided) ──────────────
+        if apparatus_video_path:
+            await _log(workflow_id, "frame_extraction", "Analyzing apparatus showcase...", 1)
+            try:
+                from services.apparatus_pipeline import run_apparatus_analysis
+                apparatus_objects = await run_apparatus_analysis(
+                    workflow_id=workflow_id,
+                    apparatus_video_path=apparatus_video_path,
+                    on_progress=lambda msg, pct: _log(workflow_id, "frame_extraction", msg, max(1, min(pct // 5, 4))),
+                )
+                await _log(
+                    workflow_id, "frame_extraction",
+                    f"Apparatus catalog: {len(apparatus_objects)} objects identified", 5,
+                )
+            except Exception as e:
+                print(f"[HardwarePipeline] Apparatus analysis failed: {e}", flush=True)
+                await _log(workflow_id, "frame_extraction", f"Apparatus analysis failed — continuing without catalog", 5)
+
+        await _log(workflow_id, "frame_extraction", f"Processing {total_steps} step videos...", 5)
 
         total_duration_ms = 0
         step_data: list[dict] = []
@@ -80,6 +108,10 @@ async def run_hardware_pipeline(
 
             frames = await extract_frames(video_path, workflow_id, on_progress=None)
             duration_ms = get_video_duration_ms(video_path)
+            if duration_ms == 0 and frames:
+                duration_ms = frames[-1]["timestamp_ms"]
+            if duration_ms == 0 and client_durations and i < len(client_durations):
+                duration_ms = client_durations[i]
             total_duration_ms += duration_ms
 
             mid_ms = duration_ms // 2
@@ -102,40 +134,48 @@ async def run_hardware_pipeline(
         )
         await _log(workflow_id, "frame_extraction", "Frame extraction complete", 35)
 
-        # ── Claude step annotation ────────────────────────────────────────────
+        # ── Claude step annotation ────────────────────────────────────────
         await _log(workflow_id, "claude_decompose", "Generating step titles and annotations...", 40)
 
         steps_created = 0
+        workflow_offset_ms = 0
         for sd in step_data:
             step_num = sd["step_number"]
             pct = 40 + int((step_num / total_steps) * 15)
 
             title, description, ai_summary = await _generate_step_metadata(
                 sd["transcript"], step_num, sd["note"],
+                total_steps=total_steps,
+                workflow_title=wf_title,
+                workflow_description=wf_description,
             )
 
             step_id = new_id()
             ts = now_ms()
             key_frame_path = sd["key_frame"]["relative_path"] if sd["key_frame"] else None
 
+            wf_start = workflow_offset_ms
+            wf_end = workflow_offset_ms + sd["duration_ms"]
+
             await execute(
                 """INSERT INTO steps
                    (id, workflow_id, step_number, title, description,
-                    start_ms, end_ms, key_frame_path, video_path,
+                    start_ms, end_ms, workflow_start_ms, workflow_end_ms,
+                    key_frame_path, video_path,
                     ai_description, transcript, note,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     step_id, workflow_id, step_num, title, description,
-                    0, sd["duration_ms"],
+                    wf_start, wf_end, wf_start, wf_end,
                     key_frame_path, sd["relative_video_path"],
                     ai_summary, sd["transcript"], sd["note"],
                     ts, ts,
                 ),
             )
+            workflow_offset_ms = wf_end
             steps_created += 1
 
-            # Store all extracted frames in step_frames table
             key_frame_rel = sd["key_frame"]["relative_path"] if sd["key_frame"] else None
             frame_id_map: dict[str, str] = {}
             for frm in sd["frames"]:
@@ -153,75 +193,129 @@ async def run_hardware_pipeline(
                     ),
                 )
 
-            # ── Multi-agent key object analysis ───────────────────────────────
+            # ── Multi-agent key object analysis with memory context ───────
             if sd["frames"]:
                 await _log(
                     workflow_id, "nemotron_vl",
-                    f"Step {step_num}: Running key object detection...",
+                    f"Step {step_num}: Running multi-object detection...",
                     55 + int((step_num / total_steps) * 30),
                 )
 
                 try:
+                    context = await build_step_context(workflow_id, step_num)
+
                     frame_paths = [frm["path"] for frm in sd["frames"]]
-                    analysis = await run_key_object_analysis(
+                    analysis = await run_key_object_analysis_multi(
                         frame_paths=frame_paths,
                         step_title=title,
                         step_description=description,
                         transcript=sd["transcript"],
                         note=sd["note"],
-                        workflow_title=wf_title,
-                        workflow_description=wf_description,
+                        context=context,
                     )
 
-                    # Store sam3_prompt from Claude's key object identification
-                    key_obj = analysis["key_object"]
-                    sam3_prompt = key_obj.get("sam3_prompt", "")
+                    target_objects = analysis["target_objects"]
+                    primary_obj = next(
+                        (o for o in target_objects if o["role"] == "primary"),
+                        target_objects[0] if target_objects else {"label": title, "sam3_prompt": title},
+                    )
+
+                    sam3_prompt = primary_obj.get("sam3_prompt", "")
                     if sam3_prompt:
                         await execute(
                             "UPDATE steps SET sam3_prompt=? WHERE id=?",
                             (sam3_prompt, step_id),
                         )
 
-                    # Update step_frames with per-frame detection results
-                    for detection in analysis["frame_detections"]:
-                        fpath = detection["frame_path"]
-                        fid = frame_id_map.get(fpath)
-                        if fid:
-                            await execute(
-                                "UPDATE step_frames SET object_detected=?, object_description=? WHERE id=?",
-                                (
-                                    1 if detection["present"] else 0,
-                                    detection.get("description", ""),
-                                    fid,
-                                ),
-                            )
+                    all_frame_detections = []
+                    for label, detections in analysis["detection_results"].items():
+                        for det in detections:
+                            all_frame_detections.append(det)
+                            fpath = det["frame_path"]
+                            fid = frame_id_map.get(fpath)
+                            if fid and det["present"]:
+                                await execute(
+                                    "UPDATE step_frames SET object_detected=?, object_description=? WHERE id=?",
+                                    (1, det.get("description", ""), fid),
+                                )
 
                     # Store SAM3 segmentation results as click_targets
+                    import base64 as b64mod
+                    from services.sam3_service import generate_segmented_image
+
+                    masks_dir = UPLOADS_DIR / workflow_id / "masks" / step_id
+                    masks_dir.mkdir(parents=True, exist_ok=True)
+
+                    seg_by_frame: dict[str, list[dict]] = {}
                     for seg_result in analysis["segmentations"]:
+                        seg_frame_abs = seg_result.get("frame_path", "")
+                        seg_frame_rel = str(Path(seg_frame_abs).relative_to(UPLOADS_DIR.parent)) if seg_frame_abs else None
+
+                        if seg_frame_abs:
+                            seg_by_frame.setdefault(seg_frame_abs, []).extend(seg_result["segments"])
+
                         for seg in seg_result["segments"]:
                             bbox = seg.get("bbox", [0, 0, 0, 0])
                             ct_id = new_id()
+                            seg_label = seg.get("label", primary_obj.get("label", title))
+                            seg_role = seg.get("role", "primary")
+                            is_primary = 1 if seg_role == "primary" else 0
+
+                            mask_path = None
+                            mask_b64 = seg.get("mask_base64")
+                            if mask_b64:
+                                mask_file = masks_dir / f"{ct_id}.png"
+                                mask_file.write_bytes(b64mod.b64decode(mask_b64))
+                                mask_path = str(mask_file.relative_to(UPLOADS_DIR.parent))
+
                             await execute(
                                 """INSERT INTO click_targets
                                    (id, step_id, element_text, element_type,
                                     bbox_x, bbox_y, bbox_width, bbox_height,
-                                    action, confidence, is_primary)
-                                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                                    action, confidence, is_primary, mask_path, frame_path, role)
+                                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                 (
                                     ct_id, step_id,
-                                    key_obj.get("key_object", title),
-                                    key_obj.get("object_type", "other"),
+                                    seg_label,
+                                    primary_obj.get("object_type", "other"),
                                     bbox[0] * 100, bbox[1] * 100,
                                     (bbox[2] - bbox[0]) * 100, (bbox[3] - bbox[1]) * 100,
-                                    "left_click", seg.get("score", 0), 0,
+                                    "left_click", seg.get("score", 0), is_primary,
+                                    mask_path, seg_frame_rel, seg_role,
                                 ),
                             )
 
-                    pos = analysis["positive_frame_count"]
-                    tot = analysis["total_frame_count"]
+                    seg_dir = UPLOADS_DIR / workflow_id / "segmented" / step_id
+                    for frame_abs, segs in seg_by_frame.items():
+                        fid = frame_id_map.get(frame_abs)
+                        if not fid or not segs:
+                            continue
+                        out_file = seg_dir / f"{fid}.jpg"
+                        result_path = generate_segmented_image(
+                            frame_abs, segs, str(out_file),
+                        )
+                        if result_path:
+                            seg_rel = str(Path(result_path).relative_to(UPLOADS_DIR.parent))
+                            await execute(
+                                "UPDATE step_frames SET segmented_frame_path=? WHERE id=?",
+                                (seg_rel, fid),
+                            )
+
+                    # ── Context writeback to memory layer ─────────────────
+                    await update_context_with_observations(
+                        workflow_id=workflow_id,
+                        step_number=step_num,
+                        objects_identified=target_objects,
+                        frame_observations=all_frame_detections,
+                        new_observations=ai_summary or "",
+                    )
+
+                    total_pos = sum(analysis["positive_frame_counts"].values())
+                    total_frames = analysis["total_frame_count"]
+                    obj_names = ", ".join(f'"{o["label"]}"' for o in target_objects)
                     await _log(
                         workflow_id, "nemotron_vl",
-                        f'Step {step_num}: "{key_obj["key_object"]}" found in {pos}/{tot} frames',
+                        f"Step {step_num}: {obj_names} — {total_pos} detections across {total_frames} frames",
                         55 + int((step_num / total_steps) * 35),
                     )
 
@@ -240,8 +334,10 @@ async def run_hardware_pipeline(
                     "step_number": step_num,
                     "title": title,
                     "description": description,
-                    "start_ms": 0,
-                    "end_ms": sd["duration_ms"],
+                    "start_ms": wf_start,
+                    "end_ms": wf_end,
+                    "workflow_start_ms": wf_start,
+                    "workflow_end_ms": wf_end,
                     "key_frame_path": key_frame_path,
                     "video_path": sd["relative_video_path"],
                 },
@@ -253,7 +349,7 @@ async def run_hardware_pipeline(
                 55 + int((step_num / total_steps) * 35),
             )
 
-        # ── Finalize ──────────────────────────────────────────────────────────
+        # ── Finalize ──────────────────────────────────────────────────────
         await execute(
             "UPDATE workflows SET status='ready', total_steps=?, updated_at=? WHERE id=?",
             (steps_created, now_ms(), workflow_id),
@@ -299,6 +395,9 @@ async def _generate_step_metadata(
     transcript: str,
     step_number: int,
     note: str = "",
+    total_steps: int = 0,
+    workflow_title: str = "",
+    workflow_description: str = "",
 ) -> tuple[str, str, str]:
     """
     Use Claude to generate a concise title, imperative description, and
@@ -320,20 +419,45 @@ async def _generate_step_metadata(
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
 
-        user_content = f"Step {step_number} transcript: \"{transcript}\""
+        user_content = ""
+        if workflow_title:
+            user_content += f'Workflow: "{workflow_title}"'
+            if workflow_description:
+                user_content += f"\nWorkflow description: {workflow_description}"
+            user_content += "\n\n"
+        if total_steps > 0:
+            user_content += f"This is step {step_number} of {total_steps}.\n"
+        user_content += f'Expert transcript (speech-to-text, may contain errors): "{transcript}"'
         if note.strip():
-            user_content += f"\nExpert note: \"{note.strip()}\""
+            user_content += f'\nExpert note (manually typed, reliable): "{note.strip()}"'
         user_content += "\n\nGenerate the title, description, and summary JSON."
 
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=400,
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
             system=(
-                "You generate concise step metadata for a tutorial. "
-                "Reply ONLY with valid JSON: {\"title\": \"...\", \"description\": \"...\", \"summary\": \"...\"}\n"
-                "Title: max 8 words, no step number prefix.\n"
-                "Description: direct imperative instruction starting with a verb.\n"
-                "Summary: 1-2 sentence overview of what happens in this step, combining the transcript context and any expert notes."
+                "You generate step metadata for a hands-on tutorial/workflow. "
+                "The input comes from an expert recording themselves performing a task. "
+                "The transcript is from speech-to-text and may contain ASR artifacts "
+                "(misheard words, missing punctuation, filler words like 'um', 'uh', 'so'). "
+                "Expert notes, when present, are typed manually and should be treated as more reliable than the transcript.\n\n"
+                "Reply ONLY with valid JSON (no markdown fences):\n"
+                '{"title": "...", "description": "...", "summary": "..."}\n\n'
+                "TITLE rules:\n"
+                "- Max 8 words. No step number prefix (e.g. NOT 'Step 1: ...').\n"
+                "- Use a clear noun phrase or short verb phrase that names the action.\n"
+                "- Focus on WHAT is being done, not HOW (e.g. 'Attach the ground wire' not 'Use pliers to grab wire').\n"
+                "- If the transcript is too vague to extract a meaningful title, use the expert note or workflow context.\n\n"
+                "DESCRIPTION rules:\n"
+                "- 1-2 sentences, imperative mood, starting with a verb.\n"
+                "- Written for the trainee: tell them exactly what to do and any critical details (tool, location, direction, force).\n"
+                "- Include safety callouts if the expert mentions them.\n"
+                "- Do NOT parrot the transcript verbatim — clean up, clarify, and distill.\n\n"
+                "SUMMARY rules:\n"
+                "- 1-3 sentences combining ALL available context (transcript + notes + workflow context).\n"
+                "- Objective narration of what the expert does and why.\n"
+                "- Mention specific tools, parts, or settings referenced by the expert.\n"
+                "- If the transcript is very short or unclear, say so briefly rather than inventing detail."
             ),
             messages=[{
                 "role": "user",
@@ -342,12 +466,24 @@ async def _generate_step_metadata(
         )
 
         text = response.content[0].text.strip()
-        data = json.loads(text)
-        return (
-            data.get("title", f"Step {step_number}"),
-            data.get("description", transcript.strip()),
-            data.get("summary", ""),
-        )
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        json_match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not json_match:
+            raise ValueError(f"No JSON object in Claude response: {text[:200]}")
+        data = json.loads(json_match.group())
+
+        title = (data.get("title") or "").strip()
+        description = (data.get("description") or "").strip()
+        summary = (data.get("summary") or "").strip()
+
+        if not title or len(title) < 3:
+            title = f"Step {step_number}"
+        if not description:
+            description = transcript.strip() or f"Perform step {step_number}"
+
+        return (title, description, summary)
+
     except Exception as e:
         print(f"[HardwarePipeline] Claude metadata generation failed: {e}")
         title = transcript.strip()[:60] or f"Step {step_number}"

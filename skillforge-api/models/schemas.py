@@ -84,6 +84,12 @@ class SegmentPointRequest(BaseModel):
     existing_segments: list[dict] = Field(default_factory=list)
 
 
+class RerunPipelineRequest(BaseModel):
+    run_claude: bool = True
+    run_nemotron: bool = True
+    run_sam3: bool = True
+
+
 class CopilotChatRequest(BaseModel):
     workflow_id: str
     step_id: str
@@ -132,6 +138,8 @@ class ClickTargetResponse(BaseModel):
     action: str
     confidence: Optional[float] = None
     is_primary: bool
+    mask_path: Optional[str] = None
+    frame_path: Optional[str] = None
 
 
 class StepFrameResponse(BaseModel):
@@ -152,6 +160,8 @@ class StepResponse(BaseModel):
     description: Optional[str] = None
     start_ms: int
     end_ms: int
+    workflow_start_ms: int = 0
+    workflow_end_ms: int = 0
     key_frame_path: Optional[str] = None
     video_path: Optional[str] = None
     ai_description: Optional[str] = None

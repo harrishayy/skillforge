@@ -4,7 +4,7 @@ import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from models.database import fetchall
-from websockets.pipeline_ws import register, unregister, broadcast
+from app_ws.pipeline_ws import register, unregister, broadcast
 
 router = APIRouter(tags=["pipeline"])
 

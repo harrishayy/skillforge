@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File
 from models.database import fetchone, fetchall, execute, execute_many, new_id, now_ms
 from models.schemas import (
     StepCreateRequest,
@@ -7,6 +7,7 @@ from models.schemas import (
     ClickTargetCreateRequest,
     RegenerateStepRequest,
     SegmentPointRequest,
+    RerunPipelineRequest,
 )
 
 router = APIRouter(tags=["editor"])
@@ -369,6 +370,176 @@ async def segment_point_on_frame(step_id: str, body: SegmentPointRequest):
     return {"segments": result["segments"], "frame_path": kf_path}
 
 
+# ─── Review: Rerun multi-agent pipeline for a single step ────────────────────
+
+@router.post("/api/steps/{step_id}/rerun-pipeline")
+async def rerun_step_pipeline(step_id: str, body: RerunPipelineRequest):
+    """Re-run configurable agents (Claude / Nemotron / SAM3) for a single step."""
+    from pathlib import Path
+    from services.key_object_pipeline import (
+        identify_key_object,
+        scan_frames_for_object,
+        segment_positive_frames,
+    )
+
+    step = await fetchone("SELECT * FROM steps WHERE id=?", (step_id,))
+    if not step:
+        raise HTTPException(404, "Step not found")
+
+    wf = await fetchone("SELECT * FROM workflows WHERE id=?", (step["workflow_id"],))
+    wf_title = wf["title"] if wf else ""
+    wf_description = wf.get("description", "") if wf else ""
+
+    frames = await fetchall(
+        "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms",
+        (step_id,),
+    )
+    if not frames:
+        raise HTTPException(400, "Step has no frames")
+
+    uploads_dir = Path(__file__).parent.parent
+    frame_paths = [str(uploads_dir / f["frame_path"]) for f in frames]
+    frame_id_by_path = {str(uploads_dir / f["frame_path"]): f["id"] for f in frames}
+
+    key_object = None
+
+    # Agent 1: Claude — re-identify key object
+    if body.run_claude:
+        key_object = await identify_key_object(
+            step_title=step.get("title", ""),
+            step_description=step.get("description", ""),
+            transcript=step.get("transcript", ""),
+            note=step.get("note", ""),
+            workflow_title=wf_title,
+            workflow_description=wf_description,
+        )
+        sam3_prompt = key_object.get("sam3_prompt", "")
+        if sam3_prompt:
+            await execute(
+                "UPDATE steps SET sam3_prompt=?, updated_at=? WHERE id=?",
+                (sam3_prompt, now_ms(), step_id),
+            )
+
+    # Build key_object from existing data if Claude was skipped
+    if key_object is None:
+        key_object = {
+            "key_object": step.get("title", "object"),
+            "object_type": "other",
+            "visual_cues": "",
+            "action": "",
+            "sam3_prompt": step.get("sam3_prompt", step.get("title", "object")),
+        }
+
+    # Agent 2: Nemotron — re-scan frames for object presence
+    if body.run_nemotron:
+        frame_detections = await scan_frames_for_object(
+            frame_paths, key_object,
+        )
+        for detection in frame_detections:
+            fid = frame_id_by_path.get(detection["frame_path"])
+            if fid:
+                await execute(
+                    "UPDATE step_frames SET object_detected=?, object_description=? WHERE id=?",
+                    (1 if detection["present"] else 0, detection.get("description", ""), fid),
+                )
+
+    # Agent 3: SAM3 — re-segment positive frames
+    if body.run_sam3:
+        import base64 as b64mod, shutil
+        from services.sam3_service import generate_segmented_image
+
+        # Clean up old masks and segmented images
+        await execute("DELETE FROM click_targets WHERE step_id=?", (step_id,))
+
+        masks_dir = uploads_dir / "uploads" / step["workflow_id"] / "masks" / step_id
+        if masks_dir.exists():
+            shutil.rmtree(masks_dir)
+        masks_dir.mkdir(parents=True, exist_ok=True)
+
+        seg_dir = uploads_dir / "uploads" / step["workflow_id"] / "segmented" / step_id
+        if seg_dir.exists():
+            shutil.rmtree(seg_dir)
+
+        # Clear old segmented_frame_path values
+        await execute(
+            "UPDATE step_frames SET segmented_frame_path=NULL WHERE step_id=?",
+            (step_id,),
+        )
+
+        refreshed_frames = await fetchall(
+            "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms",
+            (step_id,),
+        )
+        positive_frames = [
+            {"frame_path": str(uploads_dir / f["frame_path"])}
+            for f in refreshed_frames
+            if f.get("object_detected")
+        ]
+        frame_id_by_abs = {
+            str(uploads_dir / f["frame_path"]): f["id"]
+            for f in refreshed_frames
+        }
+
+        if positive_frames:
+            sam3_prompt = key_object.get("sam3_prompt", step.get("sam3_prompt", ""))
+            segmentations = await segment_positive_frames(positive_frames, sam3_prompt)
+
+            seg_by_frame: dict[str, list[dict]] = {}
+            for seg_result in segmentations:
+                seg_frame_abs = seg_result.get("frame_path", "")
+                seg_frame_rel = str(Path(seg_frame_abs).relative_to(uploads_dir)) if seg_frame_abs else None
+
+                if seg_frame_abs:
+                    seg_by_frame.setdefault(seg_frame_abs, []).extend(seg_result["segments"])
+
+                for seg in seg_result["segments"]:
+                    bbox = seg.get("bbox", [0, 0, 0, 0])
+                    ct_id = new_id()
+
+                    mask_path = None
+                    mask_b64 = seg.get("mask_base64")
+                    if mask_b64:
+                        mask_file = masks_dir / f"{ct_id}.png"
+                        mask_file.write_bytes(b64mod.b64decode(mask_b64))
+                        mask_path = str(mask_file.relative_to(uploads_dir))
+
+                    await execute(
+                        """INSERT INTO click_targets
+                           (id, step_id, element_text, element_type,
+                            bbox_x, bbox_y, bbox_width, bbox_height,
+                            action, confidence, is_primary, mask_path, frame_path)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            ct_id, step_id,
+                            key_object.get("key_object", step.get("title", "")),
+                            key_object.get("object_type", "other"),
+                            bbox[0] * 100, bbox[1] * 100,
+                            (bbox[2] - bbox[0]) * 100, (bbox[3] - bbox[1]) * 100,
+                            "left_click", seg.get("score", 0), 0,
+                            mask_path, seg_frame_rel,
+                        ),
+                    )
+
+            # Generate pre-rendered segmented images
+            obj_label = key_object.get("key_object", "")
+            for frame_abs, segs in seg_by_frame.items():
+                fid = frame_id_by_abs.get(frame_abs)
+                if not fid or not segs:
+                    continue
+                out_file = seg_dir / f"{fid}.jpg"
+                result_path = generate_segmented_image(
+                    frame_abs, segs, str(out_file), label=obj_label,
+                )
+                if result_path:
+                    seg_rel = str(Path(result_path).relative_to(uploads_dir))
+                    await execute(
+                        "UPDATE step_frames SET segmented_frame_path=? WHERE id=?",
+                        (seg_rel, fid),
+                    )
+
+    return await _get_step_with_frames(step_id)
+
+
 async def _read_frame_bytes(kf_path: str) -> bytes:
     """Read key frame bytes from a local path."""
     from pathlib import Path
@@ -384,13 +555,15 @@ async def _read_frame_bytes(kf_path: str) -> bytes:
 async def re_record_step(
     workflow_id: str,
     step_id: str,
+    background_tasks: BackgroundTasks,
     video: UploadFile = File(...),
 ):
-    """Replace a step's video segment and re-run analysis."""
+    """Replace a step's video segment, re-run analysis, and invalidate downstream contexts."""
     import os
     import shutil
     from pathlib import Path
     from services.video_processor import extract_frames
+    from services.memory_layer import invalidate_contexts_from
 
     wf = await fetchone("SELECT * FROM workflows WHERE id=?", (workflow_id,))
     if not wf:
@@ -416,6 +589,8 @@ async def re_record_step(
 
     await execute("DELETE FROM annotations WHERE step_id=?", (step_id,))
     await execute("DELETE FROM click_targets WHERE step_id=?", (step_id,))
+
+    invalidated = await invalidate_contexts_from(workflow_id, step["step_number"])
 
     ts = now_ms()
     await execute(
@@ -492,7 +667,131 @@ async def re_record_step(
         else:
             break
 
+    if invalidated and len(invalidated) > 1:
+        background_tasks.add_task(
+            _rebuild_downstream_contexts,
+            workflow_id,
+            step["step_number"] + 1,
+        )
+
     return await _get_step(step_id)
+
+
+# ─── Apparatus object editing ─────────────────────────────────────────────────
+
+@router.patch("/api/apparatus-objects/{object_id}")
+async def update_apparatus_object(object_id: str, body: dict):
+    """Update editable fields on an apparatus object."""
+    row = await fetchone("SELECT * FROM workflow_objects WHERE id=?", (object_id,))
+    if not row:
+        raise HTTPException(404, "Apparatus object not found")
+
+    allowed = {"object_name", "description", "visual_cues", "sam3_prompt"}
+    updates = {k: v for k, v in body.items() if k in allowed and v is not None}
+    if not updates:
+        raise HTTPException(400, "No valid fields to update")
+
+    set_clauses = ", ".join(f"{k}=${i+1}" for i, k in enumerate(updates))
+    values = list(updates.values()) + [object_id]
+    await execute(
+        f"UPDATE workflow_objects SET {set_clauses} WHERE id=${len(values)}",
+        tuple(values),
+    )
+
+    updated = await fetchone("SELECT * FROM workflow_objects WHERE id=?", (object_id,))
+    import json as _json
+    raw = updated.get("reference_frame_paths")
+    if isinstance(raw, str):
+        try:
+            updated["reference_frame_paths"] = _json.loads(raw)
+        except Exception:
+            updated["reference_frame_paths"] = []
+    elif raw is None:
+        updated["reference_frame_paths"] = []
+    return updated
+
+
+# ─── Rebuild all memories ─────────────────────────────────────────────────────
+
+@router.post("/api/workflows/{workflow_id}/rebuild-memories")
+async def rebuild_memories(workflow_id: str, background_tasks: BackgroundTasks):
+    """Invalidate all step contexts and re-run the multi-agent pipeline for every step."""
+    from services.memory_layer import invalidate_contexts_from
+
+    wf = await fetchone("SELECT * FROM workflows WHERE id=?", (workflow_id,))
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+
+    steps = await fetchall(
+        "SELECT * FROM steps WHERE workflow_id=? ORDER BY step_number",
+        (workflow_id,),
+    )
+    steps_count = len(steps)
+    if steps_count == 0:
+        return {"status": "no_steps", "steps_count": 0}
+
+    await invalidate_contexts_from(workflow_id, 1)
+    background_tasks.add_task(_rebuild_downstream_contexts, workflow_id, 1)
+
+    return {"status": "rebuilding", "steps_count": steps_count}
+
+
+# ─── Context rebuild for downstream steps after re-record ────────────────────
+
+async def _rebuild_downstream_contexts(workflow_id: str, from_step: int):
+    """
+    Re-run the multi-agent pipeline for steps from_step..N to rebuild
+    their context documents after an upstream step was re-recorded.
+    """
+    from services.memory_layer import build_step_context, update_context_with_observations
+    from services.key_object_pipeline import run_key_object_analysis_multi
+
+    steps = await fetchall(
+        "SELECT * FROM steps WHERE workflow_id=? AND step_number>=? ORDER BY step_number",
+        (workflow_id, from_step),
+    )
+    for step in steps:
+        try:
+            context = await build_step_context(workflow_id, step["step_number"])
+            frames = await fetchall(
+                "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms",
+                (step["id"],),
+            )
+            if not frames:
+                continue
+
+            from pathlib import Path
+            uploads_dir = Path(__file__).parent.parent / "uploads"
+            frame_paths = [str(uploads_dir.parent / f["frame_path"]) for f in frames]
+
+            analysis = await run_key_object_analysis_multi(
+                frame_paths=frame_paths,
+                step_title=step.get("title", ""),
+                step_description=step.get("description", ""),
+                transcript=step.get("transcript", ""),
+                note=step.get("note", ""),
+                context=context,
+            )
+
+            await update_context_with_observations(
+                workflow_id=workflow_id,
+                step_number=step["step_number"],
+                objects_identified=analysis["target_objects"],
+                frame_observations=[
+                    det for dets in analysis["detection_results"].values() for det in dets
+                ],
+                new_observations=step.get("ai_description", ""),
+            )
+
+            print(
+                f"[Editor] Rebuilt context for step {step['step_number']} in workflow {workflow_id}",
+                flush=True,
+            )
+        except Exception as e:
+            print(
+                f"[Editor] Failed to rebuild context for step {step['step_number']}: {e}",
+                flush=True,
+            )
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -504,3 +803,16 @@ async def _get_step(step_id: str) -> dict:
     for ct in click_targets:
         ct["is_primary"] = bool(ct["is_primary"])
     return {**step, "annotations": annotations, "click_targets": click_targets}
+
+
+async def _get_step_with_frames(step_id: str) -> dict:
+    step = await _get_step(step_id)
+    frames = await fetchall(
+        "SELECT * FROM step_frames WHERE step_id=? ORDER BY timestamp_ms",
+        (step_id,),
+    )
+    for f in frames:
+        f["is_key_frame"] = bool(f.get("is_key_frame", 0))
+        f["object_detected"] = bool(f.get("object_detected", 0))
+    step["frames"] = frames
+    return step

@@ -1,15 +1,15 @@
 """
 Database layer — Neon PostgreSQL via asyncpg.
 
-All query functions accept `?` placeholders which are automatically
-converted to `$1, $2, …` for PostgreSQL.
+All query functions accept `?` placeholders (converted to `$1, $2, …` for PostgreSQL).
 
-Requires DATABASE_URL to be set to a postgres:// or postgresql:// URI.
+DATABASE_URL must be set to a postgres:// or postgresql:// URI.
 """
 import os
 import re
 import uuid
 import time
+
 import asyncpg
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -41,6 +41,8 @@ _CREATE_STATEMENTS = [
     description     TEXT,
     start_ms        BIGINT NOT NULL,
     end_ms          BIGINT NOT NULL,
+    workflow_start_ms BIGINT DEFAULT 0,
+    workflow_end_ms   BIGINT DEFAULT 0,
     key_frame_path  TEXT,
     video_path      TEXT,
     ai_description  TEXT,
@@ -79,17 +81,20 @@ _CREATE_STATEMENTS = [
     bbox_height     REAL NOT NULL,
     action          TEXT DEFAULT 'left_click',
     confidence      REAL,
-    is_primary      INTEGER DEFAULT 0
+    is_primary      INTEGER DEFAULT 0,
+    mask_path       TEXT,
+    frame_path      TEXT
 )""",
     """CREATE TABLE IF NOT EXISTS step_frames (
-    id                 TEXT PRIMARY KEY,
-    step_id            TEXT NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
-    timestamp_ms       BIGINT NOT NULL,
-    frame_path         TEXT NOT NULL,
-    is_key_frame       INTEGER DEFAULT 0,
-    object_detected    INTEGER DEFAULT 0,
-    object_description TEXT,
-    created_at         BIGINT NOT NULL
+    id                    TEXT PRIMARY KEY,
+    step_id               TEXT NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
+    timestamp_ms          BIGINT NOT NULL,
+    frame_path            TEXT NOT NULL,
+    is_key_frame          INTEGER DEFAULT 0,
+    object_detected       INTEGER DEFAULT 0,
+    object_description    TEXT,
+    segmented_frame_path  TEXT,
+    created_at            BIGINT NOT NULL
 )""",
     """CREATE TABLE IF NOT EXISTS pipeline_logs (
     id          TEXT PRIMARY KEY,
@@ -99,11 +104,34 @@ _CREATE_STATEMENTS = [
     progress    INTEGER DEFAULT 0,
     created_at  BIGINT NOT NULL
 )""",
+    """CREATE TABLE IF NOT EXISTS workflow_objects (
+    id                    TEXT PRIMARY KEY,
+    workflow_id           TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    object_name           TEXT NOT NULL,
+    object_type           TEXT NOT NULL DEFAULT 'other',
+    visual_cues           TEXT,
+    sam3_prompt           TEXT,
+    angle_count           INTEGER DEFAULT 0,
+    reference_frame_paths TEXT,
+    created_at            BIGINT NOT NULL
+)""",
+    """CREATE TABLE IF NOT EXISTS step_contexts (
+    id            TEXT PRIMARY KEY,
+    workflow_id   TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    step_number   INTEGER NOT NULL,
+    context_json  TEXT NOT NULL,
+    version       INTEGER DEFAULT 1,
+    created_at    BIGINT NOT NULL,
+    updated_at    BIGINT NOT NULL,
+    UNIQUE(workflow_id, step_number)
+)""",
     "CREATE INDEX IF NOT EXISTS idx_steps_workflow ON steps(workflow_id, step_number)",
     "CREATE INDEX IF NOT EXISTS idx_annotations_step ON annotations(step_id)",
     "CREATE INDEX IF NOT EXISTS idx_click_targets_step ON click_targets(step_id)",
     "CREATE INDEX IF NOT EXISTS idx_step_frames_step ON step_frames(step_id, timestamp_ms)",
     "CREATE INDEX IF NOT EXISTS idx_pipeline_logs_workflow ON pipeline_logs(workflow_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_workflow_objects_workflow ON workflow_objects(workflow_id)",
+    "CREATE INDEX IF NOT EXISTS idx_step_contexts_workflow ON step_contexts(workflow_id, step_number)",
 ]
 
 
@@ -120,16 +148,23 @@ def _to_pg(sql: str) -> str:
     return re.sub(r"\?", replace, sql)
 
 
+def _row_to_dict(row) -> dict | None:
+    """Convert asyncpg Record to dict."""
+    if row is None:
+        return None
+    return dict(zip(row.keys(), row))
+
+
 # ── Initialisation ─────────────────────────────────────────────────────────────
 
 async def init_db():
     global _pool
-    db_url = os.environ.get("DATABASE_URL", "")
+    db_url = os.environ.get("DATABASE_URL", "").strip()
 
-    if not db_url.startswith(("postgres://", "postgresql://")):
+    if not db_url or not db_url.startswith(("postgres://", "postgresql://")):
         raise RuntimeError(
-            "DATABASE_URL must be set to a postgres:// or postgresql:// URI. "
-            "SQLite is no longer supported — use Neon PostgreSQL."
+            "DATABASE_URL must be set to a postgres:// or postgresql:// URI "
+            "(Neon PostgreSQL). See docs/environment-variables.md."
         )
 
     _pool = await asyncpg.create_pool(
@@ -162,38 +197,51 @@ async def _run_migrations(conn):
         "ALTER TABLE pipeline_logs ALTER COLUMN created_at TYPE BIGINT",
         "ALTER TABLE step_frames ADD COLUMN IF NOT EXISTS object_detected INTEGER DEFAULT 0",
         "ALTER TABLE step_frames ADD COLUMN IF NOT EXISTS object_description TEXT",
+        "ALTER TABLE click_targets ADD COLUMN IF NOT EXISTS mask_path TEXT",
+        "ALTER TABLE click_targets ADD COLUMN IF NOT EXISTS frame_path TEXT",
+        "ALTER TABLE steps ADD COLUMN IF NOT EXISTS workflow_start_ms BIGINT DEFAULT 0",
+        "ALTER TABLE steps ADD COLUMN IF NOT EXISTS workflow_end_ms BIGINT DEFAULT 0",
+        "ALTER TABLE step_frames ADD COLUMN IF NOT EXISTS segmented_frame_path TEXT",
+        "ALTER TABLE steps ADD COLUMN IF NOT EXISTS is_apparatus_step INTEGER DEFAULT 0",
+        "ALTER TABLE click_targets ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'primary'",
+        "ALTER TABLE workflow_objects ADD COLUMN IF NOT EXISTS description TEXT",
+        "ALTER TABLE workflow_objects ADD COLUMN IF NOT EXISTS segmented_reference_path TEXT",
     ]
     for sql in migrations:
         try:
             await conn.execute(sql)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[DB] Migration skipped ({sql[:60]}...): {e} — this is expected if the column already exists", flush=True)
 
 
 # ── Query helpers ──────────────────────────────────────────────────────────────
 
 async def fetchone(query: str, params: tuple = ()) -> dict | None:
+    sql = _to_pg(query)
     async with _pool.acquire() as conn:
-        row = await conn.fetchrow(_to_pg(query), *params)
-        return dict(row) if row else None
+        row = await conn.fetchrow(sql, *params)
+        return _row_to_dict(row)
 
 
 async def fetchall(query: str, params: tuple = ()) -> list[dict]:
+    sql = _to_pg(query)
     async with _pool.acquire() as conn:
-        rows = await conn.fetch(_to_pg(query), *params)
-        return [dict(r) for r in rows]
+        rows = await conn.fetch(sql, *params)
+        return [_row_to_dict(r) for r in rows]
 
 
 async def execute(query: str, params: tuple = ()) -> None:
+    sql = _to_pg(query)
     async with _pool.acquire() as conn:
-        await conn.execute(_to_pg(query), *params)
+        await conn.execute(sql, *params)
 
 
 async def execute_many(queries: list[tuple[str, tuple]]) -> None:
     async with _pool.acquire() as conn:
         async with conn.transaction():
             for query, params in queries:
-                await conn.execute(_to_pg(query), *params)
+                sql = _to_pg(query)
+                await conn.execute(sql, *params)
 
 
 # ── Utilities ──────────────────────────────────────────────────────────────────

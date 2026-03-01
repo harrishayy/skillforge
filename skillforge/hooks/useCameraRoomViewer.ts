@@ -72,8 +72,8 @@ export function useCameraRoomViewer({
         if (ws.readyState === WebSocket.OPEN) {
           try {
             ws.send(JSON.stringify({ type: "ping" }));
-          } catch {
-            // ignore
+          } catch (err) {
+            console.warn("[CameraRoom] Ping send failed — connection may have dropped:", err);
           }
         }
       }, 15000);
@@ -94,8 +94,8 @@ export function useCameraRoomViewer({
             });
           }
         }
-      } catch {
-        // ignore parse errors
+      } catch (err) {
+        console.warn("[CameraRoom] Malformed WebSocket message:", err);
       }
     };
 

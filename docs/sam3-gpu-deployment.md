@@ -95,13 +95,33 @@ curl https://sam3-server-8080-xxxx.brev.dev/health
 
 ## 6. Connect to SkillForge
 
-Set `SAM3_URL` in `skillforge-api/.env`:
+### Option A: Public Brev URL (recommended for teams)
+
+Use the public URL from step 5 — no extra setup per developer:
 
 ```
 SAM3_URL=https://sam3-server-8080-xxxx.brev.dev
 ```
 
-Restart the API server. The SAM 3 service will log `[SAM3] Configured → https://...` on the first request.
+### Option B: Local port-forward
+
+If you prefer not to expose a public URL, each developer can forward the port to their own machine using the Brev CLI:
+
+```bash
+brev port-forward sam3-server -p 8090:8080
+```
+
+This maps `localhost:8090` on your machine to port `8080` on the Brev instance. Then set:
+
+```
+SAM3_URL=http://localhost:8090
+```
+
+> **Note:** Every developer must run the `brev port-forward` command on their own machine — the tunnel is local and does not carry over to other machines.
+
+---
+
+Set `SAM3_URL` in `skillforge-api/.env` using either option, then restart the API server. The SAM 3 service will log `[SAM3] Configured → ...` on the first request.
 
 ---
 
