@@ -48,7 +48,9 @@ export function useVoiceCommands({
   const [isListening, setIsListening] = useState(false);
   const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
   const [fallbackActive, setFallbackActive] = useState(false);
+  const [displayTranscript, setDisplayTranscript] = useState("");
   const asrFailCountRef = useRef(0);
+  const displayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const onNextStepRef = useRef(onNextStep);
   const onFinishRef = useRef(onFinish);
@@ -56,6 +58,14 @@ export function useVoiceCommands({
   const lastLLMCallRef = useRef(0);
   const lastCommandRef = useRef<number>(0);
   const COMMAND_COOLDOWN_MS = 2000;
+  const DISPLAY_THROTTLE_MS = 150;
+
+  const updateDisplay = useCallback((text: string) => {
+    if (displayTimerRef.current) clearTimeout(displayTimerRef.current);
+    displayTimerRef.current = setTimeout(() => {
+      setDisplayTranscript(text.slice(-200));
+    }, DISPLAY_THROTTLE_MS);
+  }, []);
 
   useEffect(() => { onNextStepRef.current = onNextStep; }, [onNextStep]);
   useEffect(() => { onFinishRef.current = onFinish; }, [onFinish]);
@@ -66,6 +76,7 @@ export function useVoiceCommands({
   useEffect(() => {
     if (!enabled) {
       setIsListening(false);
+      setDisplayTranscript("");
       return;
     }
 
@@ -143,6 +154,7 @@ export function useVoiceCommands({
               if (!active || !transcript) return;
               stepTranscriptRef.current += transcript + " ";
               transcriptRef.current = stepTranscriptRef.current;
+              updateDisplay(stepTranscriptRef.current.trim());
               runMatcher(transcript, true);
             } catch {
               asrFailCountRef.current += 1;
@@ -179,6 +191,7 @@ export function useVoiceCommands({
       return () => {
         active = false;
         clearInterval(timer);
+        if (displayTimerRef.current) clearTimeout(displayTimerRef.current);
         if (currentRecorder?.state === "recording") {
           try { currentRecorder.stop(); } catch (err) { console.warn("[ASR] Cleanup: MediaRecorder.stop() failed:", err); }
         }
@@ -227,6 +240,7 @@ export function useVoiceCommands({
 
     recognition.onresult = (event: any) => {
       let final = "";
+      let interim = "";
       let hasFinal = false;
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const text = event.results[i][0].transcript.toLowerCase().trim();
@@ -235,10 +249,13 @@ export function useVoiceCommands({
           final += text + " ";
           stepTranscriptRef.current += text + " ";
           hasFinal = true;
+        } else {
+          interim += text + " ";
         }
       }
 
       transcriptRef.current = stepTranscriptRef.current;
+      updateDisplay((stepTranscriptRef.current + interim).trim());
 
       if (hasFinal) runMatcher(final.trim(), true);
     };
@@ -251,15 +268,17 @@ export function useVoiceCommands({
     return () => {
       active = false;
       clearTimeout(timer);
+      if (displayTimerRef.current) clearTimeout(displayTimerRef.current);
       try { recognition.stop(); } catch (err) { console.warn("[VoiceCommands] SpeechRecognition cleanup stop failed:", err); }
       setIsListening(false);
     };
-  }, [enabled, useFuzzy, useLLMFallback, effectiveSource, audioStream, fallbackActive]);
+  }, [enabled, useFuzzy, useLLMFallback, effectiveSource, audioStream, fallbackActive, updateDisplay]);
 
   const snapshotTranscript = useCallback((): string => {
     const t = transcriptRef.current.trim();
     transcriptRef.current = "";
     stepTranscriptRef.current = "";
+    setDisplayTranscript("");
     return t;
   }, []);
 
@@ -271,5 +290,5 @@ export function useVoiceCommands({
         ? "listening"
         : "starting";
 
-  return { isListening, snapshotTranscript, status, unavailableReason, fallbackActive };
+  return { isListening, snapshotTranscript, status, unavailableReason, fallbackActive, displayTranscript };
 }

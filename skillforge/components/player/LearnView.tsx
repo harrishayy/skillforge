@@ -15,6 +15,7 @@ import { usePlayerStore } from "@/store/player-store";
 import { Spinner } from "@/components/ui/Spinner";
 import { Button } from "@/components/ui/Button";
 import { TaskTypeBadge } from "@/components/shared/TaskTypeBadge";
+import { SubtitleOverlay } from "@/components/ui/SubtitleOverlay";
 
 interface LearnViewProps {
   workflowId: string;
@@ -144,7 +145,9 @@ export function LearnView({
     handleStepChange(idx - 1);
   }, [workflow, handleStepChange, setStepProgress, setCurrentStepIndex, setIsPausedAtStepEnd]);
 
-  useVoiceCommands({
+  const [subtitlesEnabled, setSubtitlesEnabled] = useState(false);
+
+  const { displayTranscript } = useVoiceCommands({
     onNextStep: handleVoiceNextStep,
     onPreviousStep: handleVoicePrevStep,
     onFinish: () => {},
@@ -194,6 +197,27 @@ export function LearnView({
             <h1 className="text-sm font-bold" style={{ color: "var(--sf-white)" }}>{workflow.title}</h1>
             <TaskTypeBadge />
             {badge}
+            <button
+              onClick={() => setSubtitlesEnabled((v) => !v)}
+              className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold transition-all hover:scale-105 ml-auto"
+              style={{
+                backgroundColor: subtitlesEnabled
+                  ? "rgba(190, 242, 100, 0.2)"
+                  : "rgba(255, 255, 255, 0.08)",
+                color: subtitlesEnabled ? accentColor : "rgba(255,255,255,0.4)",
+                border: `1px solid ${subtitlesEnabled ? "rgba(190,242,100,0.25)" : "rgba(255,255,255,0.1)"}`,
+              }}
+              title={subtitlesEnabled ? "Hide subtitles" : "Show subtitles"}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="1" y="4" width="22" height="16" rx="2" />
+                <path d="M7 15h4" />
+                <path d="M15 15h2" />
+                <path d="M7 11h2" />
+                <path d="M13 11h4" />
+              </svg>
+              CC
+            </button>
           </div>
 
           <div className="flex-1 min-h-0">
@@ -224,6 +248,10 @@ export function LearnView({
                     onContinue={handleAdvanceStep}
                   />
                 )}
+                <SubtitleOverlay
+                  transcript={displayTranscript}
+                  visible={subtitlesEnabled}
+                />
               </div>
             ) : (
               <div

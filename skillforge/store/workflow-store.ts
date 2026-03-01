@@ -18,6 +18,7 @@ import { showErrorToast } from "@/store/toast-store";
 interface WorkflowStore {
   workflow: Workflow | null;
   selectedStepId: string | null;
+  selectedApparatusObjectId: string | null;
   isLoading: boolean;
 
   // SAM3 segmentation state
@@ -39,6 +40,7 @@ interface WorkflowStore {
 
   setWorkflow: (wf: Workflow) => void;
   selectStep: (stepId: string | null) => void;
+  selectApparatusObject: (objectId: string | null) => void;
   updateStepLocal: (stepId: string, fields: Partial<Step>) => void;
   addAnnotationLocal: (stepId: string, ann: Annotation) => void;
   updateAnnotationLocal: (annId: string, ann: Partial<Annotation>) => void;
@@ -74,6 +76,7 @@ interface WorkflowStore {
 export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   workflow: null,
   selectedStepId: null,
+  selectedApparatusObjectId: null,
   isLoading: false,
   segmentsByStep: {},
   segmentPromptByStep: {},
@@ -85,7 +88,9 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
 
   setWorkflow: (wf) => set({ workflow: wf }),
 
-  selectStep: (stepId) => set({ selectedStepId: stepId }),
+  selectStep: (stepId) => set({ selectedStepId: stepId, selectedApparatusObjectId: null }),
+
+  selectApparatusObject: (objectId) => set({ selectedApparatusObjectId: objectId, selectedStepId: null }),
 
   updateStepLocal: (stepId, fields) =>
     set((state) => {
@@ -291,3 +296,6 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
 
 export const selectedStep = (state: { workflow: Workflow | null; selectedStepId: string | null }) =>
   state.workflow?.steps.find((s) => s.id === state.selectedStepId) ?? null;
+
+export const selectedApparatusObject = (state: { workflow: Workflow | null; selectedApparatusObjectId: string | null }) =>
+  state.workflow?.apparatus_objects?.find((o) => o.id === state.selectedApparatusObjectId) ?? null;
