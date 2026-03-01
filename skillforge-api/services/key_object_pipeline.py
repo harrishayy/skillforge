@@ -296,7 +296,7 @@ async def segment_positive_frames_multi(
     frame_paths: list[str],
     target_objects: list[dict],
     detection_results: dict[str, list[dict]],
-    confidence_threshold: float = 0.35,
+    confidence_threshold: float = 0.15,
 ) -> list[dict]:
     """
     For each frame, determine which target objects are present (from Nemotron
@@ -347,7 +347,7 @@ async def segment_positive_frames_multi(
 async def segment_positive_frames(
     positive_frames: list[dict],
     sam3_prompt: str,
-    confidence_threshold: float = 0.35,
+    confidence_threshold: float = 0.15,
 ) -> list[dict]:
     """
     Legacy single-prompt segmentation. Kept for backward compatibility with
