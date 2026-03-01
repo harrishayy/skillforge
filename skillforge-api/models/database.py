@@ -104,11 +104,34 @@ _CREATE_STATEMENTS = [
     progress    INTEGER DEFAULT 0,
     created_at  BIGINT NOT NULL
 )""",
+    """CREATE TABLE IF NOT EXISTS workflow_objects (
+    id                    TEXT PRIMARY KEY,
+    workflow_id           TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    object_name           TEXT NOT NULL,
+    object_type           TEXT NOT NULL DEFAULT 'other',
+    visual_cues           TEXT,
+    sam3_prompt           TEXT,
+    angle_count           INTEGER DEFAULT 0,
+    reference_frame_paths TEXT,
+    created_at            BIGINT NOT NULL
+)""",
+    """CREATE TABLE IF NOT EXISTS step_contexts (
+    id            TEXT PRIMARY KEY,
+    workflow_id   TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    step_number   INTEGER NOT NULL,
+    context_json  TEXT NOT NULL,
+    version       INTEGER DEFAULT 1,
+    created_at    BIGINT NOT NULL,
+    updated_at    BIGINT NOT NULL,
+    UNIQUE(workflow_id, step_number)
+)""",
     "CREATE INDEX IF NOT EXISTS idx_steps_workflow ON steps(workflow_id, step_number)",
     "CREATE INDEX IF NOT EXISTS idx_annotations_step ON annotations(step_id)",
     "CREATE INDEX IF NOT EXISTS idx_click_targets_step ON click_targets(step_id)",
     "CREATE INDEX IF NOT EXISTS idx_step_frames_step ON step_frames(step_id, timestamp_ms)",
     "CREATE INDEX IF NOT EXISTS idx_pipeline_logs_workflow ON pipeline_logs(workflow_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_workflow_objects_workflow ON workflow_objects(workflow_id)",
+    "CREATE INDEX IF NOT EXISTS idx_step_contexts_workflow ON step_contexts(workflow_id, step_number)",
 ]
 
 
@@ -179,6 +202,8 @@ async def _run_migrations(conn):
         "ALTER TABLE steps ADD COLUMN IF NOT EXISTS workflow_start_ms BIGINT DEFAULT 0",
         "ALTER TABLE steps ADD COLUMN IF NOT EXISTS workflow_end_ms BIGINT DEFAULT 0",
         "ALTER TABLE step_frames ADD COLUMN IF NOT EXISTS segmented_frame_path TEXT",
+        "ALTER TABLE steps ADD COLUMN IF NOT EXISTS is_apparatus_step INTEGER DEFAULT 0",
+        "ALTER TABLE click_targets ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'primary'",
     ]
     for sql in migrations:
         try:

@@ -171,9 +171,18 @@ function drawTextLabel(
   ctx.fillText(ann.label, x, y);
 }
 
+const ROLE_STYLES: Record<string, { color: string; lineWidth: number; dashPattern: number[]; fillAlpha: number }> = {
+  primary: { color: "#10B981", lineWidth: 3, dashPattern: [], fillAlpha: 0.08 },
+  context: { color: "#3B82F6", lineWidth: 2, dashPattern: [6, 4], fillAlpha: 0.05 },
+  warning: { color: "#EF4444", lineWidth: 3, dashPattern: [], fillAlpha: 0.10 },
+};
+
 export function renderClickTargets(
   ctx: CanvasRenderingContext2D,
-  clickTargets: Array<{ bbox_x: number; bbox_y: number; bbox_width: number; bbox_height: number; is_primary: boolean; element_text?: string }>,
+  clickTargets: Array<{
+    bbox_x: number; bbox_y: number; bbox_width: number; bbox_height: number;
+    is_primary: boolean; element_text?: string; role?: string;
+  }>,
   canvasWidth: number,
   canvasHeight: number,
   time: number
@@ -185,44 +194,32 @@ export function renderClickTargets(
     const bw = (ct.bbox_width / 100) * canvasWidth;
     const bh = (ct.bbox_height / 100) * canvasHeight;
 
-    if (ct.is_primary) {
-      ctx.save();
-      ctx.strokeStyle = "#10B981";
-      ctx.lineWidth = 3 + pulse * 2;
-      ctx.globalAlpha = 0.7 + pulse * 0.3;
-      ctx.setLineDash([]);
-      ctx.strokeRect(x, y, bw, bh);
+    const role = ct.role ?? (ct.is_primary ? "primary" : "context");
+    const style = ROLE_STYLES[role] ?? ROLE_STYLES.context;
 
-      ctx.fillStyle = "#10B981";
-      ctx.globalAlpha = 0.08 + pulse * 0.07;
-      ctx.fillRect(x, y, bw, bh);
-      ctx.restore();
-    } else {
-      ctx.save();
-      const lime = "#BEF264";
-      ctx.strokeStyle = lime;
-      ctx.lineWidth = 2 + pulse * 1.5;
-      ctx.globalAlpha = 0.6 + pulse * 0.3;
-      ctx.setLineDash([]);
-      ctx.strokeRect(x, y, bw, bh);
+    ctx.save();
+    ctx.strokeStyle = style.color;
+    ctx.lineWidth = style.lineWidth + pulse * (role === "primary" ? 2 : 1.5);
+    ctx.globalAlpha = (role === "primary" ? 0.7 : 0.6) + pulse * 0.3;
+    ctx.setLineDash(style.dashPattern);
+    ctx.strokeRect(x, y, bw, bh);
 
-      ctx.fillStyle = lime;
-      ctx.globalAlpha = 0.06 + pulse * 0.06;
-      ctx.fillRect(x, y, bw, bh);
+    ctx.fillStyle = style.color;
+    ctx.globalAlpha = style.fillAlpha + pulse * 0.06;
+    ctx.fillRect(x, y, bw, bh);
 
-      if (ct.element_text) {
-        const fontSize = Math.max(11, canvasWidth * 0.012);
-        ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
-        ctx.globalAlpha = 0.9;
-        const textW = ctx.measureText(ct.element_text).width;
-        const pad = 4;
-        ctx.fillStyle = "rgba(0,0,0,0.7)";
-        ctx.fillRect(x, y - fontSize - pad * 2, textW + pad * 2, fontSize + pad * 2);
-        ctx.fillStyle = lime;
-        ctx.fillText(ct.element_text, x + pad, y - pad);
-      }
-      ctx.restore();
+    if (ct.element_text) {
+      const fontSize = Math.max(11, canvasWidth * 0.012);
+      ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+      ctx.globalAlpha = 0.9;
+      const textW = ctx.measureText(ct.element_text).width;
+      const pad = 4;
+      ctx.fillStyle = "rgba(0,0,0,0.7)";
+      ctx.fillRect(x, y - fontSize - pad * 2, textW + pad * 2, fontSize + pad * 2);
+      ctx.fillStyle = style.color;
+      ctx.fillText(ct.element_text, x + pad, y - pad);
     }
+    ctx.restore();
   }
 }
 

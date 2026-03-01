@@ -20,10 +20,12 @@ async def upload_step_videos(
     step_transcripts_json: Optional[str] = Form(None),
     step_notes_json: Optional[str] = Form(None),
     step_durations_json: Optional[str] = Form(None),
+    apparatus_video: Optional[UploadFile] = File(None),
 ):
     """
     Accept per-step video segments from hardware (webcam) guided recording.
     Each file in step_videos corresponds to one step, ordered by step number.
+    An optional apparatus_video can be included from the showcase phase.
     """
     if not step_videos:
         raise HTTPException(400, "At least one step video is required")
@@ -64,6 +66,15 @@ async def upload_step_videos(
             shutil.copyfileobj(vid.file, f)
         step_video_paths.append(str(file_path))
 
+    apparatus_video_path: str | None = None
+    if apparatus_video and apparatus_video.filename:
+        ext = Path(apparatus_video.filename).suffix or ".webm"
+        apparatus_file = workflow_video_dir / f"apparatus{ext}"
+        with open(apparatus_file, "wb") as f:
+            shutil.copyfileobj(apparatus_video.file, f)
+        apparatus_video_path = str(apparatus_file)
+        print(f"[Recording] Apparatus video saved: {apparatus_video_path}", flush=True)
+
     await execute(
         """INSERT INTO workflows (id, title, description, mode, status, video_path, created_at, updated_at)
            VALUES (?,?,?,?,?,?,?,?)""",
@@ -79,6 +90,7 @@ async def upload_step_videos(
         step_transcripts=step_transcripts,
         step_notes=step_notes,
         client_durations=step_durations or None,
+        apparatus_video_path=apparatus_video_path,
     )
 
     return {"workflow_id": workflow_id, "status": "processing"}

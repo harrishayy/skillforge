@@ -4,6 +4,7 @@ SAM 3 concept segmentation service.
 Calls a remote SAM 3 inference server (if SAM3_URL is set) to segment
 objects matching a text concept prompt.  Supports:
   - Text-prompted concept segmentation (live detection + pipeline)
+  - Multi-concept segmentation (N SAM3 calls merged with per-object labels)
   - Point-prompted segmentation (click-to-segment in editor)
   - Context-driven auto-segmentation (pipeline: title/description/transcript → prompt)
   - Toggle (add/remove) segmentation for interactive refinement
@@ -222,15 +223,70 @@ async def segment_box(
         return None
 
 
+# ── Multi-concept segmentation ────────────────────────────────────────────────
+
+async def segment_multi_concept(
+    frame_bytes: bytes,
+    prompts: list[dict],
+    confidence_threshold: float = 0.35,
+) -> dict:
+    """
+    Segment multiple distinct objects in one frame by calling segment_concept()
+    once per prompt and merging the results with per-object labels and roles.
+
+    Args:
+        prompts: List of dicts, each with:
+            - "label": human-readable name (e.g., "red wire")
+            - "sam3_prompt": visually descriptive prompt for SAM3
+            - "role": "primary" | "context" | "warning"
+
+    Returns:
+        {
+            "segments": [
+                {"mask_base64": str, "bbox": [...], "score": float,
+                 "label": str, "role": str},
+                ...
+            ]
+        }
+    """
+    all_segments = []
+
+    for prompt_info in prompts:
+        label = prompt_info.get("label", "")
+        sam3_prompt = prompt_info.get("sam3_prompt", label)
+        role = prompt_info.get("role", "primary")
+
+        result = await segment_concept(frame_bytes, sam3_prompt, confidence_threshold)
+        if result and result.get("segments"):
+            for seg in result["segments"]:
+                seg["label"] = label
+                seg["role"] = role
+                all_segments.append(seg)
+
+    if all_segments:
+        labels_str = ", ".join(
+            f"\"{s['label']}\" ({s['role']}, {s['score']:.0%})" for s in all_segments
+        )
+        print(f"[SAM3] Multi-concept: {len(all_segments)} segments — {labels_str}", flush=True)
+
+    return {"segments": all_segments}
+
+
 # ── Pre-rendered segmented image generation ──────────────────────────────────
 
-_OVERLAY_COLORS = [
+_ROLE_COLORS = {
+    "primary": (16, 185, 129),   # green  #10B981
+    "context": (59, 130, 246),   # blue   #3B82F6
+    "warning": (239, 68, 68),    # red    #EF4444
+}
+_FALLBACK_COLORS = [
     (0, 255, 128),    # green
     (0, 200, 255),    # cyan
     (255, 100, 255),  # magenta
     (255, 200, 0),    # yellow
 ]
-_OVERLAY_ALPHA = 140  # ~55% of 255
+_OVERLAY_ALPHA_PRIMARY = 140   # ~55%
+_OVERLAY_ALPHA_CONTEXT = 100   # ~40%
 
 
 def generate_segmented_image(
@@ -245,6 +301,10 @@ def generate_segmented_image(
     Each segment dict must have 'mask_base64' (base64-encoded PNG mask),
     'bbox' [x1, y1, x2, y2] (normalised 0-1), and 'score' (float).
 
+    Segments may also include 'label' (per-segment label) and 'role'
+    ("primary" | "context" | "warning") for role-based color coding.
+    If per-segment labels are present they override the shared `label` param.
+
     Returns the output_path on success, or None on failure.
     """
     try:
@@ -258,12 +318,16 @@ def generate_segmented_image(
             if not mask_b64:
                 continue
 
+            seg_label = seg.get("label", label)
+            role = seg.get("role", "primary")
+            color = _ROLE_COLORS.get(role, _FALLBACK_COLORS[i % len(_FALLBACK_COLORS)])
+            overlay_alpha = _OVERLAY_ALPHA_PRIMARY if role == "primary" else _OVERLAY_ALPHA_CONTEXT
+
             mask_bytes = base64.b64decode(mask_b64)
             mask_img = Image.open(io.BytesIO(mask_bytes)).convert("L").resize((w, h))
 
-            color = _OVERLAY_COLORS[i % len(_OVERLAY_COLORS)]
             color_layer = Image.new("RGBA", (w, h), (*color, 0))
-            alpha = mask_img.point(lambda p: min(p, _OVERLAY_ALPHA) if p > 20 else 0)
+            alpha = mask_img.point(lambda p, oa=overlay_alpha: min(p, oa) if p > 20 else 0)
             color_layer.putalpha(alpha)
             frame = Image.alpha_composite(frame, color_layer)
 
@@ -272,10 +336,18 @@ def generate_segmented_image(
             by1 = int(bbox[1] * h)
             bx2 = int(bbox[2] * w)
             by2 = int(bbox[3] * h)
-            draw.rectangle([bx1, by1, bx2, by2], outline=(*color, 220), width=2)
+            line_width = 3 if role == "primary" else 2
+            draw.rectangle([bx1, by1, bx2, by2], outline=(*color, 220), width=line_width)
 
-            if label or score:
-                txt = f"{label} {score:.0%}".strip() if label else f"{score:.0%}"
+            txt = ""
+            if seg_label and score:
+                txt = f"{seg_label} {score:.0%}"
+            elif seg_label:
+                txt = seg_label
+            elif score:
+                txt = f"{score:.0%}"
+
+            if txt:
                 try:
                     font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
                 except OSError:
