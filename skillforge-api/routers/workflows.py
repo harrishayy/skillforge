@@ -6,8 +6,10 @@ router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
 
 def _bool_published(wf: dict) -> dict:
-    """Convert the integer published column to a Python bool."""
+    """Convert the integer published column to a Python bool and normalize segmentation_status."""
     wf["published"] = bool(wf.get("published", 0))
+    if not wf.get("segmentation_status"):
+        wf["segmentation_status"] = "pending"
     return wf
 
 

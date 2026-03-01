@@ -13,15 +13,17 @@ Called by: services/hardware_pipeline.py before step processing begins.
 import os
 import re
 import json
+import asyncio
 import base64
 from pathlib import Path
 
 import anthropic
 
 from services.video_processor import extract_frames
-from services.nemotron_client import detect_object_in_frames_batch
-from services.sam3_service import segment_concept, generate_segmented_image
+from services.nemotron_client import detect_objects_in_frames_parallel
+from services.sam3_service import segment_concept, segment_point, generate_segmented_image
 from services.memory_layer import save_apparatus_object, clear_apparatus_catalog
+from services.key_object_pipeline import _clean_nemotron_for_sam3
 
 
 UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
@@ -139,12 +141,15 @@ async def _claude_identify_apparatus(
         "text": (
             "These are frames from an apparatus showcase video where a trainer shows all "
             "tools, parts, and components needed for a hands-on tutorial.\n\n"
-            "Identify ALL distinct physical objects/tools/parts shown. For each, provide:\n"
+            "Identify ONLY the tools, parts, and components the trainer is deliberately "
+            "presenting for the tutorial. For each, provide:\n"
             "- object_name: concise name\n"
-            "- object_type: tool|part|connector|cable|component|container|material|other\n"
+            "- object_type: tool|part|connector|cable|component|container|material\n"
             "- visual_cues: color, shape, markings, labels that distinguish it\n"
             "- sam3_prompt: a visually descriptive phrase for image segmentation (no verbs)\n"
             "- frame_numbers: which frame numbers (1-indexed) show this object\n\n"
+            "EXCLUDE: the trainer's body, hands, clothing, eyeglasses, jewelry, "
+            "anything the trainer is NOT deliberately showcasing as a tutorial component.\n\n"
             "Reply ONLY with a JSON array, no markdown fences:\n"
             '[{"object_name": "...", "object_type": "...", "visual_cues": "...", '
             '"sam3_prompt": "...", "frame_numbers": [1, 3, 5]}]'
@@ -158,7 +163,10 @@ async def _claude_identify_apparatus(
             max_tokens=2000,
             system=(
                 "You are an expert at identifying physical tools, parts, and components "
-                "from video frames. Be thorough — identify every distinct object visible. "
+                "from video frames. ONLY identify objects that are clearly tutorial apparatus "
+                "— tools, electronic components, wires, boards, mechanical parts, materials, "
+                "and connectors. NEVER include personal items (glasses, watches, bottles, phones), "
+                "body parts, clothing, or environmental objects (walls, furniture, screens). "
                 "Reply with ONLY a JSON array."
             ),
             messages=[{"role": "user", "content": image_content}],
@@ -174,8 +182,29 @@ async def _claude_identify_apparatus(
 
         raw_objects = json.loads(arr_match.group())
 
+        _VALID_TYPES = {"tool", "part", "connector", "cable", "component", "container", "material"}
+        _REJECT_KEYWORDS = {
+            "glasses", "eyeglasses", "spectacles", "sunglasses",
+            "watch", "ring", "bracelet", "necklace", "earring",
+            "bottle", "cup", "mug", "phone", "laptop", "shirt",
+            "pants", "shoe", "hat", "cap", "bag", "backpack",
+            "wall", "table", "desk", "chair", "floor", "ceiling",
+            "door", "window", "hand", "finger", "face", "hair",
+        }
+
         objects = []
+        skipped = []
         for obj in raw_objects:
+            obj_type = obj.get("object_type", "other").lower()
+            obj_name = obj.get("object_name", "unknown").lower()
+
+            if obj_type not in _VALID_TYPES:
+                skipped.append(obj.get("object_name", "unknown"))
+                continue
+            if any(kw in obj_name for kw in _REJECT_KEYWORDS):
+                skipped.append(obj.get("object_name", "unknown"))
+                continue
+
             frame_nums = obj.get("frame_numbers", [])
             ref_frames = []
             for fn in frame_nums:
@@ -185,7 +214,7 @@ async def _claude_identify_apparatus(
 
             objects.append({
                 "object_name": obj.get("object_name", "unknown"),
-                "object_type": obj.get("object_type", "other"),
+                "object_type": obj_type,
                 "visual_cues": obj.get("visual_cues", ""),
                 "sam3_prompt": obj.get("sam3_prompt", obj.get("object_name", "object")),
                 "angle_count": len(ref_frames),
@@ -196,6 +225,13 @@ async def _claude_identify_apparatus(
                     if fn in frame_index_map
                 ],
             })
+
+        if skipped:
+            print(
+                f"[ApparatusPipeline] Filtered out {len(skipped)} irrelevant objects: "
+                + ", ".join(skipped),
+                flush=True,
+            )
 
         print(
             f"[ApparatusPipeline] Claude identified {len(objects)} objects: "
@@ -209,46 +245,139 @@ async def _claude_identify_apparatus(
         return []
 
 
+NEMOTRON_VERIFY_MAX_FRAMES = 10
+
+
 async def _nemotron_verify_objects(
     frames: list[dict],
     objects: list[dict],
 ) -> list[dict]:
     """
-    For each identified object, run Nemotron across frames to confirm
-    which frames actually contain it (multi-angle verification).
+    For each identified object, run Nemotron across a subsampled set of frames
+    to confirm which frames actually contain it (multi-angle verification).
+    All objects are verified in parallel with a shared concurrency semaphore.
     Updates reference_frames and angle_count.
     """
-    all_frame_paths = [f["path"] for f in frames]
+    sampled_frames = _subsample_list(frames, NEMOTRON_VERIFY_MAX_FRAMES)
+    all_frame_paths = [f["path"] for f in sampled_frames]
     path_to_rel = {f["path"]: f["relative_path"] for f in frames}
 
+    objects_with_frames: list[tuple[str, str, list[str]]] = []
     for obj in objects:
         desc = obj["object_name"]
         if obj.get("visual_cues"):
             desc += f" — {obj['visual_cues']}"
+        objects_with_frames.append((obj["object_name"], desc, all_frame_paths))
 
-        try:
-            detections = await detect_object_in_frames_batch(
-                frame_paths=all_frame_paths,
-                object_description=desc,
-                batch_size=4,
-            )
-            positive_paths = [d["frame_path"] for d in detections if d["present"]]
-            obj["reference_frames"] = [path_to_rel[p] for p in positive_paths if p in path_to_rel]
-            obj["angle_count"] = len(positive_paths)
-            obj["_frame_paths"] = positive_paths
+    try:
+        all_results = await detect_objects_in_frames_parallel(objects_with_frames)
+    except Exception as e:
+        print(f"[ApparatusPipeline] Nemotron parallel verification failed: {e}", flush=True)
+        return objects
 
-            print(
-                f"[ApparatusPipeline] Nemotron: \"{obj['object_name']}\" found in "
-                f"{len(positive_paths)}/{len(all_frame_paths)} frames",
-                flush=True,
-            )
-        except Exception as e:
-            print(f"[ApparatusPipeline] Nemotron verification failed for {obj['object_name']}: {e}", flush=True)
+    for obj in objects:
+        detections = all_results.get(obj["object_name"], [])
+        positive = [d for d in detections if d["present"]]
+        positive_paths = [d["frame_path"] for d in positive]
+        obj["reference_frames"] = [path_to_rel[p] for p in positive_paths if p in path_to_rel]
+        obj["angle_count"] = len(positive_paths)
+        obj["_frame_paths"] = positive_paths
+        obj["_frame_coords"] = {
+            d["frame_path"]: (d.get("center_x"), d.get("center_y"))
+            for d in positive
+            if d.get("center_x") is not None and d.get("center_y") is not None
+        }
+        obj["_frame_descriptions"] = {
+            d["frame_path"]: d.get("description", "")
+            for d in positive
+            if d.get("description")
+        }
+
+        print(
+            f"[ApparatusPipeline] Nemotron: \"{obj['object_name']}\" found in "
+            f"{len(positive_paths)}/{len(all_frame_paths)} frames",
+            flush=True,
+        )
 
     return objects
 
 
 MAX_SEGMENTED_FRAMES_PER_OBJECT = 4
+SAM3_APPARATUS_CONCURRENT = 6
+
+
+async def _segment_one_apparatus_frame(
+    sem: asyncio.Semaphore,
+    frame_path: str,
+    sam3_prompt: str,
+    object_name: str,
+    frame_coords: dict[str, tuple[float, float]],
+    safe_name: str,
+    frame_index: int,
+    apparatus_dir: Path,
+    workflow_id: str,
+    path_to_rel: dict[str, str],
+    frame_descriptions: dict[str, str] | None = None,
+) -> dict | None:
+    """Segment a single (object, frame) pair under the shared semaphore.
+
+    Tries text-prompted segmentation first, then falls back to point-prompted
+    segmentation using Nemotron coordinates if the text prompt yields nothing.
+    """
+    async with sem:
+        try:
+            frame_bytes = Path(frame_path).read_bytes()
+
+            prompt = sam3_prompt
+            if frame_descriptions:
+                nemotron_desc = _clean_nemotron_for_sam3(
+                    frame_descriptions.get(frame_path, "")
+                )
+                if nemotron_desc:
+                    prompt = nemotron_desc
+
+            result = await segment_concept(
+                frame_bytes,
+                prompt,
+                confidence_threshold=0.20,
+            )
+
+            if (not result or not result.get("segments")) and frame_coords:
+                coords = frame_coords.get(frame_path)
+                if coords and coords[0] is not None and coords[1] is not None:
+                    cx, cy = coords
+                    result = await segment_point(
+                        frame_bytes, cx, cy, box_radius=0.10,
+                        confidence_threshold=0.20, best_only=True,
+                    )
+
+            if not result or not result.get("segments"):
+                return None
+
+            score = max(s.get("score", 0) for s in result["segments"])
+            out_filename = f"{safe_name}_seg_{frame_index}.jpg"
+            out_path = str(apparatus_dir / out_filename)
+            saved = generate_segmented_image(
+                frame_path, result["segments"], out_path,
+                label=object_name,
+            )
+            if saved:
+                rel_seg = f"uploads/{workflow_id}/apparatus/{out_filename}"
+                rel_orig = path_to_rel.get(frame_path, "")
+                return {
+                    "object_name": object_name,
+                    "rel_seg": rel_seg,
+                    "rel_orig": rel_orig,
+                    "score": score,
+                }
+
+        except Exception as e:
+            print(
+                f"[ApparatusPipeline] SAM3 failed for \"{object_name}\" "
+                f"frame {frame_index + 1}: {e}",
+                flush=True,
+            )
+        return None
 
 
 async def _sam3_reference_segmentation(
@@ -258,13 +387,17 @@ async def _sam3_reference_segmentation(
 ) -> list[dict]:
     """
     Run SAM3 on all positive frames for each object (up to a limit).
-    Generates overlay images for each segmented frame and builds a mapping
-    from original reference_frame_path → segmented_frame_path.
-    Also keeps the single best segmented_reference_path for backward compat.
+    All (object, frame) pairs are processed in parallel with a shared
+    semaphore. Generates overlay images and builds segmented_frame_paths
+    and segmented_reference_path per object.
     """
     apparatus_dir = UPLOADS_DIR / workflow_id / "apparatus"
     apparatus_dir.mkdir(parents=True, exist_ok=True)
     path_to_rel = {f["path"]: f["relative_path"] for f in frames}
+    sem = asyncio.Semaphore(SAM3_APPARATUS_CONCURRENT)
+
+    coros = []
+    coro_obj_names: list[str] = []
 
     for obj in objects:
         fpaths = obj.get("_frame_paths", [])
@@ -273,56 +406,62 @@ async def _sam3_reference_segmentation(
 
         sampled = _subsample_list(fpaths, MAX_SEGMENTED_FRAMES_PER_OBJECT)
         safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", obj["object_name"])
-        seg_map: dict[str, str] = {}
-        best_score = 0.0
-        best_seg_path = ""
+        frame_coords = obj.get("_frame_coords", {})
+        frame_descriptions = obj.get("_frame_descriptions", {})
 
         for i, frame_path in enumerate(sampled):
-            try:
-                frame_bytes = Path(frame_path).read_bytes()
-                result = await segment_concept(
-                    frame_bytes,
-                    obj["sam3_prompt"],
-                    confidence_threshold=0.3,
+            coros.append(
+                _segment_one_apparatus_frame(
+                    sem, frame_path, obj["sam3_prompt"], obj["object_name"],
+                    frame_coords, safe_name, i, apparatus_dir, workflow_id,
+                    path_to_rel, frame_descriptions,
                 )
-                if not result or not result.get("segments"):
-                    continue
+            )
+            coro_obj_names.append(obj["object_name"])
 
-                score = max(s.get("score", 0) for s in result["segments"])
-                out_filename = f"{safe_name}_seg_{i}.jpg"
-                out_path = str(apparatus_dir / out_filename)
-                saved = generate_segmented_image(
-                    frame_path, result["segments"], out_path,
-                    label=obj["object_name"],
-                )
-                if saved:
-                    rel_seg = f"uploads/{workflow_id}/apparatus/{out_filename}"
-                    rel_orig = path_to_rel.get(frame_path, "")
-                    if rel_orig:
-                        seg_map[rel_orig] = rel_seg
-                    if score > best_score:
-                        best_score = score
-                        best_seg_path = rel_seg
+    results = await asyncio.gather(*coros, return_exceptions=True)
 
-            except Exception as e:
-                print(
-                    f"[ApparatusPipeline] SAM3 failed for \"{obj['object_name']}\" "
-                    f"frame {i+1}/{len(sampled)}: {e}",
-                    flush=True,
-                )
+    obj_seg_maps: dict[str, dict[str, str]] = {obj["object_name"]: {} for obj in objects}
+    obj_best: dict[str, tuple[float, str]] = {obj["object_name"]: (0.0, "") for obj in objects}
 
+    for name, result in zip(coro_obj_names, results):
+        if isinstance(result, Exception):
+            print(f"[ApparatusPipeline] SAM3 parallel error for \"{name}\": {result}", flush=True)
+            continue
+        if result is None:
+            continue
+        if result["rel_orig"]:
+            obj_seg_maps[name][result["rel_orig"]] = result["rel_seg"]
+        score, best_path = obj_best[name]
+        if result["score"] > score:
+            obj_best[name] = (result["score"], result["rel_seg"])
+
+    for obj in objects:
+        name = obj["object_name"]
+        seg_map = obj_seg_maps.get(name, {})
         obj["segmented_frame_paths"] = seg_map
+        best_score, best_seg_path = obj_best.get(name, (0.0, ""))
         obj["segmented_reference_path"] = best_seg_path
 
         if seg_map:
             print(
-                f"[ApparatusPipeline] SAM3: \"{obj['object_name']}\" — "
-                f"{len(seg_map)}/{len(sampled)} frames segmented (best {best_score:.0%})",
+                f"[ApparatusPipeline] SAM3: \"{name}\" — "
+                f"{len(seg_map)} frames segmented (best {best_score:.0%})",
                 flush=True,
             )
+        else:
+            n_tried = sum(1 for n in coro_obj_names if n == name)
+            if n_tried > 0:
+                print(
+                    f"[ApparatusPipeline] SAM3: \"{name}\" — "
+                    f"0/{n_tried} frames passed threshold (no segmentation)",
+                    flush=True,
+                )
 
     for obj in objects:
         obj.pop("_frame_paths", None)
+        obj.pop("_frame_coords", None)
+        obj.pop("_frame_descriptions", None)
 
     return objects
 

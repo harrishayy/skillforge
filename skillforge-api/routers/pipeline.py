@@ -65,6 +65,21 @@ async def pipeline_ws(websocket: WebSocket, workflow_id: str):
                 "timestamp": log["created_at"],
             }))
 
+        # If the pipeline already finished, send the complete/error event
+        # so reconnecting clients can navigate away
+        if logs:
+            last = logs[-1]
+            if last["stage"] == "complete":
+                await websocket.send_text(json.dumps({
+                    "type": "complete",
+                    "workflow_id": workflow_id,
+                }))
+            elif last["stage"] == "error":
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "message": last["message"],
+                }))
+
         # Keep connection alive until client disconnects
         while True:
             try:

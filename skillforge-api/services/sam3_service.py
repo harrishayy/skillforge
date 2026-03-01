@@ -23,6 +23,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 SAM3_URL = os.environ.get("SAM3_URL", "")
 
+SAM3_MAX_PROMPT_CHARS = 250  # CLIP text encoder ≈ 77 tokens; keep prompts concise
+
 _startup_logged = False
 _client: httpx.AsyncClient | None = None
 
@@ -32,7 +34,7 @@ def _get_client() -> httpx.AsyncClient:
     if _client is None or _client.is_closed:
         _client = httpx.AsyncClient(
             timeout=30.0,
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+            limits=httpx.Limits(max_connections=12, max_keepalive_connections=6),
         )
     return _client
 
@@ -66,6 +68,9 @@ async def segment_concept(
         _startup_logged = True
 
     try:
+        if len(text_prompt) > SAM3_MAX_PROMPT_CHARS:
+            text_prompt = text_prompt[:SAM3_MAX_PROMPT_CHARS].rsplit(" ", 1)[0]
+
         t0 = time.perf_counter()
         client = _get_client()
         resp = await client.post(
@@ -120,6 +125,8 @@ async def segment_point(
     y: float,
     label: int = 1,
     box_radius: float = _POINT_BOX_RADIUS,
+    confidence_threshold: float = 0.15,
+    best_only: bool = False,
 ) -> dict | None:
     """
     Segment the object at a specific click coordinate by generating a small
@@ -129,6 +136,11 @@ async def segment_point(
         x, y: Normalized coordinates (0-1) of the click point.
         label: 1 = foreground (segment the object here), 0 = background (exclude).
         box_radius: Half-size of the box in normalized coords (default 5%).
+        confidence_threshold: Minimum score to keep a mask.
+        best_only: If True, return only the single highest-scoring mask.
+            Use this for pipeline fallbacks where one object mask is expected,
+            to avoid returning wall/background masks from SAM3's multi-
+            granularity output.
     """
     if not SAM3_URL:
         return None
@@ -164,11 +176,15 @@ async def segment_point(
             data.get("boxes", []),
             data.get("scores", []),
         ):
-            results.append({
-                "mask_base64": mask_b64,
-                "bbox": box,
-                "score": score,
-            })
+            if score >= confidence_threshold:
+                results.append({
+                    "mask_base64": mask_b64,
+                    "bbox": box,
+                    "score": score,
+                })
+
+        if best_only and results:
+            results = [max(results, key=lambda r: r["score"])]
 
         if results:
             print(f"[SAM3] ✓ Point ({x:.2f}, {y:.2f}) — {len(results)} mask(s) in {elapsed_ms}ms", flush=True)
@@ -244,7 +260,8 @@ async def segment_multi_concept(
 ) -> dict:
     """
     Segment multiple distinct objects in one frame by calling segment_concept()
-    once per prompt and merging the results with per-object labels and roles.
+    once per prompt IN PARALLEL and merging the results with per-object labels
+    and roles.
 
     Args:
         prompts: List of dicts, each with:
@@ -261,19 +278,33 @@ async def segment_multi_concept(
             ]
         }
     """
-    all_segments = []
+    import asyncio
 
-    for prompt_info in prompts:
+    async def _segment_one(prompt_info: dict) -> list[dict]:
         label = prompt_info.get("label", "")
         sam3_prompt = prompt_info.get("sam3_prompt", label)
         role = prompt_info.get("role", "primary")
 
         result = await segment_concept(frame_bytes, sam3_prompt, confidence_threshold)
+        segments = []
         if result and result.get("segments"):
             for seg in result["segments"]:
                 seg["label"] = label
                 seg["role"] = role
-                all_segments.append(seg)
+                segments.append(seg)
+        return segments
+
+    results = await asyncio.gather(
+        *[_segment_one(p) for p in prompts],
+        return_exceptions=True,
+    )
+
+    all_segments = []
+    for r in results:
+        if isinstance(r, Exception):
+            print(f"[SAM3] Multi-concept parallel error: {r}", flush=True)
+            continue
+        all_segments.extend(r)
 
     if all_segments:
         labels_str = ", ".join(

@@ -9,9 +9,16 @@ import { useVoiceCommands } from "@/hooks/useVoiceCommands";
 import { useMediaPipeDetect } from "@/hooks/useMediaPipeDetect";
 import type { MPResult } from "@/hooks/useMediaPipeDetect";
 import { useDoubleTapDetection } from "@/hooks/useDoubleTapDetection";
-import { computePinchState } from "@/lib/pinch-detection";
+import { computePhoneGestureState } from "@/lib/phone-gesture-detection";
 import { renderHandLandmarks } from "@/lib/annotation-renderer";
-import { uploadStepVideos, getGuidedStepPrompt } from "@/lib/api-client";
+import {
+  uploadStepVideos,
+  getGuidedStepPrompt,
+  createWorkflow,
+  uploadApparatus,
+  uploadSingleStep,
+  finalizeWorkflow,
+} from "@/lib/api-client";
 import { showErrorToast } from "@/store/toast-store";
 import type { PipelineLogEvent, PipelineStage } from "@/types";
 import * as stepStorage from "@/lib/step-storage";
@@ -70,6 +77,9 @@ export default function RecordingSessionPage() {
   const stepNotesRef = useRef<Record<number, string>>({});
   stepNotesRef.current = stepNotes;
   const [editingStepNumber, setEditingStepNumber] = useState<number | null>(null);
+
+  // Incremental pipeline: workflow created early so steps can be uploaded as they complete
+  const incrementalWorkflowIdRef = useRef<string | null>(null);
 
   // Apparatus showcase state
   const [apparatusPhase, setApparatusPhase] = useState<"overview" | "individual">("overview");
@@ -135,6 +145,8 @@ export default function RecordingSessionPage() {
       : handData;
 
   const pinchState = computePinchState(activeHands);
+  // Spider-Man gesture state (thumb+index+pinky extended, middle+ring closed) — used for PinchIndicator display
+  const gestureState = computePhoneGestureState(activeHands);
 
   const snapshotTranscriptRef = useRef<() => string>(() => "");
 
@@ -263,6 +275,21 @@ export default function RecordingSessionPage() {
         showErrorToast("Failed to save step to local storage. If the browser's storage is full, try clearing site data.");
       });
 
+      // Incremental upload: send this step to the pipeline immediately
+      const wfId = incrementalWorkflowIdRef.current;
+      if (wfId) {
+        uploadSingleStep({
+          workflowId: wfId,
+          stepNumber: prevStepNum,
+          blob,
+          transcript,
+          note: stepNotesRef.current[prevStepNum] ?? "",
+          durationMs,
+        }).catch((e) => {
+          console.warn(`[Session] Incremental upload failed for step ${prevStepNum}:`, e);
+        });
+      }
+
       const nextStep = prevStepNum + 1;
       stepStartTimeRef.current = snapshotTime;
       setCurrentStepNumber(nextStep);
@@ -320,38 +347,65 @@ export default function RecordingSessionPage() {
         blob: finalBlob,
         transcript,
         note: stepNotesRef.current[currentStepNumber] ?? "",
-        durationMs: 0,
+        durationMs: finalDurationMs,
       }).catch((e) => {
         console.warn("[FinishRecording] IndexedDB save failed:", e);
         showErrorToast("Failed to persist recording backup. Upload may not be recoverable if it fails.");
       });
 
-      const cfg = configRef.current;
-      const notesArr = stepVideosRef.current.map(
-        (sv) => stepNotesRef.current[sv.stepNumber] ?? ""
-      );
-      const totalMB = stepVideosRef.current.reduce((s, v) => s + v.blob.size, 0) / 1024 / 1024;
-      pushUploadLog(
-        "upload",
-        `Uploading ${stepVideosRef.current.length} step video(s) (${totalMB.toFixed(1)} MB)...`
-      );
-      console.log(`[FinishRecording] Uploading ${stepVideosRef.current.length} step video(s)...`);
-      const result = await uploadStepVideos({
-        stepVideos: stepVideosRef.current.map((sv) => sv.blob),
-        title: cfg?.title ?? "Untitled",
-        initialDescription: cfg?.description,
-        stepTranscripts: stepTranscriptsRef.current,
-        stepNotes: notesArr,
-        stepDurations: stepVideosRef.current.map((sv) => sv.durationMs),
-        apparatusVideo: apparatusBlobRef.current ?? undefined,
-      });
+      const wfId = incrementalWorkflowIdRef.current;
+      const totalSteps = stepVideosRef.current.length;
 
-      pushUploadLog("upload", "Upload complete — starting AI pipeline...");
-      console.log("[FinishRecording] Upload succeeded, workflow_id:", result.workflow_id);
-      await stepStorage.clearSession().catch((err: unknown) => console.warn("[FinishRecording] Post-upload IndexedDB cleanup failed:", err));
+      if (wfId) {
+        // ── Incremental path: upload final step + finalize ──────────
+        pushUploadLog("upload", `Uploading final step ${currentStepNumber}...`);
+        await uploadSingleStep({
+          workflowId: wfId,
+          stepNumber: currentStepNumber,
+          blob: finalBlob,
+          transcript,
+          note: stepNotesRef.current[currentStepNumber] ?? "",
+          durationMs: finalDurationMs,
+        });
 
-      setWorkflowId(result.workflow_id);
-      setSessionState("processing");
+        pushUploadLog("upload", `Finalizing workflow with ${totalSteps} steps...`);
+        await finalizeWorkflow(wfId, totalSteps);
+
+        pushUploadLog("upload", "All steps submitted — AI pipeline processing...");
+        console.log("[FinishRecording] Incremental finalize succeeded, workflow_id:", wfId);
+        await stepStorage.clearSession().catch((err: unknown) => console.warn("[FinishRecording] Post-upload IndexedDB cleanup failed:", err));
+
+        setWorkflowId(wfId);
+        setSessionState("processing");
+      } else {
+        // ── Batch fallback: upload everything at once ────────────────
+        const cfg = configRef.current;
+        const notesArr = stepVideosRef.current.map(
+          (sv) => stepNotesRef.current[sv.stepNumber] ?? ""
+        );
+        const totalMB = stepVideosRef.current.reduce((s, v) => s + v.blob.size, 0) / 1024 / 1024;
+        pushUploadLog(
+          "upload",
+          `Uploading ${totalSteps} step video(s) (${totalMB.toFixed(1)} MB)...`
+        );
+        console.log(`[FinishRecording] Batch uploading ${totalSteps} step video(s)...`);
+        const result = await uploadStepVideos({
+          stepVideos: stepVideosRef.current.map((sv) => sv.blob),
+          title: cfg?.title ?? "Untitled",
+          initialDescription: cfg?.description,
+          stepTranscripts: stepTranscriptsRef.current,
+          stepNotes: notesArr,
+          stepDurations: stepVideosRef.current.map((sv) => sv.durationMs),
+          apparatusVideo: apparatusBlobRef.current ?? undefined,
+        });
+
+        pushUploadLog("upload", "Upload complete — starting AI pipeline...");
+        console.log("[FinishRecording] Batch upload succeeded, workflow_id:", result.workflow_id);
+        await stepStorage.clearSession().catch((err: unknown) => console.warn("[FinishRecording] Post-upload IndexedDB cleanup failed:", err));
+
+        setWorkflowId(result.workflow_id);
+        setSessionState("processing");
+      }
     } catch (err) {
       console.error("[FinishRecording] Failed:", err);
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -523,6 +577,14 @@ export default function RecordingSessionPage() {
       const blob = await activeRecorder.snapshot();
       apparatusBlobRef.current = blob;
       console.log(`[Session] Apparatus showcase captured: ${(blob.size / 1024).toFixed(0)} KB`);
+
+      // Incremental: upload apparatus to pipeline immediately
+      const wfId = incrementalWorkflowIdRef.current;
+      if (wfId && blob.size > 0) {
+        uploadApparatus(wfId, blob).catch((e) => {
+          console.warn("[Session] Incremental apparatus upload failed:", e);
+        });
+      }
     } catch (err) {
       console.warn("[Session] Failed to snapshot apparatus video:", err);
     }
@@ -538,6 +600,8 @@ export default function RecordingSessionPage() {
     stepStartTimeRef.current = activeRecorder.getDurationMs();
     setSessionState("recording");
     fetchStepPrompt(1, []);
+    // No apparatus_done event needed — the manager defaults to apparatus_done=set
+    // when no apparatus is enqueued (has_apparatus stays false)
   }, [activeRecorder, fetchStepPrompt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---------------------------------------------------------------------------
@@ -691,6 +755,16 @@ export default function RecordingSessionPage() {
           description: cfg.description,
           createdAt: Date.now(),
         }).catch((err: unknown) => console.warn("[Session] Failed to save session metadata to IndexedDB:", err));
+
+        // Create workflow early for incremental pipeline uploads
+        createWorkflow(cfg.title, cfg.description)
+          .then((res) => {
+            incrementalWorkflowIdRef.current = res.workflow_id;
+            console.log("[Session] Incremental workflow created:", res.workflow_id);
+          })
+          .catch((err: unknown) => {
+            console.warn("[Session] Failed to create incremental workflow — will use batch upload:", err);
+          });
       }
     })();
   }, [config]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1029,7 +1103,7 @@ export default function RecordingSessionPage() {
                 border: "1px solid rgba(255,255,255,0.1)",
               }}
             >
-              <PinchIndicator leftPressed={pinchState.leftPressed} rightPressed={pinchState.rightPressed} />
+              <PinchIndicator leftPressed={gestureState.leftPressed} rightPressed={gestureState.rightPressed} />
             </div>
           )}
 
@@ -1209,7 +1283,7 @@ export default function RecordingSessionPage() {
                     finishLabel: "✓ Done with Showcase",
                     voiceHint: micEnabled
                       ? <>Say &ldquo;object done&rdquo; to advance &middot; Say &ldquo;move to step&rdquo; to finish showcase</>
-                      : <>Voice muted &middot; Double-tap pinch to advance</>,
+                      : <>Voice muted &middot; Spider-Man gesture to advance</>,
                     onNextStep: voiceNext,
                     onFinish: voiceFinish,
                     onSkip: handleApparatusSkip,

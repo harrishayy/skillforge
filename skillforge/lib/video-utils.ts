@@ -1,5 +1,45 @@
 import type { Step, StepFrame, ClickTarget } from "@/types";
 
+export interface ContainedRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Compute the actual display rectangle of a video inside a container that
+ * uses `object-fit: contain`. Returns the offset and dimensions in the
+ * container's coordinate space so overlay drawings can be mapped correctly.
+ */
+export function getContainedVideoRect(
+  videoWidth: number,
+  videoHeight: number,
+  containerWidth: number,
+  containerHeight: number,
+): ContainedRect {
+  if (videoWidth <= 0 || videoHeight <= 0 || containerWidth <= 0 || containerHeight <= 0) {
+    return { x: 0, y: 0, width: containerWidth, height: containerHeight };
+  }
+  const videoAspect = videoWidth / videoHeight;
+  const containerAspect = containerWidth / containerHeight;
+
+  let w: number, h: number;
+  if (videoAspect > containerAspect) {
+    w = containerWidth;
+    h = containerWidth / videoAspect;
+  } else {
+    h = containerHeight;
+    w = containerHeight * videoAspect;
+  }
+  return {
+    x: (containerWidth - w) / 2,
+    y: (containerHeight - h) / 2,
+    width: w,
+    height: h,
+  };
+}
+
 export function msToTimestamp(ms: number | null | undefined): string {
   if (ms == null || isNaN(ms)) return "0:00";
   const total = Math.floor(ms / 1000);
@@ -21,10 +61,13 @@ export function seekToStep(videoEl: HTMLVideoElement, step: Step) {
 }
 
 /**
- * Returns click_targets whose frame_path matches the closest detected frame
- * to the given video time. Always returns the nearest match so the overlay
- * stays visible throughout playback when detections exist. Click_targets
- * without a frame_path are shown unconditionally.
+ * Returns click_targets whose frame_path matches the closest *segmented*
+ * frame to the given video time. Only considers frames that actually have
+ * click_targets (i.e., SAM3 produced masks for them), not just any frame
+ * where Nemotron detected objects. This prevents empty results when the
+ * nearest detected frame wasn't successfully segmented.
+ *
+ * Click_targets without a frame_path are shown unconditionally.
  */
 export function getClickTargetsForTime(
   frames: StepFrame[],
@@ -50,11 +93,17 @@ export function getClickTargetsForTime(
 
   if (!withPath.length) return withoutPath.length ? withoutPath : clickTargets;
 
+  // Build a set of frame_paths that have click_targets so we only match
+  // against frames where SAM3 actually produced segments.
+  const segmentedPaths = new Set(ctByFrame.keys());
+
+  // Find the closest frame that has click_targets (not just object_detected).
+  // Fall back to any detected frame if none match.
   let bestFrame: StepFrame | null = null;
   let bestDist = Infinity;
 
   for (const f of frames) {
-    if (!f.object_detected) continue;
+    if (!segmentedPaths.has(f.frame_path)) continue;
     const dist = Math.abs(f.timestamp_ms - currentTimeMs);
     if (dist < bestDist) {
       bestDist = dist;
@@ -63,6 +112,7 @@ export function getClickTargetsForTime(
   }
 
   if (!bestFrame) {
+    // No frame matched by path — just use the first available set
     const firstFramePath = ctByFrame.keys().next().value;
     return firstFramePath ? (ctByFrame.get(firstFramePath) ?? withoutPath) : withoutPath;
   }

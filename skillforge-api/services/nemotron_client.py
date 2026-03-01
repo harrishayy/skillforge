@@ -26,7 +26,7 @@ def _get_client() -> httpx.AsyncClient:
     if _client is None or _client.is_closed:
         _client = httpx.AsyncClient(
             timeout=60.0,
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+            limits=httpx.Limits(max_connections=6, max_keepalive_connections=4),
         )
     return _client
 
@@ -34,9 +34,16 @@ def _get_client() -> httpx.AsyncClient:
 async def detect_object_in_frame(
     frame_path: str,
     object_description: str,
+    step_context: str | None = None,
 ) -> dict:
     """
     Check whether a described object is present in the given frame.
+
+    Args:
+        frame_path: Path to a JPEG frame image.
+        object_description: Text describing the object to detect.
+        step_context: Optional rich context (title, description, transcript)
+            from the Claude Haiku refinement stage to improve detection accuracy.
 
     Returns:
         {
@@ -61,7 +68,12 @@ async def detect_object_in_frame(
 
     image_b64 = resize_frame_for_api(frame_path, max_size=1024)
 
+    context_block = ""
+    if step_context:
+        context_block = f"{step_context}\n\n"
+
     prompt = (
+        f'{context_block}'
         f'Is the following object present in this image?\n'
         f'Object: {object_description}\n\n'
         f'Answer ONLY with valid JSON, no markdown:\n'
@@ -211,3 +223,64 @@ async def detect_object_in_frames_batch(
     positive = sum(1 for r in results if r["present"])
     print(f"[Nemotron] Scan complete: {positive}/{total} frames contain the object", flush=True)
     return results
+
+
+NEMOTRON_MAX_CONCURRENT = 6
+
+
+async def detect_objects_in_frames_parallel(
+    objects_with_frames: list[tuple[str, str, list[str]]],
+    max_concurrent: int = NEMOTRON_MAX_CONCURRENT,
+    step_context: str | None = None,
+) -> dict[str, list[dict]]:
+    """
+    Scan multiple objects across frames in parallel, sharing a single
+    concurrency semaphore so the GPU stays saturated without being overwhelmed.
+
+    Args:
+        objects_with_frames: List of (label, object_description, frame_paths) tuples.
+        max_concurrent: Max simultaneous Nemotron requests (matches httpx connection limit).
+        step_context: Optional rich context (title, description, transcript)
+            prepended to each detection prompt.
+
+    Returns:
+        {label: [{frame_path, present, description, center_x, center_y}, ...]}
+        Per-label results are ordered the same as the input frame_paths.
+    """
+    _EMPTY = {"present": False, "description": "", "center_x": None, "center_y": None}
+    sem = asyncio.Semaphore(max_concurrent)
+
+    async def _gated_detect(frame_path: str, description: str) -> dict:
+        async with sem:
+            try:
+                result = await detect_object_in_frame(frame_path, description, step_context=step_context)
+            except Exception as e:
+                print(f"[Nemotron] ✗ Parallel detection error: {e}", flush=True)
+                result = {**_EMPTY, "description": f"Error: {e}"}
+            return {"frame_path": frame_path, **result}
+
+    flat_coros = []
+    label_keys: list[str] = []
+
+    for label, description, frame_paths in objects_with_frames:
+        for fp in frame_paths:
+            flat_coros.append(_gated_detect(fp, description))
+            label_keys.append(label)
+
+    flat_results = await asyncio.gather(*flat_coros, return_exceptions=True)
+
+    buckets: dict[str, list[dict]] = {label: [] for label, _, _ in objects_with_frames}
+    for label, result in zip(label_keys, flat_results):
+        if isinstance(result, Exception):
+            print(f"[Nemotron] ✗ Parallel task error for \"{label}\": {result}", flush=True)
+            result = {"frame_path": "unknown", **_EMPTY, "description": f"Error: {result}"}
+        buckets[label].append(result)
+
+    for label, detections in buckets.items():
+        positive = sum(1 for d in detections if d["present"])
+        print(
+            f"[Nemotron] Parallel scan: \"{label}\" found in {positive}/{len(detections)} frames",
+            flush=True,
+        )
+
+    return buckets
