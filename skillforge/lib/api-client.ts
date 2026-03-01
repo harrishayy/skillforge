@@ -102,6 +102,7 @@ export async function uploadStepVideos(opts: {
   stepTranscripts?: string[];
   stepNotes?: string[];
   stepDurations?: number[];
+  apparatusVideo?: Blob;
 }): Promise<{ workflow_id: string; status: string }> {
   const totalBytes = opts.stepVideos.reduce((sum, b) => sum + b.size, 0);
   console.log(
@@ -126,6 +127,10 @@ export async function uploadStepVideos(opts: {
   }
   if (opts.stepDurations) {
     formData.append("step_durations_json", JSON.stringify(opts.stepDurations));
+  }
+  if (opts.apparatusVideo) {
+    console.log(`[uploadStepVideos] apparatus.webm — ${(opts.apparatusVideo.size / 1024).toFixed(0)} KB`);
+    formData.append("apparatus_video", opts.apparatusVideo, "apparatus.webm");
   }
 
   const controller = new AbortController();

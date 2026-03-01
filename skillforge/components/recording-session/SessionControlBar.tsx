@@ -19,6 +19,12 @@ interface SessionControlBarProps {
   onPause: () => void;
   onResume: () => void;
   onToggleMic: () => void;
+  phaseLabel?: string;
+  phaseLabelColor?: string;
+  nextLabel?: string;
+  finishLabel?: string;
+  voiceHint?: React.ReactNode;
+  onSkip?: () => void;
 }
 
 const GLASS =
@@ -39,7 +45,17 @@ export function SessionControlBar({
   onPause,
   onResume,
   onToggleMic,
+  phaseLabel,
+  phaseLabelColor,
+  nextLabel,
+  finishLabel,
+  voiceHint,
+  onSkip,
 }: SessionControlBarProps) {
+  const badgeText = phaseLabel ?? `Step ${currentStepNumber}`;
+  const badgeColor = phaseLabelColor ?? "var(--sf-purple)";
+  const nextBtnText = nextLabel ?? "→ Next Step";
+  const finishBtnText = finishLabel ?? "■ Finish";
   return (
     <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4">
       <div className={GLASS} style={{ overflow: "hidden" }}>
@@ -48,9 +64,9 @@ export function SessionControlBar({
           <div className="flex items-start gap-2">
             <span
               className="text-xs font-black uppercase tracking-wider mt-0.5 shrink-0 px-2 py-0.5 rounded-full"
-              style={{ backgroundColor: "var(--sf-purple)", color: "var(--sf-black)" }}
+              style={{ backgroundColor: badgeColor, color: "var(--sf-black)" }}
             >
-              Step {currentStepNumber}
+              {badgeText}
             </span>
             <div className="flex-1 min-h-5">
               <AnimatePresence mode="wait">
@@ -115,17 +131,26 @@ export function SessionControlBar({
               onClick={onNextStep}
               disabled={isPaused}
               className="text-xs font-bold px-4 py-1.5 rounded-xl transition-opacity hover:opacity-80 disabled:opacity-30"
-              style={{ backgroundColor: "var(--sf-purple)", color: "var(--sf-black)" }}
+              style={{ backgroundColor: badgeColor, color: "var(--sf-black)" }}
             >
-              → Next Step
+              {nextBtnText}
             </button>
             <button
               onClick={onFinish}
               className="text-xs font-bold px-3 py-1.5 rounded-xl transition-opacity hover:opacity-80"
               style={{ backgroundColor: "var(--sf-orange)", color: "var(--sf-black)" }}
             >
-              ■ Finish
+              {finishBtnText}
             </button>
+            {onSkip && (
+              <button
+                onClick={onSkip}
+                className="text-xs font-bold px-3 py-1.5 rounded-xl transition-opacity hover:opacity-80"
+                style={{ backgroundColor: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.6)" }}
+              >
+                Skip
+              </button>
+            )}
           </div>
         </div>
 
@@ -134,9 +159,11 @@ export function SessionControlBar({
           <p className="text-xs" style={{ color: voiceStatus === "unavailable" ? "rgba(239,68,68,0.7)" : "rgba(255,255,255,0.3)" }}>
             {voiceStatus === "unavailable"
               ? (voiceUnavailableReason ?? "Voice commands unavailable")
-              : micEnabled
-                ? <>Say &ldquo;next step&rdquo; or double-tap pinch to advance &middot; Say &ldquo;finish recording&rdquo; to end</>
-                : <>Voice commands muted &middot; Double-tap pinch to advance</>
+              : voiceHint
+                ? voiceHint
+                : micEnabled
+                  ? <>Say &ldquo;next step&rdquo; or double-tap pinch to advance &middot; Say &ldquo;finish recording&rdquo; to end</>
+                  : <>Voice commands muted &middot; Double-tap pinch to advance</>
             }
           </p>
           {voiceStatus !== "unavailable" && (

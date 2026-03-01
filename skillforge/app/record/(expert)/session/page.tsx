@@ -24,7 +24,7 @@ import { HelpAndChatPanel } from "@/components/recording-session/HelpAndChatPane
 import { StepSavedToast } from "@/components/recording-session/StepSavedToast";
 import { FinishConfirmation } from "@/components/recording-session/FinishConfirmation";
 
-type SessionState = "mounting" | "recovering" | "recording" | "confirming_finish" | "uploading" | "processing";
+type SessionState = "mounting" | "recovering" | "apparatus_showcase" | "recording" | "confirming_finish" | "uploading" | "processing";
 
 interface RecordingConfig {
   title: string;
@@ -66,6 +66,11 @@ export default function RecordingSessionPage() {
   const stepNotesRef = useRef<Record<number, string>>({});
   stepNotesRef.current = stepNotes;
   const [editingStepNumber, setEditingStepNumber] = useState<number | null>(null);
+
+  // Apparatus showcase state
+  const [apparatusPhase, setApparatusPhase] = useState<"overview" | "individual">("overview");
+  const [apparatusObjectCount, setApparatusObjectCount] = useState(0);
+  const apparatusBlobRef = useRef<Blob | null>(null);
 
   // Toast state
   const [savedStepToast, setSavedStepToast] = useState<number | null>(null);
@@ -285,6 +290,7 @@ export default function RecordingSessionPage() {
         stepTranscripts: stepTranscriptsRef.current,
         stepNotes: notesArr,
         stepDurations: stepVideosRef.current.map((sv) => sv.durationMs),
+        apparatusVideo: apparatusBlobRef.current ?? undefined,
       });
 
       pushUploadLog("upload", "Upload complete — starting AI pipeline...");
@@ -315,6 +321,8 @@ export default function RecordingSessionPage() {
 
       let durations: number[] | undefined;
 
+      let apparatusBlob: Blob | undefined;
+
       if (stepVideosRef.current.length > 0) {
         console.log("[RetryUpload] Using in-memory data");
         pushUploadLog("upload", "Retrying with in-memory data...");
@@ -324,6 +332,7 @@ export default function RecordingSessionPage() {
           (sv) => stepNotesRef.current[sv.stepNumber] ?? ""
         );
         durations = stepVideosRef.current.map((sv) => sv.durationMs);
+        apparatusBlob = apparatusBlobRef.current ?? undefined;
         const cfg = configRef.current;
         title = cfg?.title ?? "Untitled";
         description = cfg?.description;
@@ -361,6 +370,7 @@ export default function RecordingSessionPage() {
         stepTranscripts: transcripts,
         stepNotes: notes,
         stepDurations: durations,
+        apparatusVideo: apparatusBlob,
       });
       pushUploadLog("upload", "Upload complete — starting AI pipeline...");
       console.log("[RetryUpload] Success, workflow_id:", result.workflow_id);
@@ -430,12 +440,80 @@ export default function RecordingSessionPage() {
   }, [router]);
 
   // ---------------------------------------------------------------------------
+  // Exit (abandon recording)
+  // ---------------------------------------------------------------------------
+  const handleExit = useCallback(() => {
+    webcamRecorder.stop().catch((err: unknown) => console.warn("[Session] Webcam recorder stop failed during exit:", err));
+    stepStorage.clearSession().catch((err: unknown) => console.warn("[Session] IndexedDB cleanup failed during exit:", err));
+    router.push("/record/setup");
+  }, [webcamRecorder, router]);
+
+  // ---------------------------------------------------------------------------
+  // Apparatus showcase handlers (defined before voice commands so wrappers work)
+  // ---------------------------------------------------------------------------
+  const handleApparatusOverviewDone = useCallback(() => {
+    setApparatusPhase("individual");
+    setApparatusObjectCount(1);
+  }, []);
+
+  const handleApparatusNextObject = useCallback(() => {
+    setApparatusObjectCount((c) => c + 1);
+  }, []);
+
+  const handleApparatusDone = useCallback(async () => {
+    try {
+      const blob = await webcamRecorder.snapshot();
+      apparatusBlobRef.current = blob;
+      console.log(`[Session] Apparatus showcase captured: ${(blob.size / 1024).toFixed(0)} KB`);
+    } catch (err) {
+      console.warn("[Session] Failed to snapshot apparatus video:", err);
+    }
+
+    stepStartTimeRef.current = webcamRecorder.getDurationMs();
+    setSessionState("recording");
+    fetchStepPrompt(1, []);
+  }, [webcamRecorder, fetchStepPrompt]);
+
+  const handleApparatusSkip = useCallback(() => {
+    apparatusBlobRef.current = null;
+    stepStartTimeRef.current = webcamRecorder.getDurationMs();
+    setSessionState("recording");
+    fetchStepPrompt(1, []);
+  }, [webcamRecorder, fetchStepPrompt]);
+
+  // ---------------------------------------------------------------------------
+  // Voice-aware wrappers: route "next" / "finish" based on current phase
+  // ---------------------------------------------------------------------------
+  const apparatusPhaseRef = useRef(apparatusPhase);
+  apparatusPhaseRef.current = apparatusPhase;
+
+  const voiceNext = useCallback(() => {
+    if (sessionState === "apparatus_showcase") {
+      if (apparatusPhaseRef.current === "overview") {
+        handleApparatusOverviewDone();
+      } else {
+        handleApparatusNextObject();
+      }
+    } else {
+      handleNextStep();
+    }
+  }, [sessionState, handleApparatusOverviewDone, handleApparatusNextObject, handleNextStep]);
+
+  const voiceFinish = useCallback(() => {
+    if (sessionState === "apparatus_showcase") {
+      handleApparatusDone();
+    } else {
+      handleFinishRequest();
+    }
+  }, [sessionState, handleApparatusDone, handleFinishRequest]);
+
+  // ---------------------------------------------------------------------------
   // Voice commands (auto-managed by `enabled` prop)
   // ---------------------------------------------------------------------------
   const voice = useVoiceCommands({
-    onNextStep: handleNextStep,
-    onFinish: handleFinishRequest,
-    enabled: micEnabled && (sessionState === "recording" || sessionState === "confirming_finish"),
+    onNextStep: voiceNext,
+    onFinish: voiceFinish,
+    enabled: micEnabled && (sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase"),
     transcriptionSource: "browser",
     audioStream: webcamRecorder.audioStream,
   });
@@ -449,7 +527,7 @@ export default function RecordingSessionPage() {
     videoRef,
     handsEnabled: true,
     objectsEnabled: false,
-    enabled: sessionState === "recording" || sessionState === "confirming_finish",
+    enabled: sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase",
     onResult: (r) => {
       mpResultRef.current = r;
       setHandData(r.hands);
@@ -457,7 +535,7 @@ export default function RecordingSessionPage() {
   });
 
   useDoubleTapDetection(gesturesEnabled ? handData : null, {
-    onSkipForward: handleNextStep,
+    onSkipForward: voiceNext,
     onSkipBackward: () => {},
   });
 
@@ -485,7 +563,7 @@ export default function RecordingSessionPage() {
   }, []);
 
   useEffect(() => {
-    if (sessionState === "recording" || sessionState === "confirming_finish") {
+    if (sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase") {
       animFrameRef.current = requestAnimationFrame(renderLoop);
     }
     return () => cancelAnimationFrame(animFrameRef.current);
@@ -512,7 +590,9 @@ export default function RecordingSessionPage() {
       stepVideosRef.current = [];
       stepStartTimeRef.current = 0;
       setCurrentStepNumber(1);
-      setSessionState("recording");
+      setApparatusPhase("overview");
+      setApparatusObjectCount(0);
+      setSessionState("apparatus_showcase");
 
       // Persist session meta so recovery knows the title/description
       const cfg = configRef.current;
@@ -523,24 +603,27 @@ export default function RecordingSessionPage() {
           createdAt: Date.now(),
         }).catch((err: unknown) => console.warn("[Session] Failed to save session metadata to IndexedDB:", err));
       }
-
-      fetchStepPrompt(1, []);
     })();
   }, [config]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ---------------------------------------------------------------------------
-  // Exit (abandon recording)
-  // ---------------------------------------------------------------------------
-  const handleExit = useCallback(() => {
-    webcamRecorder.stop().catch((err: unknown) => console.warn("[Session] Webcam recorder stop failed during exit:", err));
-    stepStorage.clearSession().catch((err: unknown) => console.warn("[Session] IndexedDB cleanup failed during exit:", err));
-    router.push("/record/setup");
-  }, [webcamRecorder, router]);
+  // Apparatus-specific guidance prompts
+  useEffect(() => {
+    if (sessionState !== "apparatus_showcase") return;
+    if (apparatusPhase === "overview") {
+      setStepPrompt(
+        "Place all tools and parts needed for this workflow in the frame. Show everything together so the system can build an inventory."
+      );
+    } else {
+      setStepPrompt(
+        "Show this object individually from 2\u20133 angles, rotating slowly so the system can capture it from each side."
+      );
+    }
+  }, [sessionState, apparatusPhase]);
 
   // Keyboard shortcut: Escape to exit
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && (sessionState === "recording" || sessionState === "confirming_finish")) {
+      if (e.key === "Escape" && (sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase")) {
         handleExit();
       }
     };
@@ -551,7 +634,7 @@ export default function RecordingSessionPage() {
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
-  const isRecordingActive = sessionState === "recording" || sessionState === "confirming_finish";
+  const isRecordingActive = sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase";
 
   return (
     <div className="fixed inset-0 bg-black overflow-hidden">
@@ -630,6 +713,8 @@ export default function RecordingSessionPage() {
         </div>
       )}
 
+      {/* (apparatus overlay removed — SessionControlBar handles it now) */}
+
       {/* Unified uploading + processing overlay */}
       {(sessionState === "uploading" || sessionState === "processing") && (
         <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: "var(--sf-white)" }}>
@@ -670,9 +755,16 @@ export default function RecordingSessionPage() {
           </div>
           <span
             className="text-xs font-bold px-2.5 py-1 rounded-full"
-            style={{ backgroundColor: "var(--sf-purple)", color: "var(--sf-black)" }}
+            style={{
+              backgroundColor: sessionState === "apparatus_showcase" ? "var(--sf-yellow)" : "var(--sf-purple)",
+              color: "var(--sf-black)",
+            }}
           >
-            Step {currentStepNumber}
+            {sessionState === "apparatus_showcase"
+              ? apparatusPhase === "overview"
+                ? "Apparatus — Overview"
+                : `Apparatus — Object ${apparatusObjectCount}`
+              : `Step ${currentStepNumber}`}
           </span>
 
           {/* Mic toggle */}
@@ -804,6 +896,11 @@ export default function RecordingSessionPage() {
         currentStepNumber={currentStepNumber}
         editingStepNumber={editingStepNumber}
         onStepClick={handleEditStep}
+        apparatus={sessionState === "apparatus_showcase" ? {
+          active: true,
+          phase: apparatusPhase,
+          objectCount: apparatusObjectCount,
+        } : undefined}
       />
 
       {/* Right panel: help & chat */}
@@ -814,6 +911,7 @@ export default function RecordingSessionPage() {
         stepNotes={stepNotes}
         onSaveNote={handleSaveNote}
         onEditStep={handleEditStep}
+        apparatusActive={sessionState === "apparatus_showcase"}
       />
 
       {/* Right toolbar */}
@@ -825,9 +923,9 @@ export default function RecordingSessionPage() {
         />
       )}
 
-      {/* Bottom control bar (hidden when confirming finish) */}
+      {/* Bottom control bar */}
       <AnimatePresence>
-        {sessionState === "recording" && (
+        {(sessionState === "recording" || sessionState === "apparatus_showcase") && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -843,11 +941,31 @@ export default function RecordingSessionPage() {
               isListening={voice.isListening}
               voiceStatus={voice.status}
               voiceUnavailableReason={voice.unavailableReason}
-              onNextStep={handleNextStep}
-              onFinish={handleFinishRequest}
               onPause={webcamRecorder.pause}
               onResume={webcamRecorder.resume}
               onToggleMic={() => setMicEnabled((v) => !v)}
+              {...(sessionState === "apparatus_showcase"
+                ? {
+                    phaseLabel: apparatusPhase === "overview"
+                      ? "Overview"
+                      : `Object ${apparatusObjectCount}`,
+                    phaseLabelColor: "var(--sf-yellow)",
+                    nextLabel: apparatusPhase === "overview"
+                      ? "→ Individual Objects"
+                      : "→ Next Object",
+                    finishLabel: "✓ Done with Showcase",
+                    voiceHint: micEnabled
+                      ? <>Say &ldquo;next&rdquo; to advance &middot; Say &ldquo;done&rdquo; to finish showcase</>
+                      : <>Voice muted &middot; Double-tap pinch to advance</>,
+                    onNextStep: voiceNext,
+                    onFinish: voiceFinish,
+                    onSkip: handleApparatusSkip,
+                  }
+                : {
+                    onNextStep: handleNextStep,
+                    onFinish: handleFinishRequest,
+                  }
+              )}
             />
           </motion.div>
         )}
