@@ -211,3 +211,61 @@ async def detect_object_in_frames_batch(
     positive = sum(1 for r in results if r["present"])
     print(f"[Nemotron] Scan complete: {positive}/{total} frames contain the object", flush=True)
     return results
+
+
+NEMOTRON_MAX_CONCURRENT = 4
+
+
+async def detect_objects_in_frames_parallel(
+    objects_with_frames: list[tuple[str, str, list[str]]],
+    max_concurrent: int = NEMOTRON_MAX_CONCURRENT,
+) -> dict[str, list[dict]]:
+    """
+    Scan multiple objects across frames in parallel, sharing a single
+    concurrency semaphore so the GPU stays saturated without being overwhelmed.
+
+    Args:
+        objects_with_frames: List of (label, object_description, frame_paths) tuples.
+        max_concurrent: Max simultaneous Nemotron requests (matches httpx connection limit).
+
+    Returns:
+        {label: [{frame_path, present, description, center_x, center_y}, ...]}
+        Per-label results are ordered the same as the input frame_paths.
+    """
+    _EMPTY = {"present": False, "description": "", "center_x": None, "center_y": None}
+    sem = asyncio.Semaphore(max_concurrent)
+
+    async def _gated_detect(frame_path: str, description: str) -> dict:
+        async with sem:
+            try:
+                result = await detect_object_in_frame(frame_path, description)
+            except Exception as e:
+                print(f"[Nemotron] ✗ Parallel detection error: {e}", flush=True)
+                result = {**_EMPTY, "description": f"Error: {e}"}
+            return {"frame_path": frame_path, **result}
+
+    flat_coros = []
+    label_keys: list[str] = []
+
+    for label, description, frame_paths in objects_with_frames:
+        for fp in frame_paths:
+            flat_coros.append(_gated_detect(fp, description))
+            label_keys.append(label)
+
+    flat_results = await asyncio.gather(*flat_coros, return_exceptions=True)
+
+    buckets: dict[str, list[dict]] = {label: [] for label, _, _ in objects_with_frames}
+    for label, result in zip(label_keys, flat_results):
+        if isinstance(result, Exception):
+            print(f"[Nemotron] ✗ Parallel task error for \"{label}\": {result}", flush=True)
+            result = {"frame_path": "unknown", **_EMPTY, "description": f"Error: {result}"}
+        buckets[label].append(result)
+
+    for label, detections in buckets.items():
+        positive = sum(1 for d in detections if d["present"])
+        print(
+            f"[Nemotron] Parallel scan: \"{label}\" found in {positive}/{len(detections)} frames",
+            flush=True,
+        )
+
+    return buckets
