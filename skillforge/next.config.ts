@@ -1,10 +1,16 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Disable React Strict Mode to prevent the double-mount in development.
+  // Strict Mode runs useEffect cleanup+setup twice, causing useCameraRoomProducer
+  // to open a WebSocket, close it (ws.close(1000)), then open a new one. On mobile
+  // browsers, the close frame is sent but the TCP connection is dropped before the
+  // server can respond → server reports code 1006 → phone shows "Disconnected".
+  reactStrictMode: false,
   // Allow dev server to serve when opened via LAN IP or ngrok. Add your ngrok origin if it changes.
   allowedDevOrigins: [
-    "https://phytocidal-unsquabbling-joshua.ngrok-free.dev",
-    "phytocidal-unsquabbling-joshua.ngrok-free.dev",
+    "*.ngrok-free.app",
+    "*.ngrok-free.dev",
     "http://192.168.114.254:3000",
     "https://192.168.114.254:3000",
     "192.168.114.254",

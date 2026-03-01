@@ -68,6 +68,7 @@ export default function LiveDetectPage() {
   const [remoteDimensions, setRemoteDimensions] = useState<{ w: number; h: number } | null>(null);
   const [focusReticle, setFocusReticle] = useState<{ left: number; top: number } | null>(null);
   const focusReticleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [qrUrl, setQrUrl] = useState<string>("");
 
   const toggleOverlayPanel = useCallback((panel: keyof OverlayPanels) => {
     setOverlayPanels((prev) => ({ ...prev, [panel]: !prev[panel] }));
@@ -102,9 +103,32 @@ export default function LiveDetectPage() {
     videoRef,
     sessionId: isCameraOnlyMode ? sessionParam : null,
     host: isCameraOnlyMode ? hostParam ?? undefined : undefined,
-    enabled: isCameraOnlyMode,
+    // Gate on isActive so the WebSocket only opens after the camera permission
+    // is granted and the video stream is live. Opening before this causes the
+    // browser to suspend the page during the permission prompt, dropping the
+    // TCP connection with code 1006 and leaving the phone in "Disconnected".
+    enabled: isCameraOnlyMode && isActive,
     targetFps: 24,
   });
+
+  // Compute the QR code URL client-side to avoid SSR hydration mismatch.
+  // typeof window checks inside JSX cause React to warn "won't be patched up"
+  // because SSR returns "" while the client returns the full URL.
+  useEffect(() => {
+    if (!remoteSessionId) {
+      setQrUrl("");
+      return;
+    }
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || window.location.origin;
+    const wsHost =
+      process.env.NEXT_PUBLIC_WS_HOST ||
+      (process.env.NEXT_PUBLIC_APP_URL
+        ? `${new URL(process.env.NEXT_PUBLIC_APP_URL).hostname}:8001`
+        : `${window.location.hostname}:8001`);
+    setQrUrl(
+      `${appUrl.replace(/\/$/, "")}/live?mode=camera&session=${remoteSessionId}&host=${encodeURIComponent(wsHost)}`
+    );
+  }, [remoteSessionId]);
 
   useEffect(() => {
     return () => {
@@ -259,7 +283,7 @@ export default function LiveDetectPage() {
     onNextStep: skipForward,
     onPreviousStep: skipBackward,
     onFinish: () => {},
-    enabled: displayActive && micEnabled,
+    enabled: !isCameraOnlyMode && isActive && micEnabled,
   });
 
   useEffect(() => {
@@ -955,26 +979,12 @@ export default function LiveDetectPage() {
             </p>
             <div className="p-3 rounded-xl bg-white">
               <QRCodeSVG
-                value={
-                  (() => {
-                    if (typeof window === "undefined") return "";
-                    const appUrl =
-                      process.env.NEXT_PUBLIC_APP_URL ||
-                      window.location.origin;
-                    const wsHost =
-                      process.env.NEXT_PUBLIC_WS_HOST ||
-                      (process.env.NEXT_PUBLIC_APP_URL
-                        ? `${new URL(process.env.NEXT_PUBLIC_APP_URL).hostname}:8001`
-                        : `${window.location.hostname}:8001`);
-                    return `${appUrl.replace(/\/$/, "")}/live?mode=camera&session=${remoteSessionId}&host=${encodeURIComponent(wsHost)}`;
-                  })()
-                }
+                value={qrUrl || " "}
                 size={200}
                 level="M"
               />
             </div>
-            {typeof window !== "undefined" &&
-              !process.env.NEXT_PUBLIC_APP_URL &&
+            {!process.env.NEXT_PUBLIC_APP_URL &&
               (window.location.hostname === "localhost" ||
                 window.location.hostname === "127.0.0.1") && (
               <p className="text-xs" style={{ color: "var(--sf-orange)" }}>

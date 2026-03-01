@@ -6,6 +6,8 @@ import { CAMERA_ROOM_WS } from "@/lib/constants";
 const CAPTURE_WIDTH = 1920;
 const CAPTURE_HEIGHT = 1080;
 const JPEG_QUALITY = 0.7;
+const RECONNECT_DELAY_MS = 2000;
+const MAX_RECONNECT_ATTEMPTS = 5;
 
 export type CameraRoomProducerStatus = "connecting" | "open" | "closed" | "error";
 
@@ -24,6 +26,12 @@ interface UseCameraRoomProducerReturn {
 /**
  * When enabled, connects to the camera room WebSocket as producer, sends role,
  * then streams frames from the given video ref at 1920×1080 (1080p).
+ *
+ * Auto-reconnects on abnormal closure (code ≠ 1000/1001) up to MAX_RECONNECT_ATTEMPTS
+ * times with a RECONNECT_DELAY_MS delay between attempts. This handles:
+ *   - React Strict Mode double-mount causing rapid close
+ *   - Transient ngrok connection drops
+ *   - OS/browser page suspension during camera permission prompt
  */
 export function useCameraRoomProducer({
   videoRef,
@@ -38,8 +46,11 @@ export function useCameraRoomProducer({
   const wsRef = useRef<WebSocket | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const roleSentRef = useRef(false);
+  const reconnectCountRef = useRef(0);
+  const activeRef = useRef(false); // tracks whether this effect instance is still mounted
 
   const captureAndSend = useCallback(() => {
     const video = videoRef.current;
@@ -91,51 +102,79 @@ export function useCameraRoomProducer({
         wsRef.current.close(1000);
         wsRef.current = null;
       }
+      if (reconnectRef.current) {
+        clearTimeout(reconnectRef.current);
+        reconnectRef.current = null;
+      }
       roleSentRef.current = false;
+      reconnectCountRef.current = 0;
       setConnectionStatus("closed");
       return;
     }
 
-    const url = CAMERA_ROOM_WS(sessionId, host ?? undefined);
-    setConnectionStatus("connecting");
-    roleSentRef.current = false;
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
+    activeRef.current = true;
+    reconnectCountRef.current = 0;
 
-    ws.onopen = () => {
-      try {
-        ws.send(JSON.stringify({ role: "producer" }));
-        roleSentRef.current = true;
-        setConnectionStatus("open");
-        startDelayRef.current = setTimeout(() => {
-          startDelayRef.current = null;
-          if (intervalRef.current) return;
-          intervalRef.current = setInterval(captureAndSend, 1000 / targetFps);
-        }, 400);
-      } catch {
-        setConnectionStatus("error");
-      }
-    };
+    const connect = () => {
+      if (!activeRef.current) return;
 
-    ws.onclose = () => {
-      wsRef.current = null;
+      const url = CAMERA_ROOM_WS(sessionId, host ?? undefined);
+      setConnectionStatus("connecting");
       roleSentRef.current = false;
-      if (startDelayRef.current) {
-        clearTimeout(startDelayRef.current);
-        startDelayRef.current = null;
-      }
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      setConnectionStatus("closed");
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (!activeRef.current) { ws.close(1000); return; }
+        try {
+          ws.send(JSON.stringify({ role: "producer" }));
+          roleSentRef.current = true;
+          reconnectCountRef.current = 0; // reset on successful open
+          setConnectionStatus("open");
+          startDelayRef.current = setTimeout(() => {
+            startDelayRef.current = null;
+            if (intervalRef.current) return;
+            intervalRef.current = setInterval(captureAndSend, 1000 / targetFps);
+          }, 400);
+        } catch {
+          setConnectionStatus("error");
+        }
+      };
+
+      ws.onclose = (event) => {
+        wsRef.current = null;
+        roleSentRef.current = false;
+        if (startDelayRef.current) {
+          clearTimeout(startDelayRef.current);
+          startDelayRef.current = null;
+        }
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+        setConnectionStatus("closed");
+
+        // Auto-reconnect on abnormal closure (not intentional 1000/1001).
+        // Code 1006 = TCP dropped without close frame (React Strict Mode or network blip).
+        const isAbnormal = event.code !== 1000 && event.code !== 1001;
+        if (isAbnormal && activeRef.current && reconnectCountRef.current < MAX_RECONNECT_ATTEMPTS) {
+          reconnectCountRef.current += 1;
+          console.log(
+            `[CameraRoomProducer] Abnormal close (${event.code}), reconnect attempt ${reconnectCountRef.current}/${MAX_RECONNECT_ATTEMPTS} in ${RECONNECT_DELAY_MS}ms`
+          );
+          reconnectRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
+        }
+      };
+
+      ws.onerror = () => {
+        setConnectionStatus("error");
+      };
     };
 
-    ws.onerror = () => {
-      setConnectionStatus("error");
-    };
+    connect();
 
     return () => {
+      activeRef.current = false;
       if (startDelayRef.current) {
         clearTimeout(startDelayRef.current);
         startDelayRef.current = null;
@@ -144,9 +183,16 @@ export function useCameraRoomProducer({
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
-      ws.close(1000);
-      wsRef.current = null;
+      if (reconnectRef.current) {
+        clearTimeout(reconnectRef.current);
+        reconnectRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close(1000);
+        wsRef.current = null;
+      }
       roleSentRef.current = false;
+      reconnectCountRef.current = 0;
       setConnectionStatus("closed");
     };
   }, [enabled, sessionId, host, targetFps, captureAndSend]);

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CAMERA_ROOM_WS } from "@/lib/constants";
 import type { DetectionResult } from "@/hooks/useLiveDetect";
 
 export type CameraRoomViewerStatus = "connecting" | "open" | "closed" | "error";
@@ -55,14 +54,11 @@ export function useCameraRoomViewer({
       return;
     }
 
-    // When the viewer runs on the laptop at localhost, connect to localhost:8001 so the
-    // viewer uses the local AR server. When using ngrok, the page origin is the ngrok URL
-    // so no override; NEXT_PUBLIC_WS_HOST (the AR tunnel host) is used.
-    const hostOverride =
-      typeof window !== "undefined" && window.location.hostname === "localhost"
-        ? "localhost:8001"
-        : undefined;
-    const url = CAMERA_ROOM_WS(sessionId, hostOverride);
+    // The viewer always runs on the laptop, so connect directly to the local AR
+    // backend. Use explicit ws:// to avoid wss:// being inferred from the page
+    // origin when accessed via ngrok (browsers allow ws://localhost from https
+    // pages via the loopback mixed-content exception).
+    const url = `ws://localhost:8001/ws/camera/${sessionId}`;
     setConnectionStatus("connecting");
     const ws = new WebSocket(url);
     wsRef.current = ws;
