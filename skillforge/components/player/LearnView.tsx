@@ -48,6 +48,7 @@ export function LearnView({
   const suggestPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cameraOverlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const cameraOverlayRafRef = useRef<number>(0);
+  const sam3MaskCacheRef = useRef<Map<string, ImageBitmap>>(new Map());
   const [cameraHands, setCameraHands] = useState<import("@/hooks/useLiveDetect").HandData | null>(null);
   const cameraHandsRef = useRef<import("@/hooks/useLiveDetect").HandData | null>(null);
   const [lastDetectionResult, setLastDetectionResult] = useState<{
@@ -202,6 +203,13 @@ export function LearnView({
     }
   }, [workflow, workflowId, currentStep, setSubtasksForStep]);
 
+  const handleTimeUpdate = useCallback(() => {
+    const video = videoRef.current;
+    if (video && video.duration && !isNaN(video.duration) && video.duration > 0) {
+      setStepProgress(video.currentTime / video.duration);
+    }
+  }, [setStepProgress]);
+
   const handleVideoEnded = useCallback(() => {
     if (!workflow) return;
     setIsPlaying(false);
@@ -219,13 +227,19 @@ export function LearnView({
       setIsPausedAtStepEnd(false);
       return;
     }
-    if (currentStepIndex >= workflow.steps.length - 1) return;
+    if (currentStepIndex >= workflow.steps.length - 1) {
+      setStepProgress(1);
+      setIsPlaying(false);
+      setIsPausedAtStepEnd(true);
+      videoRef.current?.pause();
+      return;
+    }
     const nextIdx = currentStepIndex + 1;
     setStepProgress(0);
     setIsPausedAtStepEnd(false);
     setCurrentStepIndex(nextIdx);
     handleStepChange(nextIdx);
-  }, [workflow, currentStep, currentStepIndex, subtasksByStep, currentSubtaskIndexByStep, setSuggestComplete, setCurrentSubtaskIndex, setStepProgress, setIsPausedAtStepEnd, setCurrentStepIndex, handleStepChange]);
+  }, [workflow, currentStep, currentStepIndex, subtasksByStep, currentSubtaskIndexByStep, setSuggestComplete, setCurrentSubtaskIndex, setStepProgress, setIsPausedAtStepEnd, setCurrentStepIndex, handleStepChange, setIsPlaying]);
 
   const handleVoiceNextStep = useCallback(() => {
     const state = usePlayerStore.getState();
@@ -240,12 +254,18 @@ export function LearnView({
       setIsPausedAtStepEnd(false);
       return;
     }
-    if (idx >= workflow.steps.length - 1) return;
+    if (idx >= workflow.steps.length - 1) {
+      setStepProgress(1);
+      setIsPlaying(false);
+      setIsPausedAtStepEnd(true);
+      videoRef.current?.pause();
+      return;
+    }
     setStepProgress(0);
     setCurrentStepIndex(idx + 1);
     setIsPausedAtStepEnd(false);
     handleStepChange(idx + 1);
-  }, [workflow, handleStepChange, setSuggestComplete, setStepProgress, setCurrentStepIndex, setCurrentSubtaskIndex, setIsPausedAtStepEnd]);
+  }, [workflow, handleStepChange, setSuggestComplete, setStepProgress, setCurrentStepIndex, setCurrentSubtaskIndex, setIsPausedAtStepEnd, setIsPlaying]);
 
   const handleVoicePrevStep = useCallback(() => {
     const state = usePlayerStore.getState();
@@ -362,18 +382,14 @@ export function LearnView({
     enabled: isTrainingMode && !!cameraStream,
     onResult: (r) => {
       cameraHandsRef.current = r.hands;
+      setCameraHands(r.hands);
     },
   });
 
   useEffect(() => {
     if (!isTrainingMode) {
       setCameraHands(null);
-      return;
     }
-    const t = setInterval(() => {
-      setCameraHands(cameraHandsRef.current);
-    }, 200);
-    return () => clearInterval(t);
   }, [isTrainingMode]);
 
   useDoubleTapDetection(isTrainingMode ? cameraHands : null, {
@@ -382,6 +398,43 @@ export function LearnView({
   });
 
   const SAM3_STROKE_COLORS = ["#00FF80", "#00C8FF", "#FF64FF", "#FFC800", "#FF5050", "#648CFF"];
+  const SAM3_MASK_COLORS = [
+    "rgba(0, 255, 128, 0.45)",
+    "rgba(0, 200, 255, 0.45)",
+    "rgba(255, 100, 255, 0.45)",
+    "rgba(255, 200, 0, 0.45)",
+    "rgba(255, 80, 80, 0.45)",
+    "rgba(100, 140, 255, 0.45)",
+  ];
+
+  // Decode and cache SAM3 mask images when detection result updates (so mask overlays can be drawn)
+  useEffect(() => {
+    const segments = lastDetectionResult?.sam3_segments ?? [];
+    const cache = sam3MaskCacheRef.current;
+    for (const seg of segments) {
+      const maskB64 = seg.mask_base64;
+      if (!maskB64 || cache.has(maskB64)) continue;
+      try {
+        const bytes = Uint8Array.from(atob(maskB64), (c) => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: "image/png" });
+        createImageBitmap(blob).then((rawBmp) => {
+          const oc = document.createElement("canvas");
+          oc.width = rawBmp.width;
+          oc.height = rawBmp.height;
+          const octx = oc.getContext("2d");
+          if (!octx) return;
+          octx.drawImage(rawBmp, 0, 0);
+          const imgData = octx.getImageData(0, 0, oc.width, oc.height);
+          const d = imgData.data;
+          for (let j = 0; j < d.length; j += 4) d[j + 3] = d[j];
+          octx.putImageData(imgData, 0, 0);
+          createImageBitmap(oc).then((alphaBmp) => cache.set(maskB64, alphaBmp));
+        });
+      } catch {
+        // ignore decode errors
+      }
+    }
+  }, [lastDetectionResult?.sam3_segments]);
 
   useEffect(() => {
     if (!isTrainingMode || !cameraRef.current) return;
@@ -401,37 +454,56 @@ export function LearnView({
         return;
       }
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const realTimeHands = cameraHandsRef.current?.hands;
+      if (realTimeHands?.length) {
+        renderHandLandmarks(ctx, realTimeHands, canvas.width, canvas.height, t);
+      }
       const result = lastDetectionResult;
-      if (result) {
-        if (result.hands?.hands?.length) {
-          renderHandLandmarks(ctx, result.hands.hands, canvas.width, canvas.height, t);
-        }
-        if (result.sam3_segments?.length) {
-          const labelPrefix = currentStep?.sam3_prompt ?? "Object";
-          result.sam3_segments.forEach((seg, i) => {
-            const [bx1, by1, bx2, by2] = seg.bbox ?? [0, 0, 0, 0];
-            const sx = bx1 * canvas.width;
-            const sy = by1 * canvas.height;
-            const sw = (bx2 - bx1) * canvas.width;
-            const sh = (by2 - by1) * canvas.height;
-            const strokeColor = SAM3_STROKE_COLORS[i % SAM3_STROKE_COLORS.length];
+      if (result?.sam3_segments?.length) {
+        const labelPrefix = currentStep?.sam3_prompt ?? "Object";
+        const maskCache = sam3MaskCacheRef.current;
+        result.sam3_segments.forEach((seg, i) => {
+          const strokeColor = SAM3_STROKE_COLORS[i % SAM3_STROKE_COLORS.length];
+          const maskColor = SAM3_MASK_COLORS[i % SAM3_MASK_COLORS.length];
+          const bmp = seg.mask_base64 ? maskCache.get(seg.mask_base64) : null;
+          if (bmp) {
             ctx.save();
-            ctx.strokeStyle = strokeColor;
-            ctx.lineWidth = 3;
-            ctx.globalAlpha = 1;
-            ctx.strokeRect(sx, sy, sw, sh);
-            const label = `${labelPrefix} ${Math.round((seg.score ?? 0) * 100)}%`;
-            ctx.font = "bold 14px system-ui";
-            const tw = ctx.measureText(label).width;
-            ctx.fillStyle = strokeColor;
-            ctx.globalAlpha = 0.9;
-            ctx.fillRect(sx, sy - 24, tw + 12, 24);
-            ctx.fillStyle = "#fff";
-            ctx.globalAlpha = 1;
-            ctx.fillText(label, sx + 6, sy - 7);
+            ctx.globalAlpha = 0.55;
+            ctx.globalCompositeOperation = "source-over";
+            const offscreen = document.createElement("canvas");
+            offscreen.width = canvas.width;
+            offscreen.height = canvas.height;
+            const offCtx = offscreen.getContext("2d");
+            if (offCtx) {
+              offCtx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+              offCtx.globalCompositeOperation = "source-in";
+              offCtx.fillStyle = maskColor;
+              offCtx.fillRect(0, 0, canvas.width, canvas.height);
+              ctx.drawImage(offscreen, 0, 0);
+            }
             ctx.restore();
-          });
-        }
+          }
+          const [bx1, by1, bx2, by2] = seg.bbox ?? [0, 0, 0, 0];
+          const sx = bx1 * canvas.width;
+          const sy = by1 * canvas.height;
+          const sw = (bx2 - bx1) * canvas.width;
+          const sh = (by2 - by1) * canvas.height;
+          ctx.save();
+          ctx.strokeStyle = strokeColor;
+          ctx.lineWidth = 3;
+          ctx.globalAlpha = 1;
+          ctx.strokeRect(sx, sy, sw, sh);
+          const label = `${labelPrefix} ${Math.round((seg.score ?? 0) * 100)}%`;
+          ctx.font = "bold 14px system-ui";
+          const tw = ctx.measureText(label).width;
+          ctx.fillStyle = strokeColor;
+          ctx.globalAlpha = 0.9;
+          ctx.fillRect(sx, sy - 24, tw + 12, 24);
+          ctx.fillStyle = "#fff";
+          ctx.globalAlpha = 1;
+          ctx.fillText(label, sx + 6, sy - 7);
+          ctx.restore();
+        });
       }
       cameraOverlayRafRef.current = requestAnimationFrame(render);
     };
@@ -553,7 +625,7 @@ export function LearnView({
                   {currentStep && (
                     <StepVideoOverlay videoRef={videoRef} step={currentStep} />
                   )}
-                  {!isTrainingMode && isPausedAtStepEnd && currentStep && (
+                  {isPausedAtStepEnd && currentStep && (
                     <StepTransition
                       key={`transition-${currentStepIndex}`}
                       completedStep={currentStep}

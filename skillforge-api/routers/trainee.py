@@ -13,8 +13,9 @@ from services.sam3_service import segment_concept as sam3_segment_concept
 
 router = APIRouter(prefix="/api/trainee", tags=["trainee"])
 
-# Suggest complete when SAM3 segment score >= this
-SUGGEST_SAM3_CONFIDENCE = 0.35
+# Suggest complete when SAM3 segment score >= this; only segments at or above this are returned and shown on screen.
+# Use 0.59 so scores that round to 60% (e.g. 0.596) are included.
+SUGGEST_SAM3_CONFIDENCE = 0.59
 # Hand "near" object: index tip within this normalized distance of bbox center, or inside expanded bbox
 HAND_NEAR_BBOX_EXPAND = 0.12
 HAND_NEAR_CENTER_DIST = 0.25
