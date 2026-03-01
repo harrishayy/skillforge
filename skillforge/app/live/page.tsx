@@ -729,7 +729,7 @@ export default function LiveDetectPage() {
             )}
           </>
         )}
-        {isActive && (
+        {displayActive && (
           <button
             onClick={() => setMicEnabled((v) => !v)}
             className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg transition-all hover:scale-105"

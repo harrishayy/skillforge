@@ -164,9 +164,55 @@ Merged teammates' work (apparatus pipeline, SAM3 client, new components, etc.) i
 Removed the `-90°` rotation transform. Phone camera video is already correctly oriented — the rotation was causing the feed to appear rotated on the laptop.
 Final code: `ctx.drawImage(video, 0, 0, CAPTURE_WIDTH, CAPTURE_HEIGHT)` — no transform.
 
+### Fix 20 — `backend/main.py`: add `z` coordinate + `handedness` to landmark data ← **GESTURE DETECTION FIX**
+**Root cause:** Gesture detection (pinch/double-tap) silently failed for the remote camera feed due to two missing fields in the backend's landmark output.
+
+**Root cause A — missing `z`:** `pinch-detection.ts:toNormalized()` accesses `lm.z`. The backend only sent `{x, y}`. With `z = undefined`, `distance3d()` returns `NaN`, and `NaN < PINCH_THRESHOLD` is always `false` → pinch never detected.
+
+**Root cause B — missing `handedness`:** `computePinchState()` skips any hand where `!handedness` (line 55). Without it, both hands are skipped → `leftPressed` and `rightPressed` always `false`.
+
+**Fix in `run_hand_detection()` and `run_hand_detection_video()`:**
+- Changed return type from `list[list[dict]]` → `list[dict]` (each dict = `{"landmarks": [...], "handedness": "Left"|"Right"|None}`)
+- Added `"z": round(lm.z, 4)` to every landmark
+- Extracted `handedness` from `result.handedness[i][0].display_name`
+- Updated `_build_detect_response()` to pass the hand dicts through directly instead of re-wrapping
+
+**Result:** Pinch indicator lights up, double-tap gestures trigger skip/rewind on remote camera feed.
+
+### Fix 21 — `live/page.tsx`: voice recognition enabled in remote camera mode
+**Root cause:** `useVoiceCommands` was gated on `enabled: !isCameraOnlyMode && isActive && micEnabled`. `isActive` is the local laptop camera state — always `false` when using the phone as remote camera → voice permanently disabled.
+
+**Fix:** Changed `isActive` → `displayActive`. `displayActive` is `true` in both local (`isActive`) and remote (`!!remoteSessionId`) modes. Voice now starts listening as soon as the remote session is active.
+
+### Fix 22 — `live/page.tsx`: mic button visible in remote camera mode
+**Root cause:** The mic toggle button and its status indicator (`"Listening"` / `"Starting..."` / `"Unavailable"`) were inside `{isActive && (...)}`. In remote mode `isActive = false` → button hidden → user had no feedback that voice was running (or failing).
+
+**Fix:** Changed gate from `{isActive && (...)}` → `{displayActive && (...)}` on the mic button only. The gesture toggle remains on `{isActive && ...}` since gesture detection works correctly in remote mode without a toggle (gestures are always enabled via `gesturesEnabled = true` default).
+
+### Fix 23 — Merge `origin/main` into `fix/camera-feed` (second merge)
+Main had 14 new commits (`8dc3ba8`) that broke 5 critical camera fixes:
+- `server.mjs` **deleted** in main → restored from our branch
+- `next.config.ts`: main re-added `/ws/:path*` rewrite (root cause of Fix 14) + removed `reactStrictMode: false` + dropped wildcard origins → kept our version
+- `package.json`: main reverted `dev` to `next dev` → kept our `node server.mjs`
+- `useCameraRoomProducer.ts`: main reverted to 1080p + re-added -90° rotation + removed reconnect → kept our version
+- `live/page.tsx`: main removed `isActive` gate + removed QR hydration fix → kept our version
+
+New features taken from main:
+- `useVoiceCommands`: `requireUserGesture`, `displayTranscript`, `startListening`, `onElaborate`
+- `useDoubleTapDetection`: moved logic to `useEffect` (avoids setState-during-render)
+- Backend additions: `trainee.py`, `voice.py`, `asr_service.py`, new services
+- Player components: `StepTimelineVertical`, `StepHistoryPanel`, `SubtitleOverlay`
+
 ---
 
-## Remaining Tasks (optional improvements)
+## Remaining Tasks
+
+### Next feature: integrate camera feed into trainer recording + trainee learning
+Both the trainer (recording sessions) and trainee (learning view) need the same phone-as-camera capability that `live/page.tsx` already has. The plan:
+- **Trainer:** option to use phone camera during `record/session` — phone feeds real-time video, hand detection overlays on recording canvas, gestures/voice still control step advancement
+- **Trainee:** option to use phone camera during `learn/[workflowId]` — phone feed shows alongside the step video, gesture detection and voice commands work via remote feed
+
+Key files to touch: `record/(expert)/session/page.tsx`, `components/player/LearnView.tsx`, possibly new `useCameraRoomProducer`/`useCameraRoomViewer` integration in those pages.
 
 ### NVIDIA GPU server for faster inference (optional)
 CPU inference at 640×360 is ~30–60ms/frame. If real-time hand detection needs to be faster:
