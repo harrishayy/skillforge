@@ -52,6 +52,7 @@ export function LearnView({
   const cameraRef = useRef<HTMLVideoElement>(null);
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const suggestPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
   const recentSuggestDetectionsRef = useRef<number[]>([]);
   const cameraOverlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const cameraOverlayRafRef = useRef<number>(0);
@@ -183,6 +184,17 @@ export function LearnView({
     }, COMPLETE_REDIRECT_MS);
     return () => clearTimeout(t);
   }, [isEndScreen, backHref, router]);
+
+  // When end screen is shown, stop trainee checking and camera immediately (non-blocking).
+  useEffect(() => {
+    if (!isEndScreen) return;
+    if (suggestPollRef.current) {
+      clearInterval(suggestPollRef.current);
+      suggestPollRef.current = null;
+    }
+    cameraStreamRef.current?.getTracks().forEach((t) => t.stop());
+    setCameraStream(null);
+  }, [isEndScreen]);
 
   const FRAMES_OVERVIEW_MS = 2000;
   const stepHasFrames = Boolean(
@@ -422,6 +434,18 @@ export function LearnView({
       cameraRef.current.srcObject = cameraStream;
     }
   }, [cameraStream]);
+
+  useEffect(() => {
+    cameraStreamRef.current = cameraStream;
+  }, [cameraStream]);
+
+  // Unmount cleanup: stop camera so it does not keep running when user navigates away.
+  useEffect(() => {
+    return () => {
+      cameraStreamRef.current?.getTracks().forEach((t) => t.stop());
+      cameraStreamRef.current = null;
+    };
+  }, []);
 
   // Poll check-step-suggest when in training mode and step has sam3_prompt.
   // Require at least 2 detections within 1 second before suggesting next step (more robust).

@@ -10,12 +10,6 @@ interface StepTransitionProps {
   onContinue: () => void;
 }
 
-const AUTO_ADVANCE_MS = 8000;
-const RING_SIZE = 48;
-const RING_STROKE = 3;
-const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
-const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-
 export function StepTransition({
   completedStep,
   nextStep,
@@ -24,32 +18,10 @@ export function StepTransition({
   onContinue,
 }: StepTransitionProps) {
   const [visible, setVisible] = useState(false);
-  const [countdown, setCountdown] = useState(AUTO_ADVANCE_MS);
 
   useEffect(() => {
     requestAnimationFrame(() => setVisible(true));
   }, []);
-
-  useEffect(() => {
-    if (!nextStep) return;
-    const start = performance.now();
-    let raf: number;
-    const tick = (now: number) => {
-      const elapsed = now - start;
-      const remaining = Math.max(0, AUTO_ADVANCE_MS - elapsed);
-      setCountdown(remaining);
-      if (remaining <= 0) {
-        onContinue();
-        return;
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [nextStep, onContinue]);
-
-  const progress = nextStep ? 1 - countdown / AUTO_ADVANCE_MS : 1;
-  const dashOffset = RING_CIRCUMFERENCE * (1 - progress);
 
   return (
     <div
@@ -126,10 +98,10 @@ export function StepTransition({
               )}
             </div>
 
-            {/* Continue button with countdown ring */}
+            {/* Continue button — advance only on user click (or voice/gesture/chat in LearnView) */}
             <button
               onClick={onContinue}
-              className="group relative flex items-center gap-3 px-6 py-3 rounded-xl font-bold text-sm transition-all duration-200"
+              className="group relative flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-all duration-200"
               style={{
                 backgroundColor: "var(--sf-purple)",
                 color: "var(--sf-white)",
@@ -144,41 +116,7 @@ export function StepTransition({
                 e.currentTarget.style.transform = "scale(1)";
               }}
             >
-              <span>Continue</span>
-              <div className="relative" style={{ width: RING_SIZE, height: RING_SIZE }}>
-                <svg
-                  width={RING_SIZE}
-                  height={RING_SIZE}
-                  className="absolute inset-0 -rotate-90"
-                >
-                  <circle
-                    cx={RING_SIZE / 2}
-                    cy={RING_SIZE / 2}
-                    r={RING_RADIUS}
-                    fill="none"
-                    stroke="rgba(255,255,255,0.15)"
-                    strokeWidth={RING_STROKE}
-                  />
-                  <circle
-                    cx={RING_SIZE / 2}
-                    cy={RING_SIZE / 2}
-                    r={RING_RADIUS}
-                    fill="none"
-                    stroke="var(--sf-white)"
-                    strokeWidth={RING_STROKE}
-                    strokeLinecap="round"
-                    strokeDasharray={RING_CIRCUMFERENCE}
-                    strokeDashoffset={dashOffset}
-                    style={{ transition: "stroke-dashoffset 100ms linear" }}
-                  />
-                </svg>
-                <span
-                  className="absolute inset-0 flex items-center justify-center text-[11px] font-mono font-bold"
-                  style={{ color: "var(--sf-white)" }}
-                >
-                  {Math.ceil(countdown / 1000)}
-                </span>
-              </div>
+              Continue
             </button>
           </>
         ) : (
