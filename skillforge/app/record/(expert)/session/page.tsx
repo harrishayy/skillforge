@@ -144,7 +144,6 @@ export default function RecordingSessionPage() {
       ? phone.remoteDetection.hands
       : handData;
 
-  const pinchState = computePinchState(activeHands);
   // Spider-Man gesture state (thumb+index+pinky extended, middle+ring closed) — used for PinchIndicator display
   const gestureState = computePhoneGestureState(activeHands);
 
