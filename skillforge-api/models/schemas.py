@@ -102,6 +102,12 @@ class StepInstructionRequest(BaseModel):
     step_id: str
 
 
+class ElaborateStepRequest(BaseModel):
+    workflow_id: str
+    step_id: str
+    user_message: Optional[str] = None
+
+
 class VoiceIntentRequest(BaseModel):
     transcript: str
 

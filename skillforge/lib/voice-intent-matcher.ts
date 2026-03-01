@@ -3,18 +3,21 @@
  * Covers phrases like "next step", "skip", "go to the next phase", "previous step", "go back".
  */
 
-export type VoiceIntent = "next" | "prev" | "finish" | null;
+export type VoiceIntent = "next" | "prev" | "finish" | "elaborate" | null;
 
 const NEXT_PATTERN =
-  /(?:^|\s)next\s+step(?:\s|$)/i;
+  /(?:^|\s)(?:go\s+to\s+(?:the\s+)?)?next\s+step(?:\s|$)|(?:^|\s)next(?:\s|$)/i;
 const PREV_PATTERN =
   /(?:^|\s)(?:previous|back|go\s*back|last|prior)\s*(?:step|phase|part|stage)?(?:\s|$)|(?:^|\s)(?:go\s*back|previous)\s*(?:\s|$)/i;
 const FINISH_PATTERN =
   /(?:^|\s)(?:finish|done|complete|that'?s\s*it|done\s+with\s+this|end\s*recording|stop\s*recording)(?:\s|$)/i;
+const ELABORATE_PATTERN =
+  /(?:^|\s)(?:elaborate|break\s+it\s+down|more\s+detail|break\s+down\s+this\s+step)(?:\s|$)/i;
 
 const NEXT_SEEDS = ["next step"];
 const PREV_SEEDS = ["previous step", "previous", "back", "go back"];
 const FINISH_SEEDS = ["finish", "done", "complete", "end recording", "stop recording"];
+const ELABORATE_SEEDS = ["elaborate", "break it down", "more detail"];
 
 const LLM_FALLBACK_MIN_LENGTH = 50;
 
@@ -70,6 +73,13 @@ function fuzzyMatchIntent(text: string): VoiceIntent {
       bestIntent = "finish";
     }
   }
+  for (const seed of ELABORATE_SEEDS) {
+    const d = levenshtein(normalized, seed);
+    if (d <= FUZZY_THRESHOLD && d < bestDist) {
+      bestDist = d;
+      bestIntent = "elaborate";
+    }
+  }
 
   return bestIntent;
 }
@@ -89,6 +99,7 @@ export function matchVoiceIntent(
   if (NEXT_PATTERN.test(lower)) return "next";
   if (PREV_PATTERN.test(lower)) return "prev";
   if (FINISH_PATTERN.test(lower)) return "finish";
+  if (ELABORATE_PATTERN.test(lower)) return "elaborate";
 
   if (options?.useFuzzy) {
     return fuzzyMatchIntent(text);
