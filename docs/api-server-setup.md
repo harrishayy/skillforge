@@ -70,7 +70,6 @@ Videos are saved to `uploads/videos/`, frames to `uploads/frames/`, and served a
 | Nemotron VL | `services/nemotron_client.py` | Frame-level VL analysis for digital workflows | Requires `NVIDIA_NIM_API_KEY` |
 | Claude Sonnet | `services/claude_orchestrator.py` | Step decomposition, copilot, completion check | Requires `ANTHROPIC_API_KEY` |
 | Grounding DINO | `services/grounding_dino_service.py` | Open-vocab custom object detection | Optional (`GROUNDING_DINO_URL`), Claude fallback |
-| SAM 2 | `services/sam2_service.py` | Object segmentation | Optional (`SAM2_URL`) |
 | SAM 3 | `services/sam3_service.py` | Concept segmentation (text/box prompt, remote GPU) | Optional (`SAM3_URL`) |
 
 ### Optional ML inference servers
@@ -86,16 +85,6 @@ Response:  {"boxes": [{"box": [x1, y1, x2, y2], "score": float}]}
 ```
 
 Set `GROUNDING_DINO_URL` to your server URL.
-
-**SAM 2** — Object segmentation
-
-```
-POST /segment  (multipart/form-data)
-Fields:  image (file), box (str — "x1,y1,x2,y2" normalized)
-Response:  {"mask_path": "path/to/mask.png"}
-```
-
-Set `SAM2_URL` to your server URL.
 
 **SAM 3** — Concept segmentation (text or box prompt, remote GPU). See [SAM 3 GPU Deployment](sam3-gpu-deployment.md).
 
