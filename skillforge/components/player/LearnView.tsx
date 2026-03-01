@@ -2,8 +2,9 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { Workflow } from "@/types";
+import type { Workflow, PipelineEvent } from "@/types";
 import { getWorkflow, getStepInstruction, elaborateStep, checkStepSuggest } from "@/lib/api-client";
+import { useWorkflowSocket } from "@/hooks/useWorkflowSocket";
 import { showErrorToast } from "@/store/toast-store";
 import { videoUrl, frameUrl } from "@/lib/constants";
 import { renderHandLandmarks } from "@/lib/annotation-renderer";
@@ -148,6 +149,20 @@ export function LearnView({
       .catch((e) => { showErrorToast(e); setError(e.message); })
       .finally(() => setIsLoading(false));
   }, [workflowId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-fetch workflow when deferred SAM3 segmentation completes
+  const segStatus = workflow?.segmentation_status;
+  const needsSegWatch = segStatus === "processing" || segStatus === "pending";
+
+  const handleSegmentationEvent = useCallback((event: PipelineEvent) => {
+    if (event.type === "segmentation_complete") {
+      getWorkflow(workflowId)
+        .then((wf) => setWorkflow(wf))
+        .catch((e) => showErrorToast(e));
+    }
+  }, [workflowId]);
+
+  useWorkflowSocket(needsSegWatch ? workflowId : null, handleSegmentationEvent);
 
   // Preload step videos in priority order: current step first, then next, then rest.
   // Every step's video is buffered so transitions are instant.
@@ -379,30 +394,53 @@ export function LearnView({
     if (idx >= workflow.steps.length) return;
     setSuggestComplete(null, null);
     if (isTrainingMode) {
-      setPendingStepAction("forward");
+      if (pendingStepAction === "forward") {
+        doConfirmForward();
+      } else {
+        setPendingStepAction("forward");
+      }
     } else {
       handleAdvanceStep();
     }
-  }, [workflow, setSuggestComplete, isTrainingMode, handleAdvanceStep]);
+  }, [workflow, setSuggestComplete, isTrainingMode, handleAdvanceStep, pendingStepAction, doConfirmForward]);
 
   const handleVoicePrevStep = useCallback(() => {
     if (!workflow) return;
     const idx = usePlayerStore.getState().currentStepIndex;
     if (idx <= 0) return;
     if (isTrainingMode) {
-      setPendingStepAction("back");
+      if (pendingStepAction === "back") {
+        doConfirmBack();
+      } else {
+        setPendingStepAction("back");
+      }
     } else {
       doConfirmBack();
     }
-  }, [workflow, isTrainingMode, doConfirmBack]);
+  }, [workflow, isTrainingMode, doConfirmBack, pendingStepAction]);
+
+  const handleVoiceConfirm = useCallback(() => {
+    if (!pendingStepAction) return;
+    if (pendingStepAction === "forward") doConfirmForward();
+    else doConfirmBack();
+  }, [pendingStepAction, doConfirmForward, doConfirmBack]);
+
+  const handleCopilotVoice = useCallback(
+    (message: string) => {
+      if (message) handleSendMessage(message);
+    },
+    [handleSendMessage]
+  );
 
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(false);
 
-  const { displayTranscript, ...voice } = useVoiceCommands({
+  const { displayTranscript, isCopilotListening, ...voice } = useVoiceCommands({
     onNextStep: handleVoiceNextStep,
     onPreviousStep: handleVoicePrevStep,
     onFinish: () => {},
     onElaborate: handleElaborate,
+    onConfirm: handleVoiceConfirm,
+    onCopilot: handleCopilotVoice,
     enabled: !!workflow,
     requireUserGesture: true,
   });
@@ -758,7 +796,7 @@ export function LearnView({
                 color: voice.status === "unavailable" ? "rgba(239,68,68,0.9)" : voice.isListening ? "var(--sf-lime)" : "#888",
                 backgroundColor: voice.isListening ? "rgba(190,242,100,0.1)" : "transparent",
               }}
-              title={voice.unavailableReason ?? "Click to enable voice commands — say “next step”, “go back”, or “elaborate”"}
+              title={voice.unavailableReason ?? "Click to enable voice commands — say “next step”, “go back”, “elaborate”, or “hey claude” to ask the copilot"}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3Z" />
@@ -814,7 +852,7 @@ export function LearnView({
                     onEnded={handleVideoEnded}
                   />
                   {currentStep && (
-                    <StepVideoOverlay videoRef={videoRef} step={currentStep} />
+                    <StepVideoOverlay videoRef={videoRef} step={currentStep} segmentationProcessing={needsSegWatch} />
                   )}
                   {isPausedAtStepEnd && currentStep && (
                     <StepTransition
@@ -994,7 +1032,7 @@ export function LearnView({
         </div>
 
         <div className="w-80 shrink-0">
-          <CopilotPanel currentStep={currentStep} onSendMessage={handleSendMessage} />
+          <CopilotPanel currentStep={currentStep} onSendMessage={handleSendMessage} isCopilotListening={isCopilotListening} />
         </div>
       </div>
 

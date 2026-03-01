@@ -6,6 +6,7 @@ import { getWorkflow, publishWorkflow, unpublishWorkflow } from "@/lib/api-clien
 import { showErrorToast } from "@/store/toast-store";
 import { useWorkflowStore } from "@/store/workflow-store";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
+import { useWorkflowSocket } from "@/hooks/useWorkflowSocket";
 import { StepList } from "@/components/editor/StepList";
 import { StepFrameViewer } from "@/components/editor/StepFrameViewer";
 import { ApparatusFrameViewer } from "@/components/editor/ApparatusFrameViewer";
@@ -15,6 +16,7 @@ import { Spinner } from "@/components/ui/Spinner";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { TaskTypeBadge } from "@/components/shared/TaskTypeBadge";
+import type { PipelineEvent } from "@/types";
 
 export default function EditorPage() {
   const { workflowId } = useParams<{ workflowId: string }>();
@@ -70,6 +72,20 @@ export default function EditorPage() {
       })
       .catch((e) => { showErrorToast(e); setError(e.message); });
   }, [workflowId, selectedStepId, setWorkflow, selectStep]);
+
+  // Listen for segmentation_complete WebSocket events to refresh data
+  const segStatus = workflow?.segmentation_status;
+  const needsSegWatch = segStatus === "processing" || segStatus === "pending";
+
+  const handleSegmentationEvent = useCallback((event: PipelineEvent) => {
+    if (event.type === "segmentation_complete") {
+      getWorkflow(workflowId)
+        .then((wf) => setWorkflow(wf))
+        .catch((e) => showErrorToast(e));
+    }
+  }, [workflowId, setWorkflow]);
+
+  useWorkflowSocket(needsSegWatch ? workflowId : null, handleSegmentationEvent);
 
   if (isLoading) {
     return (

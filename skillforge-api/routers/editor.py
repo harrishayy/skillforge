@@ -109,10 +109,19 @@ async def update_step(step_id: str, body: StepUpdateRequest):
 
 @router.delete("/api/steps/{step_id}")
 async def delete_step(step_id: str):
-    step = await fetchone("SELECT id FROM steps WHERE id=?", (step_id,))
+    step = await fetchone(
+        "SELECT id, workflow_id, step_number FROM steps WHERE id=?", (step_id,)
+    )
     if not step:
         raise HTTPException(404, "Step not found")
+    workflow_id = step["workflow_id"]
+    deleted_number = step["step_number"]
     await execute("DELETE FROM steps WHERE id=?", (step_id,))
+    await execute(
+        "UPDATE steps SET step_number = step_number - 1 "
+        "WHERE workflow_id=? AND step_number > ?",
+        (workflow_id, deleted_number),
+    )
     return {"success": True}
 
 

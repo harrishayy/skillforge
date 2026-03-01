@@ -26,7 +26,7 @@ def _get_client() -> httpx.AsyncClient:
     if _client is None or _client.is_closed:
         _client = httpx.AsyncClient(
             timeout=60.0,
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+            limits=httpx.Limits(max_connections=6, max_keepalive_connections=4),
         )
     return _client
 
@@ -34,9 +34,16 @@ def _get_client() -> httpx.AsyncClient:
 async def detect_object_in_frame(
     frame_path: str,
     object_description: str,
+    step_context: str | None = None,
 ) -> dict:
     """
     Check whether a described object is present in the given frame.
+
+    Args:
+        frame_path: Path to a JPEG frame image.
+        object_description: Text describing the object to detect.
+        step_context: Optional rich context (title, description, transcript)
+            from the Claude Haiku refinement stage to improve detection accuracy.
 
     Returns:
         {
@@ -61,7 +68,12 @@ async def detect_object_in_frame(
 
     image_b64 = resize_frame_for_api(frame_path, max_size=1024)
 
+    context_block = ""
+    if step_context:
+        context_block = f"{step_context}\n\n"
+
     prompt = (
+        f'{context_block}'
         f'Is the following object present in this image?\n'
         f'Object: {object_description}\n\n'
         f'Answer ONLY with valid JSON, no markdown:\n'
@@ -213,12 +225,13 @@ async def detect_object_in_frames_batch(
     return results
 
 
-NEMOTRON_MAX_CONCURRENT = 4
+NEMOTRON_MAX_CONCURRENT = 6
 
 
 async def detect_objects_in_frames_parallel(
     objects_with_frames: list[tuple[str, str, list[str]]],
     max_concurrent: int = NEMOTRON_MAX_CONCURRENT,
+    step_context: str | None = None,
 ) -> dict[str, list[dict]]:
     """
     Scan multiple objects across frames in parallel, sharing a single
@@ -227,6 +240,8 @@ async def detect_objects_in_frames_parallel(
     Args:
         objects_with_frames: List of (label, object_description, frame_paths) tuples.
         max_concurrent: Max simultaneous Nemotron requests (matches httpx connection limit).
+        step_context: Optional rich context (title, description, transcript)
+            prepended to each detection prompt.
 
     Returns:
         {label: [{frame_path, present, description, center_x, center_y}, ...]}
@@ -238,7 +253,7 @@ async def detect_objects_in_frames_parallel(
     async def _gated_detect(frame_path: str, description: str) -> dict:
         async with sem:
             try:
-                result = await detect_object_in_frame(frame_path, description)
+                result = await detect_object_in_frame(frame_path, description, step_context=step_context)
             except Exception as e:
                 print(f"[Nemotron] ✗ Parallel detection error: {e}", flush=True)
                 result = {**_EMPTY, "description": f"Error: {e}"}
