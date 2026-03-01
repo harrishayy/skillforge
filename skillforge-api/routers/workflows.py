@@ -47,15 +47,24 @@ async def _get_full_workflow(workflow_id: str) -> dict:
         (workflow_id,),
     )
     for obj in apparatus_objects:
+        import json as _json
         raw = obj.get("reference_frame_paths")
         if isinstance(raw, str):
-            import json as _json
             try:
                 obj["reference_frame_paths"] = _json.loads(raw)
             except Exception:
                 obj["reference_frame_paths"] = []
         elif raw is None:
             obj["reference_frame_paths"] = []
+
+        raw_seg = obj.get("segmented_frame_paths")
+        if isinstance(raw_seg, str):
+            try:
+                obj["segmented_frame_paths"] = _json.loads(raw_seg)
+            except Exception:
+                obj["segmented_frame_paths"] = {}
+        elif raw_seg is None:
+            obj["segmented_frame_paths"] = {}
 
     thumbnail = steps[0]["key_frame_path"] if steps else None
     return _bool_published({

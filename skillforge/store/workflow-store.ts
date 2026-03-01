@@ -10,6 +10,8 @@ import {
   rerunStepPipeline,
   updateApparatusObject,
   rebuildWorkflowMemories,
+  regenerateAll as apiRegenerateAll,
+  getWorkflowTaskStatus,
   getWorkflow,
 } from "@/lib/api-client";
 import type { RerunPipelineOptions } from "@/lib/api-client";
@@ -34,6 +36,9 @@ interface WorkflowStore {
 
   // Apparatus memory rebuild state
   rebuildingMemories: boolean;
+
+  // Full regeneration state
+  regeneratingAll: boolean;
 
   // Active filmstrip frame per step
   activeFramePath: Record<string, string>;
@@ -68,9 +73,23 @@ interface WorkflowStore {
   updateApparatusObjectLocal: (objectId: string, fields: Partial<ApparatusObject>) => void;
   saveApparatusObject: (objectId: string, fields: Partial<Pick<ApparatusObject, "object_name" | "description" | "visual_cues" | "sam3_prompt">>) => Promise<void>;
   rebuildMemories: () => Promise<void>;
+  regenerateAll: () => Promise<void>;
 
   // Filmstrip
   setActiveFrame: (stepId: string, framePath: string) => void;
+}
+
+async function _pollUntilDone(workflowId: string): Promise<void> {
+  const POLL_INTERVAL = 2000;
+  const MAX_POLLS = 300; // 10 minutes max
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+    const status = await getWorkflowTaskStatus(workflowId);
+    if (status.status === "done") return;
+    if (status.status === "error") throw new Error(status.error ?? "Task failed");
+    if (status.status === "idle") return;
+  }
+  throw new Error("Task timed out");
 }
 
 export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
@@ -84,6 +103,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   regeneratingStepId: null,
   rerunningStepId: null,
   rebuildingMemories: false,
+  regeneratingAll: false,
   activeFramePath: {},
 
   setWorkflow: (wf) => set({ workflow: wf }),
@@ -280,11 +300,27 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     set({ rebuildingMemories: true });
     try {
       await rebuildWorkflowMemories(wf.id);
+      await _pollUntilDone(wf.id);
       const updated = await getWorkflow(wf.id);
       set({ workflow: updated, rebuildingMemories: false });
     } catch (e) {
       showErrorToast(e);
       set({ rebuildingMemories: false });
+    }
+  },
+
+  regenerateAll: async () => {
+    const wf = get().workflow;
+    if (!wf) return;
+    set({ regeneratingAll: true });
+    try {
+      await apiRegenerateAll(wf.id);
+      await _pollUntilDone(wf.id);
+      const updated = await getWorkflow(wf.id);
+      set({ workflow: updated, regeneratingAll: false });
+    } catch (e) {
+      showErrorToast(e);
+      set({ regeneratingAll: false });
     }
   },
 

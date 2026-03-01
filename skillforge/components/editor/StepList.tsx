@@ -57,6 +57,7 @@ export function StepList() {
     selectApparatusObject,
     rebuildingMemories,
     rebuildMemories,
+    regeneratingAll,
   } = useWorkflowStore();
 
   const apparatusObjects = workflow?.apparatus_objects ?? [];
@@ -187,23 +188,23 @@ export function StepList() {
           {/* Rebuild Memories button */}
           <button
             onClick={() => rebuildMemories()}
-            disabled={rebuildingMemories}
+            disabled={rebuildingMemories || regeneratingAll}
             className="flex items-center justify-center gap-2 w-full text-[11px] font-medium py-1.5 px-3 rounded-md transition-all"
             style={{
               backgroundColor: "#1a1a1a",
-              color: rebuildingMemories ? "#555" : "var(--sf-purple)",
-              border: `1px solid ${rebuildingMemories ? "#222" : "#333"}`,
-              cursor: rebuildingMemories ? "not-allowed" : "pointer",
+              color: (rebuildingMemories || regeneratingAll) ? "#555" : "var(--sf-purple)",
+              border: `1px solid ${(rebuildingMemories || regeneratingAll) ? "#222" : "#333"}`,
+              cursor: (rebuildingMemories || regeneratingAll) ? "not-allowed" : "pointer",
             }}
             onMouseEnter={(e) => {
-              if (!rebuildingMemories) {
+              if (!rebuildingMemories && !regeneratingAll) {
                 (e.currentTarget as HTMLButtonElement).style.backgroundColor = "#222";
                 (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--sf-purple)";
               }
             }}
             onMouseLeave={(e) => {
               (e.currentTarget as HTMLButtonElement).style.backgroundColor = "#1a1a1a";
-              (e.currentTarget as HTMLButtonElement).style.borderColor = rebuildingMemories ? "#222" : "#333";
+              (e.currentTarget as HTMLButtonElement).style.borderColor = (rebuildingMemories || regeneratingAll) ? "#222" : "#333";
             }}
             title="Invalidate all step contexts and re-run the multi-agent pipeline with updated apparatus descriptions"
           >

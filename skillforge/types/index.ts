@@ -230,6 +230,7 @@ export interface ApparatusObject {
   angle_count: number;
   reference_frame_paths: string[];
   segmented_reference_path?: string;
+  segmented_frame_paths?: Record<string, string>;
 }
 
 export interface StepContext {
