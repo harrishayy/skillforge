@@ -46,6 +46,7 @@ export function LearnView({
   const cameraRef = useRef<HTMLVideoElement>(null);
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const suggestPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recentSuggestDetectionsRef = useRef<number[]>([]);
   const cameraOverlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const cameraOverlayRafRef = useRef<number>(0);
   const sam3MaskCacheRef = useRef<Map<string, ImageBitmap>>(new Map());
@@ -55,6 +56,7 @@ export function LearnView({
     hands: { hands: Array<{ landmarks: Array<{ x: number; y: number; z?: number }> }> } | null;
     sam3_segments: Array<{ mask_base64?: string; bbox: number[]; score: number }>;
   } | null>(null);
+  const [pendingStepAction, setPendingStepAction] = useState<"forward" | "back" | null>(null);
 
   const {
     currentStepIndex,
@@ -231,6 +233,7 @@ export function LearnView({
       setStepProgress(1);
       setIsPlaying(false);
       setIsPausedAtStepEnd(true);
+      setIsTrainingMode(false);
       videoRef.current?.pause();
       return;
     }
@@ -241,11 +244,12 @@ export function LearnView({
     handleStepChange(nextIdx);
   }, [workflow, currentStep, currentStepIndex, subtasksByStep, currentSubtaskIndexByStep, setSuggestComplete, setCurrentSubtaskIndex, setStepProgress, setIsPausedAtStepEnd, setCurrentStepIndex, handleStepChange, setIsPlaying]);
 
-  const handleVoiceNextStep = useCallback(() => {
+  const doConfirmForward = useCallback(() => {
     const state = usePlayerStore.getState();
     const idx = state.currentStepIndex;
     if (!workflow || idx >= workflow.steps.length) return;
     setSuggestComplete(null, null);
+    setPendingStepAction(null);
     const step = workflow.steps[idx];
     const subtasks = step ? (state.subtasksByStep[step.id] ?? []) : [];
     const currentSubIdx = step ? (state.currentSubtaskIndexByStep[step.id] ?? 0) : 0;
@@ -258,6 +262,7 @@ export function LearnView({
       setStepProgress(1);
       setIsPlaying(false);
       setIsPausedAtStepEnd(true);
+      setIsTrainingMode(false);
       videoRef.current?.pause();
       return;
     }
@@ -267,10 +272,11 @@ export function LearnView({
     handleStepChange(idx + 1);
   }, [workflow, handleStepChange, setSuggestComplete, setStepProgress, setCurrentStepIndex, setCurrentSubtaskIndex, setIsPausedAtStepEnd, setIsPlaying]);
 
-  const handleVoicePrevStep = useCallback(() => {
+  const doConfirmBack = useCallback(() => {
     const state = usePlayerStore.getState();
     const idx = state.currentStepIndex;
     if (!workflow || idx < 0) return;
+    setPendingStepAction(null);
     const step = workflow.steps[idx];
     const currentSubIdx = step ? (state.currentSubtaskIndexByStep[step.id] ?? 0) : 0;
     if (currentSubIdx > 0 && step) {
@@ -284,6 +290,21 @@ export function LearnView({
     setIsPausedAtStepEnd(false);
     handleStepChange(idx - 1);
   }, [workflow, handleStepChange, setStepProgress, setCurrentStepIndex, setCurrentSubtaskIndex, setIsPausedAtStepEnd]);
+
+  const handleVoiceNextStep = useCallback(() => {
+    if (!workflow) return;
+    const idx = usePlayerStore.getState().currentStepIndex;
+    if (idx >= workflow.steps.length) return;
+    setSuggestComplete(null, null);
+    setPendingStepAction("forward");
+  }, [workflow, setSuggestComplete]);
+
+  const handleVoicePrevStep = useCallback(() => {
+    if (!workflow) return;
+    const idx = usePlayerStore.getState().currentStepIndex;
+    if (idx <= 0) return;
+    setPendingStepAction("back");
+  }, [workflow]);
 
   const voice = useVoiceCommands({
     onNextStep: handleVoiceNextStep,
@@ -322,16 +343,21 @@ export function LearnView({
     }
   }, [cameraStream]);
 
-  // Poll check-step-suggest when in training mode and step has sam3_prompt
-  const TRAINING_POLL_MS = 2000;
+  // Poll check-step-suggest when in training mode and step has sam3_prompt.
+  // Require at least 2 detections within 1 second before suggesting next step (more robust).
+  const TRAINING_POLL_MS = 100;
+  const SUGGEST_REQUIRED_DETECTIONS = 2;
+  const SUGGEST_WINDOW_MS = 1000;
   useEffect(() => {
     if (!isTrainingMode || !workflow || !currentStep?.sam3_prompt || !cameraRef.current || !cameraStream) {
       if (suggestPollRef.current) {
         clearInterval(suggestPollRef.current);
         suggestPollRef.current = null;
       }
+      recentSuggestDetectionsRef.current = [];
       return;
     }
+    recentSuggestDetectionsRef.current = [];
     const captureAndCheck = async () => {
       const video = cameraRef.current;
       if (!video || video.readyState < 2) return;
@@ -352,7 +378,17 @@ export function LearnView({
           sam3_segments: res.sam3_segments ?? [],
         });
         if (res.suggest_complete) {
-          setSuggestComplete(currentStep.id, res.message);
+          const now = Date.now();
+          const recent = recentSuggestDetectionsRef.current;
+          recent.push(now);
+          const cutoff = now - SUGGEST_WINDOW_MS;
+          while (recent.length > 0 && recent[0] < cutoff) recent.shift();
+          if (recent.length >= SUGGEST_REQUIRED_DETECTIONS) {
+            recentSuggestDetectionsRef.current = [];
+            setSuggestComplete(currentStep.id, res.message);
+          } else {
+            recentSuggestDetectionsRef.current = recent;
+          }
         }
       } catch {
         // Ignore poll errors (e.g. SAM3 unavailable)
@@ -372,6 +408,7 @@ export function LearnView({
     if (isTrainingMode) {
       setSuggestComplete(null, null);
       setLastDetectionResult(null);
+      setPendingStepAction(null);
     }
   }, [isTrainingMode, setSuggestComplete]);
 
@@ -692,8 +729,38 @@ export function LearnView({
               </div>
             )}
           </div>
-          {/* Suggest-complete banner (training mode) */}
-          {isTrainingMode && currentStep && suggestCompleteForStep === currentStep.id && (
+          {/* Confirmation prompt: step only changes after user confirms here (voice/gesture/skip do not advance until confirmed) */}
+          {isTrainingMode && pendingStepAction && (
+            <div
+              className="shrink-0 flex items-center justify-between rounded-xl px-5 py-3"
+              style={{
+                backgroundColor: "#111",
+                border: pendingStepAction === "forward" ? "1px solid var(--sf-lime)" : "1px solid #f59e0b",
+              }}
+            >
+              <p className="text-sm" style={{ color: "var(--sf-white)" }}>
+                {pendingStepAction === "forward"
+                  ? "Continue to next step?"
+                  : "Go back to previous step?"}
+              </p>
+              <div className="flex gap-2">
+                <Button variant="secondary" size="sm" onClick={() => setPendingStepAction(null)}>
+                  Cancel
+                </Button>
+                {pendingStepAction === "forward" ? (
+                  <Button size="sm" onClick={doConfirmForward}>
+                    Continue
+                  </Button>
+                ) : (
+                  <Button size="sm" onClick={doConfirmBack} style={{ backgroundColor: "#b45309", color: "#fff" }}>
+                    Go back
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+          {/* Suggest-complete banner (training mode): explicit Continue advances step */}
+          {isTrainingMode && currentStep && suggestCompleteForStep === currentStep.id && !pendingStepAction && (
             <div
               className="shrink-0 flex items-center justify-between rounded-xl px-5 py-3"
               style={{ backgroundColor: "#111", border: "1px solid var(--sf-lime)" }}
@@ -701,7 +768,7 @@ export function LearnView({
               <div>
                 <p className="text-xs" style={{ color: "var(--sf-lime)" }}>Step looks complete</p>
                 <p className="text-sm" style={{ color: "var(--sf-white)" }}>
-                  {suggestCompleteMessage ?? "Say 'next' or tap Continue."}
+                  {suggestCompleteMessage ?? "Confirm below to continue."}
                 </p>
               </div>
               <Button size="sm" onClick={handleAdvanceStep}>
@@ -709,16 +776,16 @@ export function LearnView({
               </Button>
             </div>
           )}
-          {/* Skip this step (training mode): for steps with no detection or when stuck */}
-          {isTrainingMode && currentStep && workflow && currentStepIndex < workflow.steps.length - 1 && (
+          {/* Skip this step (training mode): opens confirmation prompt; no direct advance */}
+          {isTrainingMode && currentStep && workflow && currentStepIndex < workflow.steps.length - 1 && !pendingStepAction && (
             <div
               className="shrink-0 flex items-center justify-between gap-3 rounded-xl px-5 py-2.5"
               style={{ backgroundColor: "#0d0d0d", border: "1px solid #333" }}
             >
               <p className="text-xs" style={{ color: "#888" }}>
-                Nothing to detect or stuck? Skip and continue — this step will be treated as done with no extra context.
+                Nothing to detect or stuck? Skip and continue — you will be asked to confirm before moving.
               </p>
-              <Button variant="secondary" size="sm" onClick={handleAdvanceStep}>
+              <Button variant="secondary" size="sm" onClick={() => setPendingStepAction("forward")}>
                 Skip this step
               </Button>
             </div>
