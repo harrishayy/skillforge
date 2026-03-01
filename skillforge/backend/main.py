@@ -163,28 +163,32 @@ class DetectFrameRequest(BaseModel):
     confidence_threshold: float = 0.35
 
 
-def run_hand_detection(img_bgr: np.ndarray, min_confidence: float = 0.5) -> tuple[list[list[dict]], dict | None]:
+def run_hand_detection(img_bgr: np.ndarray, min_confidence: float = 0.5) -> tuple[list[dict], dict | None]:
     """
     Run MediaPipe Hand Landmarker on BGR image.
-    Returns (list of hands with landmarks in 0–100 scale, pointing_at from first hand's index tip or None).
+    Returns (list of hand dicts with landmarks in 0–100 scale + handedness, pointing_at or None).
+    Each hand dict: {"landmarks": [...{x, y, z}], "handedness": "Left"|"Right"|None}
     """
     rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     detector = _get_hand_landmarker()
     result = detector.detect(mp_image)
 
-    hands_out: list[list[dict]] = []
+    hands_out: list[dict] = []
     pointing_at: dict | None = None
 
     if not result.hand_landmarks:
         return hands_out, pointing_at
 
-    for hand in result.hand_landmarks:
+    for i, hand in enumerate(result.hand_landmarks):
         landmarks = [
-            {"x": round(lm.x * 100, 2), "y": round(lm.y * 100, 2)}
+            {"x": round(lm.x * 100, 2), "y": round(lm.y * 100, 2), "z": round(lm.z, 4)}
             for lm in hand
         ]
-        hands_out.append(landmarks)
+        handedness: str | None = None
+        if result.handedness and i < len(result.handedness) and result.handedness[i]:
+            handedness = result.handedness[i][0].display_name  # "Left" or "Right"
+        hands_out.append({"landmarks": landmarks, "handedness": handedness})
         if pointing_at is None and len(hand) > INDEX_FINGER_TIP:
             tip = hand[INDEX_FINGER_TIP]
             pointing_at = {"x": round(tip.x * 100, 2), "y": round(tip.y * 100, 2)}
@@ -192,28 +196,32 @@ def run_hand_detection(img_bgr: np.ndarray, min_confidence: float = 0.5) -> tupl
     return hands_out, pointing_at
 
 
-def run_hand_detection_video(img_bgr: np.ndarray, timestamp_ms: int) -> tuple[list[list[dict]], dict | None]:
+def run_hand_detection_video(img_bgr: np.ndarray, timestamp_ms: int) -> tuple[list[dict], dict | None]:
     """
     Run MediaPipe Hand Landmarker in VIDEO mode (tracking).
-    Returns (list of hands with landmarks in 0–100 scale, pointing_at from first hand's index tip or None).
+    Returns (list of hand dicts with landmarks in 0–100 scale + handedness, pointing_at or None).
+    Each hand dict: {"landmarks": [...{x, y, z}], "handedness": "Left"|"Right"|None}
     """
     rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     detector = _get_hand_landmarker_video()
     result = detector.detect_for_video(mp_image, timestamp_ms)
 
-    hands_out: list[list[dict]] = []
+    hands_out: list[dict] = []
     pointing_at: dict | None = None
 
     if not result.hand_landmarks:
         return hands_out, pointing_at
 
-    for hand in result.hand_landmarks:
+    for i, hand in enumerate(result.hand_landmarks):
         landmarks = [
-            {"x": round(lm.x * 100, 2), "y": round(lm.y * 100, 2)}
+            {"x": round(lm.x * 100, 2), "y": round(lm.y * 100, 2), "z": round(lm.z, 4)}
             for lm in hand
         ]
-        hands_out.append(landmarks)
+        handedness: str | None = None
+        if result.handedness and i < len(result.handedness) and result.handedness[i]:
+            handedness = result.handedness[i][0].display_name  # "Left" or "Right"
+        hands_out.append({"landmarks": landmarks, "handedness": handedness})
         if pointing_at is None and len(hand) > INDEX_FINGER_TIP:
             tip = hand[INDEX_FINGER_TIP]
             pointing_at = {"x": round(tip.x * 100, 2), "y": round(tip.y * 100, 2)}
@@ -222,17 +230,19 @@ def run_hand_detection_video(img_bgr: np.ndarray, timestamp_ms: int) -> tuple[li
 
 
 def _build_detect_response(
-    hands_list: list[list[dict]],
+    hands_list: list[dict],
     pointing_at: dict | None,
     elapsed_ms: float,
     sam3_segments: list[dict] | None = None,
 ) -> dict:
-    """Build DetectionResult-shaped dict for frontend."""
+    """Build DetectionResult-shaped dict for frontend.
+    Each item in hands_list is already {"landmarks": [...{x,y,z}], "handedness": "Left"|"Right"|None}.
+    """
     hands_data = None
     if hands_list:
         hands_data = {
             "hand_count": len(hands_list),
-            "hands": [{"landmarks": lm} for lm in hands_list],
+            "hands": hands_list,
             "pointing_at": pointing_at,
         }
     return {
@@ -250,7 +260,7 @@ def api_detect_frame(body: DetectFrameRequest):
     if img is None:
         return _build_detect_response([], None, 0)
 
-    hands_list: list[list[dict]] = []
+    hands_list: list[dict] = []
     pointing_at = None
     if "hands" in body.modes:
         hands_list, pointing_at = run_hand_detection(img, min_confidence=body.confidence_threshold)

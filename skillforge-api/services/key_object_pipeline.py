@@ -20,7 +20,7 @@ import asyncio
 import anthropic
 
 from services.nemotron_client import detect_objects_in_frames_parallel
-from services.sam3_service import segment_multi_concept, segment_concept
+from services.sam3_service import segment_multi_concept, segment_concept, segment_point
 
 
 # ── Agent 1: Claude — decide which objects to detect and segment ─────────────
@@ -119,9 +119,12 @@ def _build_system_prompt(context: dict | None) -> str:
         "You may return ONE or MULTIPLE objects depending on what the step requires.\n\n"
         "For example, if the step says 'plug the red wire into port 3', you should return "
         "TWO objects: the red wire (primary) and port 3 (context).\n\n"
+        "ONLY include objects that are DIRECTLY relevant to the step's action. "
+        "NEVER include personal items (glasses, watches, bottles, phones), "
+        "the trainer's body/hands/clothing, or environmental objects (walls, furniture, screens).\n\n"
         "Reply ONLY with a JSON array (no markdown fences):\n"
         '[{"label": "concise name for trainee", '
-        '"object_type": "tool|part|connector|cable|component|container|material|other", '
+        '"object_type": "tool|part|connector|cable|component|container|material", '
         '"visual_cues": "color, shape, markings that help identify it", '
         '"sam3_prompt": "visually descriptive phrase for image segmentation (no verbs)", '
         '"role": "primary|context|warning", '
@@ -318,18 +321,67 @@ _NEMOTRON_PREAMBLE = re.compile(
     re.IGNORECASE,
 )
 
+_SUBJECT_BEFORE_VERB = re.compile(
+    r"^(.+?)\s+(?:is|are)\s+"
+    r"(?:visible|shown|seen|present|being\b|held|connected|attached|running|extending|inserted)",
+    re.IGNORECASE,
+)
+
+_WEARING_PATTERN = re.compile(
+    r"^(?:The\s+)?(?:individual|person|user|man|woman)\s+is\s+wearing\s+",
+    re.IGNORECASE,
+)
+
+_TRAILING_PARTICIPLE = re.compile(
+    r",\s+(?:being|connected|attached|running|extending|held|worn|connecting|labeled)\b.*$",
+    re.IGNORECASE,
+)
+
+_SAM3_MAX_CLEAN_CHARS = 80
+
 
 def _clean_nemotron_for_sam3(desc: str) -> str:
     """
     Strip conversational preamble from a Nemotron description so SAM3
     receives a concise visual noun-phrase rather than a full sentence.
 
-    'The Arduino Uno board is visible in the image, characterized by its
-     blue PCB and USB connector' → 'Arduino Uno board, blue PCB and USB connector'
+    Examples:
+      'The red wire is visible in the person's hand, being connected to the
+       VIN pin' → 'Red wire'
+      'The individual is wearing round metal frame glasses with clear lenses'
+       → 'Round metal frame glasses with clear lenses'
+      'A bright yellow cylindrical motor with a white shaft and black
+       mounting base' → 'Bright yellow cylindrical motor with a white shaft
+       and black mounting base'
     """
     if not desc:
         return ""
+
     cleaned = _NEMOTRON_PREAMBLE.sub("", desc).strip(" ,;:.")
+    if not cleaned:
+        return ""
+
+    m = _WEARING_PATTERN.match(cleaned)
+    if m:
+        cleaned = cleaned[m.end():].strip()
+
+    m = _SUBJECT_BEFORE_VERB.match(cleaned)
+    if m:
+        cleaned = m.group(1).strip(" ,;:.")
+
+    cleaned = _TRAILING_PARTICIPLE.sub("", cleaned).strip(" ,;:.")
+
+    cleaned = re.sub(r"^(?:The|A|An)\s+", "", cleaned, count=1, flags=re.IGNORECASE).strip()
+
+    if len(cleaned) > _SAM3_MAX_CLEAN_CHARS:
+        for sep in (". ", "; ", ", "):
+            idx = cleaned.find(sep)
+            if 10 < idx < _SAM3_MAX_CLEAN_CHARS:
+                cleaned = cleaned[:idx]
+                break
+        if len(cleaned) > _SAM3_MAX_CLEAN_CHARS:
+            cleaned = cleaned[:_SAM3_MAX_CLEAN_CHARS].rsplit(" ", 1)[0]
+
     if not cleaned:
         return ""
     cleaned = cleaned[0].upper() + cleaned[1:]
@@ -345,13 +397,13 @@ async def _segment_single_frame(
     confidence_threshold: float,
 ) -> dict | None:
     """
-    Segment all target objects in a single frame via full-frame text prompts.
+    Segment all target objects in a single frame via full-frame text prompts,
+    then fall back to point-prompted segmentation (using Nemotron coordinates)
+    for any objects that text-prompting missed.
 
-    Each object in objects_present may carry a '_nemotron_desc' field — the
-    visual description Nemotron returned for this specific frame.  When
-    available it replaces the generic Claude sam3_prompt, giving SAM3 a
-    concrete visual description (colors, shapes, spatial context) instead
-    of an abstract functional label.
+    Each object in objects_present may carry:
+      - '_nemotron_desc': visual description from Nemotron for this frame
+      - '_nemotron_cx', '_nemotron_cy': center coordinates (0-1) from Nemotron
     """
     from pathlib import Path
 
@@ -378,6 +430,38 @@ async def _segment_single_frame(
             frame_bytes, prompts, confidence_threshold,
         )
         segments = seg_result.get("segments", [])
+
+        # Identify which objects text-prompting found
+        found_labels = {s.get("label") for s in segments}
+
+        # Point-prompt fallback for objects text-prompting missed
+        for obj in objects_present:
+            if obj["label"] in found_labels:
+                continue
+            cx = obj.get("_nemotron_cx")
+            cy = obj.get("_nemotron_cy")
+            if cx is None or cy is None:
+                continue
+
+            size_hint = obj.get("size_hint", "medium")
+            radius = {"large": 0.10, "medium": 0.08, "small": 0.05}.get(size_hint, 0.08)
+
+            pt_result = await segment_point(
+                frame_bytes, cx, cy,
+                box_radius=radius,
+                confidence_threshold=confidence_threshold,
+                best_only=True,
+            )
+            if pt_result and pt_result.get("segments"):
+                for seg in pt_result["segments"]:
+                    seg["label"] = obj["label"]
+                    seg["role"] = obj.get("role", "primary")
+                    segments.append(seg)
+                print(
+                    f"[KeyObjectPipeline] Point fallback for \"{obj['label']}\" "
+                    f"@ ({cx:.2f}, {cy:.2f}) — {pt_result['segments'][0]['score']:.0%}",
+                    flush=True,
+                )
 
         if segments:
             return {"frame_path": frame_path, "segments": segments}
@@ -414,6 +498,8 @@ async def segment_positive_frames_multi(
                 frame_object_map[det["frame_path"]].append({
                     **obj,
                     "_nemotron_desc": det.get("description", ""),
+                    "_nemotron_cx": det.get("center_x"),
+                    "_nemotron_cy": det.get("center_y"),
                 })
 
     work_items = [

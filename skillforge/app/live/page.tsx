@@ -284,7 +284,7 @@ export default function LiveDetectPage() {
     onNextStep: skipForward,
     onPreviousStep: skipBackward,
     onFinish: () => {},
-    enabled: !isCameraOnlyMode && isActive && micEnabled,
+    enabled: !isCameraOnlyMode && displayActive && micEnabled,
   });
 
   useEffect(() => {
@@ -729,7 +729,7 @@ export default function LiveDetectPage() {
             )}
           </>
         )}
-        {isActive && (
+        {displayActive && (
           <>
             <button
               onClick={() => setMicEnabled((v) => !v)}

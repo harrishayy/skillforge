@@ -44,9 +44,9 @@ from services.asr_service import extract_audio_from_video, transcribe_wav
 
 UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
 
-DETECTION_RATE_MS = 1500  # ~1 detection frame per 1.5 seconds of video
-MIN_DETECTION_FRAMES = 5
-MAX_DETECTION_FRAMES = 28
+DETECTION_RATE_MS = 2000  # ~1 detection frame per 2 seconds of video
+MIN_DETECTION_FRAMES = 4
+MAX_DETECTION_FRAMES = 16
 
 
 def _detection_frame_budget(duration_ms: int) -> int:

@@ -164,9 +164,75 @@ Merged teammates' work (apparatus pipeline, SAM3 client, new components, etc.) i
 Removed the `-90°` rotation transform. Phone camera video is already correctly oriented — the rotation was causing the feed to appear rotated on the laptop.
 Final code: `ctx.drawImage(video, 0, 0, CAPTURE_WIDTH, CAPTURE_HEIGHT)` — no transform.
 
+### Fix 20 — `backend/main.py`: add `z` coordinate + `handedness` to landmark data ← **GESTURE DETECTION FIX**
+**Root cause:** Gesture detection (pinch/double-tap) silently failed for the remote camera feed due to two missing fields in the backend's landmark output.
+
+**Root cause A — missing `z`:** `pinch-detection.ts:toNormalized()` accesses `lm.z`. The backend only sent `{x, y}`. With `z = undefined`, `distance3d()` returns `NaN`, and `NaN < PINCH_THRESHOLD` is always `false` → pinch never detected.
+
+**Root cause B — missing `handedness`:** `computePinchState()` skips any hand where `!handedness` (line 55). Without it, both hands are skipped → `leftPressed` and `rightPressed` always `false`.
+
+**Fix in `run_hand_detection()` and `run_hand_detection_video()`:**
+- Changed return type from `list[list[dict]]` → `list[dict]` (each dict = `{"landmarks": [...], "handedness": "Left"|"Right"|None}`)
+- Added `"z": round(lm.z, 4)` to every landmark
+- Extracted `handedness` from `result.handedness[i][0].display_name`
+- Updated `_build_detect_response()` to pass the hand dicts through directly instead of re-wrapping
+
+**Result:** Pinch indicator lights up, double-tap gestures trigger skip/rewind on remote camera feed.
+
+### Fix 21 — `live/page.tsx`: voice recognition enabled in remote camera mode
+**Root cause:** `useVoiceCommands` was gated on `enabled: !isCameraOnlyMode && isActive && micEnabled`. `isActive` is the local laptop camera state — always `false` when using the phone as remote camera → voice permanently disabled.
+
+**Fix:** Changed `isActive` → `displayActive`. `displayActive` is `true` in both local (`isActive`) and remote (`!!remoteSessionId`) modes. Voice now starts listening as soon as the remote session is active.
+
+### Fix 22 — `live/page.tsx`: mic button visible in remote camera mode
+**Root cause:** The mic toggle button and its status indicator (`"Listening"` / `"Starting..."` / `"Unavailable"`) were inside `{isActive && (...)}`. In remote mode `isActive = false` → button hidden → user had no feedback that voice was running (or failing).
+
+**Fix:** Changed gate from `{isActive && (...)}` → `{displayActive && (...)}` on the mic button only. The gesture toggle remains on `{isActive && ...}` since gesture detection works correctly in remote mode without a toggle (gestures are always enabled via `gesturesEnabled = true` default).
+
+### Fix 23 — Merge `origin/main` into `fix/camera-feed` (second merge)
+Main had 14 new commits (`8dc3ba8`) that broke 5 critical camera fixes:
+- `server.mjs` **deleted** in main → restored from our branch
+- `next.config.ts`: main re-added `/ws/:path*` rewrite (root cause of Fix 14) + removed `reactStrictMode: false` + dropped wildcard origins → kept our version
+- `package.json`: main reverted `dev` to `next dev` → kept our `node server.mjs`
+- `useCameraRoomProducer.ts`: main reverted to 1080p + re-added -90° rotation + removed reconnect → kept our version
+- `live/page.tsx`: main removed `isActive` gate + removed QR hydration fix → kept our version
+
+New features taken from main:
+- `useVoiceCommands`: `requireUserGesture`, `displayTranscript`, `startListening`, `onElaborate`
+- `useDoubleTapDetection`: moved logic to `useEffect` (avoids setState-during-render)
+- Backend additions: `trainee.py`, `voice.py`, `asr_service.py`, new services
+- Player components: `StepTimelineVertical`, `StepHistoryPanel`, `SubtitleOverlay`
+
 ---
 
-## Remaining Tasks (optional improvements)
+### Fix 24 — Integrate phone camera into trainer recording (`session/page.tsx`) + trainee learning (`LearnView.tsx`)
+**Strategy A:** Phone camera is a detection/preview source only. Laptop webcam still records step videos — recording pipeline unchanged.
+
+**New shared files:**
+- `skillforge/hooks/usePhoneCameraSession.ts` — encapsulates session ID generation, QR URL (useEffect pattern matching `live/page.tsx`), `useCameraRoomViewer` integration. Exposes `startRemoteSession()`, `stopRemoteSession()`, `remoteSessionId`, `qrUrl`, `viewerStatus`, `remoteFrame`, `remoteDetection`, `isPhoneConnected`.
+- `skillforge/components/camera/PhoneCameraQRModal.tsx` — shared full-screen overlay modal with QR code, connection status, Done/Close button. Used by both trainer and trainee pages.
+
+**Trainer recording page (`session/page.tsx`):**
+- Added `usePhoneCameraSession()` hook
+- `activeHands = phone.isPhoneConnected ? phone.remoteDetection.hands : handData` — phone hands used for gesture/double-tap detection when phone is connected
+- `computePinchState(activeHands)` and `useDoubleTapDetection(gesturesEnabled ? activeHands : null, ...)` use merged hands
+- "Phone cam" button added to top-left toolbar bar (alongside mic, gesture, subtitle toggles) — clicking starts phone session + shows QR modal
+- Phone PiP preview shown at bottom-right (160px wide `<img>` with live base64 JPEG frames, click to re-open QR modal)
+- QR modal rendered at end of JSX
+- `phone.stopRemoteSession()` called on exit
+
+**Trainee learning view (`LearnView.tsx`):**
+- Added `usePhoneCameraSession()` hook
+- `activeHands = phone.isPhoneConnected ? phone.remoteDetection.hands : isTrainingMode ? cameraHands : null` — gestures work from phone even without training mode
+- `useDoubleTapDetection(activeHands, ...)` — double-tap navigation works from phone
+- `useMediaPipeDetect` disabled when phone connected (avoid conflicting local detections)
+- `checkStepSuggest` polling: uses `phoneFrameRef.current.data` (latest phone frame) when phone is connected; falls back to local camera canvas capture otherwise
+- Polling runs when `phone.isPhoneConnected` OR local training mode + camera — no training mode required for phone
+- RAF canvas overlay loop skipped when phone is connected (phone shows `<img>`, not local video)
+- "Phone cam" button added to header bar alongside "Start training"
+- Camera panel shown when `isTrainingMode || phone.isPhoneConnected`; shows live phone frames (`<img>`) when phone connected, local video+canvas when not
+- Layout splits to w-1/2 / w-1/2 when `isTrainingMode || phone.isPhoneConnected`
+- QR modal rendered at end of JSX
 
 ### NVIDIA GPU server for faster inference (optional)
 CPU inference at 640×360 is ~30–60ms/frame. If real-time hand detection needs to be faster:
@@ -174,6 +240,31 @@ CPU inference at 640×360 is ~30–60ms/frame. If real-time hand detection needs
 2. In `server.mjs`, change `AR_BACKEND_HOST` and `AR_BACKEND_PORT` to point at the remote server
 3. GPU inference: ~5–10ms/frame vs CPU ~30–60ms — significant improvement
 4. Net win only if SSH tunnel latency < ~50ms
+
+### Fix 25 — Phone-as-primary-recorder in `session/page.tsx`
+**New hook:** `skillforge/hooks/usePhoneVideoRecorder.ts`
+- Mirrors `useWebcamRecorder` exactly (same `start/stop/snapshot/pause/resume/getDurationMs` API)
+- Internal: 640×360 canvas + `captureStream(24)` fed by phone JPEG frames → `MediaRecorder`
+- `snapshot()`: stop recorder → resolve blob → immediately restart on same canvas stream
+- Gets laptop mic via `getUserMedia({audio, video:false})` for the audio track
+
+**Changes to `session/page.tsx`:**
+- `recordingSource: "laptop" | "phone"` state (default "laptop")
+- `sourceLocked = useRef(false)` — set true on first apparatus done/skip or step snapshot
+- `phoneRecorder = usePhoneVideoRecorder(phone.remoteFrame, recordingSource === "phone")`
+- `activeRecorder = recordingSource === "phone" ? phoneRecorder : webcamRecorder` — all snapshot/stop/duration route through it
+- `activeHands` now after `activeRecorder`, uses `recordingSource === "phone"` for phone detection
+- `pinchState = computePinchState(activeHands)` — pinch uses merged hands (phone or local)
+- `handleSwitchToPhone` / `handleSwitchToLaptop` callbacks (guarded by `sourceLocked.current`)
+- `useMediaPipeDetect` gated on `recordingSource === "laptop"` — skips local detection in phone mode
+- `recordingSourceRef` + `phoneDetectionRef` stable refs for use inside RAF render loop
+- Canvas render loop draws phone hands in phone mode, MediaPipe hands in laptop mode
+- Smart PiP: shows laptop `<video>` PiP (click=switch to laptop) in phone mode; shows phone `<img>` PiP (click=switch to phone) in laptop mode; both amber border when unlocked, dim when locked
+- **Source-switch banner** during apparatus showcase: shows current source + switch button; "Locked after showcase" warning
+- REC badge: uses `activeRecorder.isPaused`; shows 📱 when recording from phone
+- SessionControlBar: `activeRecorder.isPaused/durationMs/pause/resume`
+- `handleConfirmFinish` dep array: `[activeRecorder, webcamRecorder, recordingSource, phoneRecorder, currentStepNumber, pushUploadLog]`
+- `handleExit`: stops both recorders + `phone.stopRemoteSession()`
 
 ### `ws` package not in `package.json` dependencies
 `server.mjs` imports from `ws` library but it's not listed in `skillforge/package.json`. It currently works as a transitive dependency (pulled in by Next.js). Should be added explicitly:

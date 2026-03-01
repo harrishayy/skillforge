@@ -61,10 +61,13 @@ export function seekToStep(videoEl: HTMLVideoElement, step: Step) {
 }
 
 /**
- * Returns click_targets whose frame_path matches the closest detected frame
- * to the given video time. Always returns the nearest match so the overlay
- * stays visible throughout playback when detections exist. Click_targets
- * without a frame_path are shown unconditionally.
+ * Returns click_targets whose frame_path matches the closest *segmented*
+ * frame to the given video time. Only considers frames that actually have
+ * click_targets (i.e., SAM3 produced masks for them), not just any frame
+ * where Nemotron detected objects. This prevents empty results when the
+ * nearest detected frame wasn't successfully segmented.
+ *
+ * Click_targets without a frame_path are shown unconditionally.
  */
 export function getClickTargetsForTime(
   frames: StepFrame[],
@@ -90,11 +93,17 @@ export function getClickTargetsForTime(
 
   if (!withPath.length) return withoutPath.length ? withoutPath : clickTargets;
 
+  // Build a set of frame_paths that have click_targets so we only match
+  // against frames where SAM3 actually produced segments.
+  const segmentedPaths = new Set(ctByFrame.keys());
+
+  // Find the closest frame that has click_targets (not just object_detected).
+  // Fall back to any detected frame if none match.
   let bestFrame: StepFrame | null = null;
   let bestDist = Infinity;
 
   for (const f of frames) {
-    if (!f.object_detected) continue;
+    if (!segmentedPaths.has(f.frame_path)) continue;
     const dist = Math.abs(f.timestamp_ms - currentTimeMs);
     if (dist < bestDist) {
       bestDist = dist;
@@ -103,6 +112,7 @@ export function getClickTargetsForTime(
   }
 
   if (!bestFrame) {
+    // No frame matched by path — just use the first available set
     const firstFramePath = ctByFrame.keys().next().value;
     return firstFramePath ? (ctByFrame.get(firstFramePath) ?? withoutPath) : withoutPath;
   }
