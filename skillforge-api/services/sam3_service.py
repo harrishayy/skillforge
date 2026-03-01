@@ -111,32 +111,44 @@ async def segment_concept(
         return None
 
 
+_POINT_BOX_RADIUS = 0.05  # half-width of the box generated around a point click
+
+
 async def segment_point(
     frame_bytes: bytes,
     x: float,
     y: float,
     label: int = 1,
+    box_radius: float = _POINT_BOX_RADIUS,
 ) -> dict | None:
     """
-    Segment the object at a specific click coordinate using SAM 3's native
-    point prompt — true click-to-segment, not a bounding-box approximation.
+    Segment the object at a specific click coordinate by generating a small
+    bounding box around the point and delegating to the box-prompt endpoint.
 
     Args:
         x, y: Normalized coordinates (0-1) of the click point.
         label: 1 = foreground (segment the object here), 0 = background (exclude).
+        box_radius: Half-size of the box in normalized coords (default 5%).
     """
     if not SAM3_URL:
         return None
 
+    bbox = [
+        max(0.0, x - box_radius),
+        max(0.0, y - box_radius),
+        min(1.0, x + box_radius),
+        min(1.0, y + box_radius),
+    ]
+
     try:
         t0 = time.perf_counter()
-        point_str = f"{x},{y}"
+        box_str = ",".join(f"{v:.4f}" for v in bbox)
 
         client = _get_client()
         resp = await client.post(
             f"{SAM3_URL}/segment",
             files={"image": ("frame.jpg", frame_bytes, "image/jpeg")},
-            data={"point": point_str, "label": str(label)},
+            data={"box": box_str},
         )
         resp.raise_for_status()
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
