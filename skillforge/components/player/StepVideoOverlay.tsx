@@ -19,6 +19,7 @@ const ROLE_STYLES: Record<string, { lineWidth: number; dashPattern: number[]; fi
 interface StepVideoOverlayProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   step: Step;
+  segmentationProcessing?: boolean;
 }
 
 /**
@@ -27,7 +28,7 @@ interface StepVideoOverlayProps {
  * computes the object-contain letterbox offset, and composites masks with
  * role-based coloring on each animation frame.
  */
-export function StepVideoOverlay({ videoRef, step }: StepVideoOverlayProps) {
+export function StepVideoOverlay({ videoRef, step, segmentationProcessing }: StepVideoOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
   const maskCacheRef = useRef<Map<string, ImageBitmap>>(new Map());
@@ -199,10 +200,29 @@ export function StepVideoOverlay({ videoRef, step }: StepVideoOverlayProps) {
     return () => cancelAnimationFrame(rafRef.current);
   }, [videoRef]);
 
+  const showProcessingBanner = segmentationProcessing && targetCount === 0;
+
   return (
-    <canvas
-      ref={canvasRef}
-      className="absolute inset-0 w-full h-full pointer-events-none z-10"
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full pointer-events-none z-10"
+      />
+      {showProcessingBanner && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+          <div
+            className="flex items-center gap-2 px-3 py-1.5 rounded-full"
+            style={{ backgroundColor: "rgba(0,0,0,0.75)", border: "1px solid rgba(255,196,18,0.3)" }}
+          >
+            <svg className="animate-spin w-3 h-3" style={{ color: "#FFC412" }} viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.416" strokeDashoffset="10" strokeLinecap="round" />
+            </svg>
+            <span className="text-[10px] font-medium" style={{ color: "#FFC412" }}>
+              Video segmentation in progress...
+            </span>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

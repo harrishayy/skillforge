@@ -2,6 +2,7 @@
 
 export type TaskMode = "hardware";
 export type WorkflowStatus = "processing" | "ready" | "failed";
+export type SegmentationStatus = "pending" | "processing" | "ready" | "failed";
 export type AnnotationType = "bounding_box" | "arrow" | "highlight" | "text_label";
 export type InputEventType = "click" | "keypress" | "scroll" | "drag";
 export type PipelineStage =
@@ -100,6 +101,7 @@ export interface Workflow {
   description?: string;
   mode: TaskMode;
   status: WorkflowStatus;
+  segmentation_status?: SegmentationStatus;
   published: boolean;
   video_path?: string;
   duration_ms?: number;
@@ -152,11 +154,18 @@ export interface PipelineErrorEvent {
   recoverable: boolean;
 }
 
+export interface SegmentationCompleteEvent {
+  type: "segmentation_complete";
+  workflow_id: string;
+  total_segments: number;
+}
+
 export type PipelineEvent =
   | PipelineLogEvent
   | StepCreatedEvent
   | PipelineCompleteEvent
-  | PipelineErrorEvent;
+  | PipelineErrorEvent
+  | SegmentationCompleteEvent;
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
 

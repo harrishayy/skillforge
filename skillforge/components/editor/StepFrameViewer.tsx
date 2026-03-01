@@ -21,12 +21,16 @@ export function StepFrameViewer() {
   const store = useWorkflowStore();
   const step = selectedStep(store);
   const {
+    workflow,
     segmentsByStep,
     segmentingStepId,
     activeFramePath,
     addSegment,
     setActiveFrame,
   } = store;
+
+  const segmentationReady = workflow?.segmentation_status === "ready";
+  const segmentationProcessing = workflow?.segmentation_status === "processing" || workflow?.segmentation_status === "pending";
 
   const imgRef = useRef<HTMLImageElement>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -98,8 +102,8 @@ export function StepFrameViewer() {
       {/* Main content */}
       {tab === "frames" ? (
         <div className="flex-1 flex flex-col gap-3 min-h-0">
-          {/* SAM3-detected frames (always visible) */}
-          {detectedFrames.length > 0 && (
+          {/* SAM3-detected frames or processing indicator */}
+          {detectedFrames.length > 0 ? (
             <div className="shrink-0">
               <div className="flex items-center gap-2 mb-1.5">
                 <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "var(--sf-lime)" }} />
@@ -146,7 +150,27 @@ export function StepFrameViewer() {
                 </div>
               </div>
             </div>
-          )}
+          ) : segmentationProcessing ? (
+            <div className="shrink-0">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: "var(--sf-yellow)" }} />
+                <span className="text-[10px] font-bold" style={{ color: "var(--sf-yellow)" }}>
+                  SAM3 SEGMENTATION IN PROGRESS...
+                </span>
+              </div>
+              <div
+                className="flex items-center gap-2 px-3 py-2 rounded-lg"
+                style={{ backgroundColor: "rgba(255,196,18,0.08)", border: "1px solid rgba(255,196,18,0.2)" }}
+              >
+                <svg className="animate-spin w-3.5 h-3.5" style={{ color: "var(--sf-yellow)" }} viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.416" strokeDashoffset="10" strokeLinecap="round" />
+                </svg>
+                <span className="text-[10px]" style={{ color: "var(--sf-yellow)" }}>
+                  Video segmentation is being processed. Segments will appear automatically.
+                </span>
+              </div>
+            </div>
+          ) : null}
 
           {/* All frames (collapsible) */}
           {frames.length > 1 && (
@@ -313,7 +337,7 @@ export function StepFrameViewer() {
                 muted
                 className="max-w-full max-h-[60vh] rounded-lg"
               />
-              <StepVideoOverlay videoRef={videoRef} step={step} />
+              <StepVideoOverlay videoRef={videoRef} step={step} segmentationProcessing={segmentationProcessing} />
             </div>
           ) : (
             <div className="text-sm" style={{ color: "#444" }}>No video available</div>

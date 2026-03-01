@@ -21,7 +21,7 @@ import anthropic
 
 from services.video_processor import extract_frames
 from services.nemotron_client import detect_objects_in_frames_parallel
-from services.sam3_service import segment_concept, segment_small_object, generate_segmented_image
+from services.sam3_service import segment_concept, generate_segmented_image
 from services.memory_layer import save_apparatus_object, clear_apparatus_catalog
 
 
@@ -284,19 +284,6 @@ async def _segment_one_apparatus_frame(
                 sam3_prompt,
                 confidence_threshold=0.3,
             )
-
-            if (not result or not result.get("segments")) and frame_path in frame_coords:
-                cx, cy = frame_coords[frame_path]
-                print(
-                    f"[ApparatusPipeline] Text miss for \"{object_name}\" "
-                    f"— trying crop-zoom at ({cx:.2f}, {cy:.2f})",
-                    flush=True,
-                )
-                result = await segment_small_object(
-                    frame_bytes, cx, cy,
-                    text_prompt=sam3_prompt,
-                    confidence_threshold=0.15,
-                )
 
             if not result or not result.get("segments"):
                 return None
