@@ -486,10 +486,11 @@ export function LearnView({
   }, []);
 
   // Poll check-step-suggest when in training mode and step has sam3_prompt.
-  // Require at least 2 detections within 1 second before suggesting next step (more robust).
-  const TRAINING_POLL_MS = 100;
+  // SAM3 takes ~1s per call, so poll every 1.5s to avoid request backlog.
+  // Require at least 2 detections within 4s before suggesting next step.
+  const TRAINING_POLL_MS = 1500;
   const SUGGEST_REQUIRED_DETECTIONS = 2;
-  const SUGGEST_WINDOW_MS = 1000;
+  const SUGGEST_WINDOW_MS = 4000;
   useEffect(() => {
     if (!isTrainingMode || !workflow || !currentStep?.sam3_prompt || !cameraRef.current || !cameraStream) {
       if (suggestPollRef.current) {
@@ -500,7 +501,9 @@ export function LearnView({
       return;
     }
     recentSuggestDetectionsRef.current = [];
+    let inFlight = false;
     const captureAndCheck = async () => {
+      if (inFlight) return;
       const video = cameraRef.current;
       if (!video || video.readyState < 2) return;
       if (!captureCanvasRef.current) captureCanvasRef.current = document.createElement("canvas");
@@ -513,6 +516,7 @@ export function LearnView({
       const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
       const base64 = dataUrl.split(",")[1];
       if (!base64) return;
+      inFlight = true;
       try {
         const res = await checkStepSuggest(workflowId, currentStep.id, base64);
         setLastDetectionResult({
@@ -534,6 +538,8 @@ export function LearnView({
         }
       } catch {
         // Ignore poll errors (e.g. SAM3 unavailable)
+      } finally {
+        inFlight = false;
       }
     };
     suggestPollRef.current = setInterval(captureAndCheck, TRAINING_POLL_MS);

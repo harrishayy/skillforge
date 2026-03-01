@@ -21,7 +21,7 @@ import anthropic
 
 from services.video_processor import extract_frames
 from services.nemotron_client import detect_objects_in_frames_parallel
-from services.sam3_service import segment_concept, segment_point, generate_segmented_image
+from services.sam3_service import segment_concept, generate_segmented_image
 from services.memory_layer import save_apparatus_object, clear_apparatus_catalog
 from services.key_object_pipeline import _clean_nemotron_for_sam3
 
@@ -282,11 +282,6 @@ async def _nemotron_verify_objects(
         obj["reference_frames"] = [path_to_rel[p] for p in positive_paths if p in path_to_rel]
         obj["angle_count"] = len(positive_paths)
         obj["_frame_paths"] = positive_paths
-        obj["_frame_coords"] = {
-            d["frame_path"]: (d.get("center_x"), d.get("center_y"))
-            for d in positive
-            if d.get("center_x") is not None and d.get("center_y") is not None
-        }
         obj["_frame_descriptions"] = {
             d["frame_path"]: d.get("description", "")
             for d in positive
@@ -311,7 +306,6 @@ async def _segment_one_apparatus_frame(
     frame_path: str,
     sam3_prompt: str,
     object_name: str,
-    frame_coords: dict[str, tuple[float, float]],
     safe_name: str,
     frame_index: int,
     apparatus_dir: Path,
@@ -319,11 +313,7 @@ async def _segment_one_apparatus_frame(
     path_to_rel: dict[str, str],
     frame_descriptions: dict[str, str] | None = None,
 ) -> dict | None:
-    """Segment a single (object, frame) pair under the shared semaphore.
-
-    Tries text-prompted segmentation first, then falls back to point-prompted
-    segmentation using Nemotron coordinates if the text prompt yields nothing.
-    """
+    """Segment a single (object, frame) pair under the shared semaphore."""
     async with sem:
         try:
             frame_bytes = Path(frame_path).read_bytes()
@@ -341,15 +331,6 @@ async def _segment_one_apparatus_frame(
                 prompt,
                 confidence_threshold=0.20,
             )
-
-            if (not result or not result.get("segments")) and frame_coords:
-                coords = frame_coords.get(frame_path)
-                if coords and coords[0] is not None and coords[1] is not None:
-                    cx, cy = coords
-                    result = await segment_point(
-                        frame_bytes, cx, cy, box_radius=0.10,
-                        confidence_threshold=0.20, best_only=True,
-                    )
 
             if not result or not result.get("segments"):
                 return None
@@ -406,14 +387,13 @@ async def _sam3_reference_segmentation(
 
         sampled = _subsample_list(fpaths, MAX_SEGMENTED_FRAMES_PER_OBJECT)
         safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", obj["object_name"])
-        frame_coords = obj.get("_frame_coords", {})
         frame_descriptions = obj.get("_frame_descriptions", {})
 
         for i, frame_path in enumerate(sampled):
             coros.append(
                 _segment_one_apparatus_frame(
                     sem, frame_path, obj["sam3_prompt"], obj["object_name"],
-                    frame_coords, safe_name, i, apparatus_dir, workflow_id,
+                    safe_name, i, apparatus_dir, workflow_id,
                     path_to_rel, frame_descriptions,
                 )
             )
@@ -460,7 +440,6 @@ async def _sam3_reference_segmentation(
 
     for obj in objects:
         obj.pop("_frame_paths", None)
-        obj.pop("_frame_coords", None)
         obj.pop("_frame_descriptions", None)
 
     return objects

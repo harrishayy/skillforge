@@ -182,8 +182,11 @@ class WorkflowPipelineManager:
                         if evt:
                             await evt.wait()
 
+                    # Run SAM3 segmentation inline so it completes during the loading screen
+                    await run_deferred_sam3(wid)
+
                     await execute(
-                        "UPDATE workflows SET status='ready', total_steps=?, segmentation_status='processing', updated_at=? WHERE id=?",
+                        "UPDATE workflows SET status='ready', total_steps=?, updated_at=? WHERE id=?",
                         (self.steps_created, now_ms(), wid),
                     )
                     await _log(wid, "complete", f"Workflow ready with {self.steps_created} steps", 100)
@@ -192,9 +195,6 @@ class WorkflowPipelineManager:
                         "workflow_id": wid,
                         "total_steps": self.steps_created,
                     })
-
-                    # Launch deferred SAM3 in background (non-blocking)
-                    asyncio.get_event_loop().create_task(run_deferred_sam3(wid))
 
                     WorkflowPipelineManager.cleanup(wid)
                     return
@@ -611,8 +611,11 @@ async def run_hardware_pipeline(
                 refined_transcripts.append(t)
 
         # ── Finalize ──────────────────────────────────────────────────────
+        # Run SAM3 segmentation inline so it completes during the loading screen
+        await run_deferred_sam3(workflow_id)
+
         await execute(
-            "UPDATE workflows SET status='ready', total_steps=?, segmentation_status='processing', updated_at=? WHERE id=?",
+            "UPDATE workflows SET status='ready', total_steps=?, updated_at=? WHERE id=?",
             (steps_created, now_ms(), workflow_id),
         )
 
@@ -625,9 +628,6 @@ async def run_hardware_pipeline(
                 "total_steps": steps_created,
             },
         )
-
-        # Launch deferred SAM3 in background (non-blocking)
-        asyncio.get_event_loop().create_task(run_deferred_sam3(workflow_id))
 
     except Exception as e:
         tb = traceback.format_exc()
@@ -649,14 +649,21 @@ async def run_hardware_pipeline(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DEFERRED SAM3 SEGMENTATION — runs after all steps reach "ready"
+# SAM3 SEGMENTATION — runs after all steps are processed, before "complete"
 # ═══════════════════════════════════════════════════════════════════════════════
+
+SAM3_RATE_MS = 2000   # target ~1 SAM3 frame per 2 seconds of video
+MIN_SAM3_FRAMES = 3
+MAX_SAM3_FRAMES = 16
+
 
 async def run_deferred_sam3(workflow_id: str):
     """
-    Background task: run SAM3 segmentation across all steps with an expanded
-    frame budget after the workflow reaches "ready" status. Uses ALL extracted
-    frames (not the subsampled budget) for dramatically better coverage.
+    Run SAM3 segmentation across all steps before the workflow is marked
+    "ready".  Uses a subsampled frame budget (~1 frame every 2 s) and
+    reuses existing Nemotron detection data from process_single_step
+    instead of re-scanning.  SAM3 is attempted on every sampled frame
+    so the object is tracked continuously through the video.
     """
     import base64 as b64mod
     from services.sam3_service import generate_segmented_image
@@ -666,7 +673,7 @@ async def run_deferred_sam3(workflow_id: str):
             "UPDATE workflows SET segmentation_status='processing', updated_at=? WHERE id=?",
             (now_ms(), workflow_id),
         )
-        await _log(workflow_id, "nemotron_vl", "Deferred SAM3 segmentation starting...", 80)
+        await _log(workflow_id, "nemotron_vl", "SAM3 segmentation starting...", 80)
 
         steps = await fetchall(
             "SELECT id, step_number, title, description, transcript, target_objects_json, sam3_prompt "
@@ -696,9 +703,10 @@ async def run_deferred_sam3(workflow_id: str):
                 target_objects[0],
             )
 
-            # Load ALL frames for this step (expanded budget)
+            # Load frames with existing Nemotron data (no re-scan)
             step_frames = await fetchall(
-                "SELECT id, frame_path, object_detected, nemotron_center_x, nemotron_center_y "
+                "SELECT id, frame_path, timestamp_ms, object_detected, "
+                "object_description, nemotron_center_x, nemotron_center_y "
                 "FROM step_frames WHERE step_id=? ORDER BY timestamp_ms",
                 (step_id,),
             )
@@ -706,40 +714,46 @@ async def run_deferred_sam3(workflow_id: str):
             if not step_frames:
                 continue
 
-            # Resolve absolute paths for frames
-            frame_abs_paths = [str(UPLOADS_DIR.parent / f["frame_path"]) for f in step_frames]
+            # Subsample: ~1 frame per 2 seconds (frames are extracted at ~1 fps)
+            budget = min(
+                MAX_SAM3_FRAMES,
+                max(MIN_SAM3_FRAMES, len(step_frames) * 1000 // SAM3_RATE_MS),
+            )
+            sampled = _subsample_frames(
+                list(range(len(step_frames))), budget,
+            )
+            sampled_frames = [step_frames[i] for i in sampled]
+
+            frame_abs_paths: list[str] = []
             frame_id_lookup: dict[str, str] = {}
-            for i, sf in enumerate(step_frames):
-                frame_id_lookup[frame_abs_paths[i]] = sf["id"]
+            for sf in sampled_frames:
+                abs_path = str(UPLOADS_DIR.parent / sf["frame_path"])
+                frame_abs_paths.append(abs_path)
+                frame_id_lookup[abs_path] = sf["id"]
 
-            # Run Nemotron on expanded frame set (all frames, not just subsampled)
-            nemotron_context_parts = []
-            if step_row.get("title"):
-                nemotron_context_parts.append(f'Step: "{step_row["title"]}"')
-            if step_row.get("description"):
-                nemotron_context_parts.append(f'Description: "{step_row["description"]}"')
-            if step_row.get("transcript"):
-                nemotron_context_parts.append(f'Expert narration: "{step_row["transcript"][:300]}"')
-            nemotron_context = (
-                "Context for this frame:\n" + "\n".join(f"- {p}" for p in nemotron_context_parts)
-                if nemotron_context_parts else None
-            )
+            # Build detection_results from existing DB data so SAM3 attempts
+            # segmentation on every sampled frame (continuous tracking).
+            # Nemotron coordinates are included where available for point-
+            # prompt fallback.
+            detection_results: dict[str, list[dict]] = {}
+            for obj in target_objects:
+                label = obj.get("label", "")
+                detections = []
+                for i, sf in enumerate(sampled_frames):
+                    has_nemotron = bool(
+                        sf.get("object_detected")
+                        and sf.get("nemotron_center_x") is not None
+                        and sf.get("nemotron_center_y") is not None
+                    )
+                    detections.append({
+                        "frame_path": frame_abs_paths[i],
+                        "present": True,
+                        "description": sf.get("object_description", "") if has_nemotron else "",
+                        "center_x": sf.get("nemotron_center_x") if has_nemotron else None,
+                        "center_y": sf.get("nemotron_center_y") if has_nemotron else None,
+                    })
+                detection_results[label] = detections
 
-            detection_results = await scan_frames_for_objects(
-                frame_abs_paths, target_objects, step_context=nemotron_context,
-            )
-
-            # Update step_frames with expanded Nemotron results
-            for label, detections in detection_results.items():
-                for det in detections:
-                    fid = frame_id_lookup.get(det["frame_path"])
-                    if fid and det["present"]:
-                        await execute(
-                            "UPDATE step_frames SET object_detected=1, object_description=?, nemotron_center_x=?, nemotron_center_y=? WHERE id=?",
-                            (det.get("description", ""), det.get("center_x"), det.get("center_y"), fid),
-                        )
-
-            # Run SAM3 segmentation on all positive frames
             segmentations = await segment_positive_frames_multi(
                 frame_abs_paths, target_objects, detection_results,
             )
@@ -807,7 +821,7 @@ async def run_deferred_sam3(workflow_id: str):
 
             await _log(
                 workflow_id, "nemotron_vl",
-                f"Step {step_num}: SAM3 segmented {sum(len(s['segments']) for s in segmentations)} objects",
+                f"Step {step_num}: SAM3 segmented {sum(len(s['segments']) for s in segmentations)} objects across {len(sampled_frames)} frames",
                 85 + step_num,
             )
 
@@ -824,7 +838,7 @@ async def run_deferred_sam3(workflow_id: str):
 
     except Exception as e:
         tb = traceback.format_exc()
-        print(f"[DeferredSAM3 ERROR] {workflow_id}: {e}\n{tb}")
+        print(f"[SAM3 ERROR] {workflow_id}: {e}\n{tb}")
         await execute(
             "UPDATE workflows SET segmentation_status='failed', updated_at=? WHERE id=?",
             (now_ms(), workflow_id),
