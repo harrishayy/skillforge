@@ -1,9 +1,9 @@
 """
-Nemotron VL — binary object presence detection across video frames.
+Nemotron VL — object presence detection + spatial localization across video frames.
 
 Calls a self-hosted Nemotron Nano 12B VL server (OpenAI-compatible vLLM)
-via NEMOTRON_URL. For each frame, answers: "Is this object present? Yes/No."
-No API key required — the server has no auth.
+via NEMOTRON_URL. For each frame, answers: "Is this object present?" and
+if so, returns approximate center coordinates (normalized 0-1).
 
 Used by: services/key_object_pipeline.py (multi-agent hardware pipeline).
 """
@@ -38,8 +38,13 @@ async def detect_object_in_frame(
     """
     Check whether a described object is present in the given frame.
 
-    Returns {"present": bool, "description": str} where description is a
-    1-sentence explanation when the object is found, or why it's not visible.
+    Returns:
+        {
+            "present": bool,
+            "description": str,
+            "center_x": float | None,  # normalized 0-1, only when present
+            "center_y": float | None,  # normalized 0-1, only when present
+        }
     """
     global _startup_logged
     nemotron_url = os.environ.get("NEMOTRON_URL", "")
@@ -48,7 +53,7 @@ async def detect_object_in_frame(
         if not _startup_logged:
             print("[Nemotron] ⚠ NEMOTRON_URL not set — skipping object detection", flush=True)
             _startup_logged = True
-        return {"present": False, "description": ""}
+        return {"present": False, "description": "", "center_x": None, "center_y": None}
 
     if not _startup_logged:
         print(f"[Nemotron] Configured → {nemotron_url}", flush=True)
@@ -60,7 +65,10 @@ async def detect_object_in_frame(
         f'Is the following object present in this image?\n'
         f'Object: {object_description}\n\n'
         f'Answer ONLY with valid JSON, no markdown:\n'
-        f'{{"present": true or false, "description": "1 sentence explaining what you see or why the object is not visible"}}'
+        f'{{"present": true or false, '
+        f'"description": "1 sentence explaining what you see or why the object is not visible", '
+        f'"center_x": 0.0 to 1.0 horizontal position of the object center (omit if not present), '
+        f'"center_y": 0.0 to 1.0 vertical position of the object center (omit if not present)}}'
     )
 
     payload = {
@@ -78,7 +86,7 @@ async def detect_object_in_frame(
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 256,
+        "max_tokens": 1024,
     }
 
     try:
@@ -94,33 +102,58 @@ async def detect_object_in_frame(
         content = resp.json()["choices"][0]["message"]["content"]
         result = _parse_detection_response(content)
         status = "✓ FOUND" if result["present"] else "✗ not found"
-        print(f"[Nemotron] {status} in {elapsed_ms}ms — {result['description'][:80]}", flush=True)
+        coord_str = ""
+        if result["present"] and result.get("center_x") is not None:
+            coord_str = f" @ ({result['center_x']:.2f}, {result['center_y']:.2f})"
+        print(f"[Nemotron] {status} in {elapsed_ms}ms{coord_str} — {result['description'][:80]}", flush=True)
         return result
 
     except httpx.ConnectError:
         print(f"[Nemotron] ✗ Connection refused — is the server running at {nemotron_url}?", flush=True)
-        return {"present": False, "description": ""}
+        return {"present": False, "description": "", "center_x": None, "center_y": None}
     except httpx.TimeoutException:
         print("[Nemotron] ✗ Request timed out (60s limit)", flush=True)
-        return {"present": False, "description": ""}
+        return {"present": False, "description": "", "center_x": None, "center_y": None}
     except Exception as e:
         print(f"[Nemotron] ✗ Detection failed: {e}", flush=True)
-        return {"present": False, "description": ""}
+        return {"present": False, "description": "", "center_x": None, "center_y": None}
+
+
+def _extract_coords(data: dict) -> tuple[float | None, float | None]:
+    """Extract and clamp center_x/center_y from parsed JSON."""
+    present = bool(data.get("present", False))
+    if not present:
+        return None, None
+    cx = data.get("center_x")
+    cy = data.get("center_y")
+    if cx is not None and cy is not None:
+        try:
+            cx = max(0.0, min(1.0, float(cx)))
+            cy = max(0.0, min(1.0, float(cy)))
+            return cx, cy
+        except (TypeError, ValueError):
+            pass
+    return None, None
 
 
 def _parse_detection_response(text: str) -> dict:
-    """Extract {present, description} JSON from model response."""
+    """Extract {present, description, center_x, center_y} from model response."""
     import re
 
     text = text.strip()
 
-    # Direct JSON parse
-    try:
-        data = json.loads(text)
+    def _build(data: dict) -> dict:
+        cx, cy = _extract_coords(data)
         return {
             "present": bool(data.get("present", False)),
             "description": str(data.get("description", "")),
+            "center_x": cx,
+            "center_y": cy,
         }
+
+    # Direct JSON parse
+    try:
+        return _build(json.loads(text))
     except json.JSONDecodeError:
         pass
 
@@ -128,11 +161,7 @@ def _parse_detection_response(text: str) -> dict:
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if match:
         try:
-            data = json.loads(match.group(1))
-            return {
-                "present": bool(data.get("present", False)),
-                "description": str(data.get("description", "")),
-            }
+            return _build(json.loads(match.group(1)))
         except json.JSONDecodeError:
             pass
 
@@ -140,18 +169,14 @@ def _parse_detection_response(text: str) -> dict:
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         try:
-            data = json.loads(match.group(0))
-            return {
-                "present": bool(data.get("present", False)),
-                "description": str(data.get("description", "")),
-            }
+            return _build(json.loads(match.group(0)))
         except json.JSONDecodeError:
             pass
 
     # Heuristic fallback: check if response contains "true" or "yes"
     lower = text.lower()
     present = any(w in lower for w in ["true", '"present": true', "yes, "])
-    return {"present": present, "description": text[:200]}
+    return {"present": present, "description": text[:200], "center_x": None, "center_y": None}
 
 
 async def detect_object_in_frames_batch(
@@ -162,7 +187,8 @@ async def detect_object_in_frames_batch(
 ) -> list[dict]:
     """
     Scan multiple frames for the presence of a described object.
-    Returns list of {frame_path, present, description} in the same order.
+    Returns list of {frame_path, present, description, center_x, center_y}
+    in the same order.
     """
     results = []
     total = len(frame_paths)
@@ -175,7 +201,7 @@ async def detect_object_in_frames_batch(
         for fp, result in zip(batch, batch_results):
             if isinstance(result, Exception):
                 print(f"[Nemotron] ✗ Batch detection error: {result}", flush=True)
-                result = {"present": False, "description": f"Error: {result}"}
+                result = {"present": False, "description": f"Error: {result}", "center_x": None, "center_y": None}
             results.append({"frame_path": fp, **result})
 
         done = min(i + batch_size, total)

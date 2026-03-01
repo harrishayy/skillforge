@@ -21,7 +21,7 @@ export default function EditorPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isPublishing, setIsPublishing] = useState(false);
-  const { workflow, setWorkflow, selectedStepId, selectedApparatusObjectId, selectStep } = useWorkflowStore();
+  const { workflow, setWorkflow, selectedStepId, selectedApparatusObjectId, selectStep, regeneratingAll, regenerateAll, rebuildingMemories } = useWorkflowStore();
 
   const leftPanel = useResizablePanel({
     initialWidth: 240,
@@ -123,19 +123,40 @@ export default function EditorPage() {
           {workflow.steps.length} steps · Click on frames to segment
         </span>
         {workflow.status === "ready" && (
-          <Button
-            size="sm"
-            variant={workflow.published ? "secondary" : "primary"}
-            onClick={handleTogglePublish}
-            disabled={isPublishing}
-            style={
-              !workflow.published
-                ? { backgroundColor: "var(--sf-lime)", color: "var(--sf-black)", border: "1px solid var(--sf-lime)" }
-                : undefined
-            }
-          >
-            {isPublishing ? "..." : workflow.published ? "Unpublish" : "Publish"}
-          </Button>
+          <>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => regenerateAll()}
+              disabled={regeneratingAll || rebuildingMemories}
+              style={{
+                borderColor: "var(--sf-purple)",
+                color: regeneratingAll ? "#555" : "var(--sf-purple)",
+              }}
+            >
+              {regeneratingAll ? (
+                <span className="flex items-center gap-1.5">
+                  <Spinner className="w-3 h-3" />
+                  Regenerating...
+                </span>
+              ) : (
+                "Re-generate"
+              )}
+            </Button>
+            <Button
+              size="sm"
+              variant={workflow.published ? "secondary" : "primary"}
+              onClick={handleTogglePublish}
+              disabled={isPublishing || regeneratingAll}
+              style={
+                !workflow.published
+                  ? { backgroundColor: "var(--sf-lime)", color: "var(--sf-black)", border: "1px solid var(--sf-lime)" }
+                  : undefined
+              }
+            >
+              {isPublishing ? "..." : workflow.published ? "Unpublish" : "Publish"}
+            </Button>
+          </>
         )}
         <Link href={`/editor/${workflow.id}/preview`}>
           <Button size="sm">Preview as Trainee →</Button>

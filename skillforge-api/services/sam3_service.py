@@ -284,6 +284,10 @@ _FALLBACK_COLORS = [
     (0, 200, 255),    # cyan
     (255, 100, 255),  # magenta
     (255, 200, 0),    # yellow
+    (255, 80, 80),    # coral-red
+    (100, 140, 255),  # periwinkle
+    (232, 121, 249),  # orchid
+    (52, 211, 153),   # mint
 ]
 _OVERLAY_ALPHA_PRIMARY = 140   # ~55%
 _OVERLAY_ALPHA_CONTEXT = 100   # ~40%

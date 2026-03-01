@@ -310,6 +310,31 @@ export async function rebuildWorkflowMemories(
   );
 }
 
+export async function regenerateAll(
+  workflowId: string
+): Promise<{ status: string; steps_count: number }> {
+  return apiFetch<{ status: string; steps_count: number }>(
+    `/api/workflows/${workflowId}/regenerate-all`,
+    { method: "POST" }
+  );
+}
+
+export interface TaskStatus {
+  task?: string;
+  status: "idle" | "running" | "done" | "error";
+  progress?: number;
+  total?: number;
+  error?: string | null;
+}
+
+export async function getWorkflowTaskStatus(
+  workflowId: string
+): Promise<TaskStatus> {
+  return apiFetch<TaskStatus>(
+    `/api/workflows/${workflowId}/task-status`
+  );
+}
+
 // ─── Copilot ──────────────────────────────────────────────────────────────────
 
 export async function getStepInstruction(

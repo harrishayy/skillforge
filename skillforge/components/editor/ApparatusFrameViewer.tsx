@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useWorkflowStore, selectedApparatusObject } from "@/store/workflow-store";
 import { frameUrl } from "@/lib/constants";
 
@@ -25,16 +25,33 @@ export function ApparatusFrameViewer() {
   }
 
   const allFrames = object.reference_frame_paths ?? [];
-  const hasSegmented = !!object.segmented_reference_path;
+  const segMap = object.segmented_frame_paths ?? {};
+  const segCount = Object.keys(segMap).length;
+  const hasAnySegmented = segCount > 0 || !!object.segmented_reference_path;
 
-  const bestFrameIndex = Math.floor(allFrames.length / 2);
+  const segmentedFrameIndices = useMemo(() => {
+    const indices: number[] = [];
+    for (let i = 0; i < allFrames.length; i++) {
+      if (segMap[allFrames[i]]) indices.push(i);
+    }
+    // Fallback: if no per-frame mapping but legacy single path exists, use middle
+    if (indices.length === 0 && object.segmented_reference_path) {
+      indices.push(Math.floor(allFrames.length / 2));
+    }
+    return indices;
+  }, [allFrames, segMap, object.segmented_reference_path]);
+
   const activeIdx = activeFrameIndex < allFrames.length ? activeFrameIndex : 0;
-  const isOnSegmentedFrame = activeIdx === bestFrameIndex && hasSegmented;
+  const activePath = allFrames[activeIdx];
+  const activeSegPath = segMap[activePath]
+    // Fallback for legacy single-frame segmentation
+    || (segmentedFrameIndices.includes(activeIdx) ? object.segmented_reference_path : undefined);
+  const isOnSegmentedFrame = !!activeSegPath;
 
   const displayPath =
     showSegmented && isOnSegmentedFrame
-      ? object.segmented_reference_path!
-      : allFrames[activeIdx];
+      ? activeSegPath!
+      : activePath;
 
   return (
     <div className="flex-1 flex flex-col gap-3 overflow-hidden">
@@ -49,12 +66,12 @@ export function ApparatusFrameViewer() {
         >
           {object.object_type}
         </span>
-        {hasSegmented && (
+        {hasAnySegmented && (
           <span
             className="text-[9px] font-bold px-1.5 py-0.5 rounded"
             style={{ backgroundColor: "rgba(190,242,100,0.15)", color: "var(--sf-lime)" }}
           >
-            SAM3 SEGMENTED
+            SAM3 — {segCount || 1} FRAME{segCount !== 1 ? "S" : ""}
           </span>
         )}
         <span className="text-[10px] ml-auto" style={{ color: "#555" }}>
@@ -63,41 +80,51 @@ export function ApparatusFrameViewer() {
       </div>
 
       <div className="flex-1 flex flex-col gap-3 min-h-0">
-        {/* SAM3 segmented frame (always visible if exists) */}
-        {hasSegmented && (
+        {/* SAM3 segmented frames strip */}
+        {segmentedFrameIndices.length > 0 && (
           <div className="shrink-0">
             <div className="flex items-center gap-2 mb-1.5">
               <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "var(--sf-lime)" }} />
               <span className="text-[10px] font-bold" style={{ color: "var(--sf-lime)" }}>
-                SAM3 REFERENCE
+                SAM3 DETECTED ({segmentedFrameIndices.length})
               </span>
             </div>
-            <div className="flex gap-1.5 pb-1">
-              <button
-                onClick={() => setActiveFrameIndex(bestFrameIndex)}
-                className="relative shrink-0 rounded-md overflow-hidden transition-all"
-                style={{
-                  width: 72,
-                  height: 48,
-                  border: activeIdx === bestFrameIndex
-                    ? "2px solid var(--sf-yellow)"
-                    : "2px solid var(--sf-lime)",
-                  opacity: activeIdx === bestFrameIndex ? 1 : 0.8,
-                }}
-              >
-                <img
-                  src={frameUrl(object.segmented_reference_path!)}
-                  alt={`${object.object_name} segmented`}
-                  className="w-full h-full object-cover"
-                  draggable={false}
-                />
-                <span
-                  className="absolute top-0.5 right-0.5 text-[7px] font-bold px-1 rounded"
-                  style={{ backgroundColor: "rgba(0,0,0,0.7)", color: "var(--sf-lime)" }}
-                >
-                  SAM3
-                </span>
-              </button>
+            <div className="overflow-x-auto">
+              <div className="flex gap-1.5 pb-1">
+                {segmentedFrameIndices.map((idx) => {
+                  const fp = allFrames[idx];
+                  const segPath = segMap[fp] || object.segmented_reference_path;
+                  const isActive = activeIdx === idx;
+                  return (
+                    <button
+                      key={fp}
+                      onClick={() => setActiveFrameIndex(idx)}
+                      className="relative shrink-0 rounded-md overflow-hidden transition-all"
+                      style={{
+                        width: 72,
+                        height: 48,
+                        border: isActive
+                          ? "2px solid var(--sf-yellow)"
+                          : "2px solid var(--sf-lime)",
+                        opacity: isActive ? 1 : 0.8,
+                      }}
+                    >
+                      <img
+                        src={segPath ? frameUrl(segPath) : frameUrl(fp)}
+                        alt={`${object.object_name} segmented frame ${idx + 1}`}
+                        className="w-full h-full object-cover"
+                        draggable={false}
+                      />
+                      <span
+                        className="absolute top-0.5 right-0.5 text-[7px] font-bold px-1 rounded"
+                        style={{ backgroundColor: "rgba(0,0,0,0.7)", color: "var(--sf-lime)" }}
+                      >
+                        SAM3
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         )}
@@ -128,9 +155,9 @@ export function ApparatusFrameViewer() {
                 <div className="flex gap-1.5 pb-1">
                   {allFrames.map((fp, i) => {
                     const isActive = activeIdx === i;
-                    const isSegmentedIdx = i === bestFrameIndex && hasSegmented;
-                    const thumbSrc = isSegmentedIdx && object.segmented_reference_path
-                      ? frameUrl(object.segmented_reference_path)
+                    const hasSeg = !!segMap[fp] || segmentedFrameIndices.includes(i);
+                    const thumbSrc = hasSeg && (segMap[fp] || object.segmented_reference_path)
+                      ? frameUrl(segMap[fp] || object.segmented_reference_path!)
                       : frameUrl(fp);
                     return (
                       <button
@@ -142,7 +169,7 @@ export function ApparatusFrameViewer() {
                           height: 42,
                           border: isActive
                             ? "2px solid var(--sf-yellow)"
-                            : isSegmentedIdx
+                            : hasSeg
                               ? "2px solid var(--sf-lime)"
                               : "2px solid #333",
                           opacity: isActive ? 1 : 0.65,
@@ -154,7 +181,7 @@ export function ApparatusFrameViewer() {
                           className="w-full h-full object-cover"
                           draggable={false}
                         />
-                        {isSegmentedIdx && (
+                        {hasSeg && (
                           <span
                             className="absolute top-0 right-0 text-[6px] font-bold px-0.5 rounded-bl"
                             style={{ backgroundColor: "rgba(0,0,0,0.7)", color: "var(--sf-lime)" }}
