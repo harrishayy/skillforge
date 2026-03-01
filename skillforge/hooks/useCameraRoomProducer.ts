@@ -129,7 +129,6 @@ export function useCameraRoomProducer({
         try {
           ws.send(JSON.stringify({ role: "producer" }));
           roleSentRef.current = true;
-          reconnectCountRef.current = 0; // reset on successful open
           setConnectionStatus("open");
           startDelayRef.current = setTimeout(() => {
             startDelayRef.current = null;
@@ -158,11 +157,12 @@ export function useCameraRoomProducer({
         // Code 1006 = TCP dropped without close frame (React Strict Mode or network blip).
         const isAbnormal = event.code !== 1000 && event.code !== 1001;
         if (isAbnormal && activeRef.current && reconnectCountRef.current < MAX_RECONNECT_ATTEMPTS) {
+          const delay = RECONNECT_DELAY_MS * Math.pow(2, reconnectCountRef.current);
           reconnectCountRef.current += 1;
           console.log(
-            `[CameraRoomProducer] Abnormal close (${event.code}), reconnect attempt ${reconnectCountRef.current}/${MAX_RECONNECT_ATTEMPTS} in ${RECONNECT_DELAY_MS}ms`
+            `[CameraRoomProducer] Abnormal close (${event.code}), reconnect attempt ${reconnectCountRef.current}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms`
           );
-          reconnectRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
+          reconnectRef.current = setTimeout(connect, delay);
         }
       };
 

@@ -34,8 +34,17 @@ const AR_BACKEND_PORT = 8001;
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
+// Close codes that cannot be sent in a WebSocket close frame (RFC 6455 §7.4.2).
+// Forwarding these causes a RangeError in the ws library.
+const UNSENDABLE_CLOSE_CODES = new Set([1004, 1005, 1006]);
+
 app.prepare().then(() => {
-  const wss = new WebSocketServer({ noServer: true });
+  // perMessageDeflate: false — iOS Safari has known issues with the ws library's
+  // default permessage-deflate negotiation parameters (client_no_context_takeover
+  // etc.) and closes immediately with code 1002 (Protocol Error). Disabling
+  // compression on the proxy eliminates the extension negotiation entirely.
+  // Camera frames are JPEG (already compressed) so there is no size benefit anyway.
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
   // Bridge: phone WS  ↔  AR backend WS
   wss.on("connection", (phoneWs, req) => {
@@ -46,7 +55,9 @@ app.prepare().then(() => {
     // Buffer frames that arrive before the AR backend WS is open
     const pendingToAR = [];
 
-    const arWs = new WebSocket(arUrl);
+    // perMessageDeflate: false matches the server setting so both sides of the
+    // proxy use raw (uncompressed) frames — no extension mismatch possible.
+    const arWs = new WebSocket(arUrl, { perMessageDeflate: false });
 
     // Phone → AR backend
     phoneWs.on("message", (data, isBinary) => {
@@ -83,7 +94,8 @@ app.prepare().then(() => {
 
     arWs.on("close", (code, reason) => {
       console.log(`[WS proxy] AR backend closed (${code}), closing phone WS`);
-      if (phoneWs.readyState === WebSocket.OPEN) phoneWs.close(code, reason);
+      const safeCode = UNSENDABLE_CLOSE_CODES.has(code) ? 1000 : code;
+      if (phoneWs.readyState === WebSocket.OPEN) phoneWs.close(safeCode);
     });
 
     // Error handling
