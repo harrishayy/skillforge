@@ -54,7 +54,7 @@ interface WorkflowStore {
   regenerate: (stepId: string, additionalContext: string) => Promise<void>;
 
   // Pipeline rerun
-  rerunPipeline: (stepId: string, options: RerunPipelineOptions) => Promise<void>;
+  rerunPipeline: (stepId: string, options: RerunPipelineOptions) => Promise<boolean>;
 
   // Filmstrip
   setActiveFrame: (stepId: string, framePath: string) => void;
@@ -227,9 +227,11 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       const updatedStep = await rerunStepPipeline(stepId, options);
       get().updateStepLocal(stepId, updatedStep);
       set({ rerunningStepId: null });
+      return true;
     } catch (e) {
       showErrorToast(e);
       set({ rerunningStepId: null });
+      return false;
     }
   },
 

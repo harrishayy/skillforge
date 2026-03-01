@@ -20,27 +20,35 @@ export function seekToStep(videoEl: HTMLVideoElement, step: Step) {
   videoEl.currentTime = step.start_ms / 1000;
 }
 
-const FRAME_TOLERANCE_MS = 500;
-
 /**
  * Returns click_targets whose frame_path matches the closest detected frame
- * to the given video time. Returns empty if no detected frame is within
- * FRAME_TOLERANCE_MS of currentTimeMs.
+ * to the given video time. Always returns the nearest match so the overlay
+ * stays visible throughout playback when detections exist. Click_targets
+ * without a frame_path are shown unconditionally.
  */
 export function getClickTargetsForTime(
   frames: StepFrame[],
   clickTargets: ClickTarget[],
   currentTimeMs: number,
 ): ClickTarget[] {
-  if (!frames.length || !clickTargets.length) return [];
+  if (!clickTargets.length) return [];
 
+  const withPath: ClickTarget[] = [];
+  const withoutPath: ClickTarget[] = [];
   const ctByFrame = new Map<string, ClickTarget[]>();
+
   for (const ct of clickTargets) {
-    if (!ct.frame_path) continue;
+    if (!ct.frame_path) {
+      withoutPath.push(ct);
+      continue;
+    }
+    withPath.push(ct);
     const list = ctByFrame.get(ct.frame_path) ?? [];
     list.push(ct);
     ctByFrame.set(ct.frame_path, list);
   }
+
+  if (!withPath.length) return withoutPath.length ? withoutPath : clickTargets;
 
   let bestFrame: StepFrame | null = null;
   let bestDist = Infinity;
@@ -54,6 +62,11 @@ export function getClickTargetsForTime(
     }
   }
 
-  if (!bestFrame || bestDist > FRAME_TOLERANCE_MS) return [];
-  return ctByFrame.get(bestFrame.frame_path) ?? [];
+  if (!bestFrame) {
+    const firstFramePath = ctByFrame.keys().next().value;
+    return firstFramePath ? (ctByFrame.get(firstFramePath) ?? withoutPath) : withoutPath;
+  }
+
+  const matched = ctByFrame.get(bestFrame.frame_path) ?? [];
+  return [...matched, ...withoutPath];
 }
