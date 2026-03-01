@@ -14,10 +14,10 @@ const RING_PIP = 15;
 const PINKY_TIP = 20;
 const PINKY_PIP = 19;
 
-/** Tip–pip ratio above this (relative to hand scale) = finger extended. Slightly relaxed for vertical/oriented hands. */
-const EXTENDED_RATIO = 0.17;
-/** Tip–pip ratio below this = finger closed. Slightly relaxed for vertical/oriented hands. */
-const CLOSED_RATIO = 0.42;
+/** Tip–pip ratio above this = finger extended. Balanced to accept real gesture at angles while rejecting open hand. */
+const EXTENDED_RATIO = 0.20;
+/** Tip–pip ratio below this = finger closed. Open-hand extended middle/ring stay ~0.35+ so remain above this. */
+const CLOSED_RATIO = 0.24;
 /** Minimum hand scale (wrist–middle MCP) to avoid division by tiny values; fallback absolute thresholds if scale too small. */
 const MIN_HAND_SCALE = 0.02;
 
@@ -79,14 +79,18 @@ export function isHandInPhoneGesture(landmarks: Array<{ x: number; y: number; z?
   const ringVal = useRatio ? ringDist / scale : ringDist;
   const pinkyVal = useRatio ? pinkyDist / scale : pinkyDist;
 
-  const extThr = useRatio ? EXTENDED_RATIO : 0.026;
-  const closeThr = useRatio ? CLOSED_RATIO : 0.058;
+  const extThr = useRatio ? EXTENDED_RATIO : 0.028;
+  const closeThr = useRatio ? CLOSED_RATIO : 0.042;
 
   const thumbExtended = thumbVal > extThr;
   const indexExtended = indexVal > extThr;
-  const middleClosed = middleVal < closeThr;
-  const ringClosed = ringVal < closeThr;
   const pinkyExtended = pinkyVal > extThr;
+  // Middle/ring must be below closed threshold AND more curled than extended neighbors (rejects open hand).
+  const extendedNeighborAvg = (indexVal + pinkyVal) / 2;
+  const middleClosed =
+    middleVal < closeThr && middleVal < extendedNeighborAvg * 0.82;
+  const ringClosed =
+    ringVal < closeThr && ringVal < extendedNeighborAvg * 0.82;
 
   return thumbExtended && indexExtended && middleClosed && ringClosed && pinkyExtended;
 }
