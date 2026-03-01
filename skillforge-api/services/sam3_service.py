@@ -40,7 +40,7 @@ def _get_client() -> httpx.AsyncClient:
 async def segment_concept(
     frame_bytes: bytes,
     text_prompt: str,
-    confidence_threshold: float = 0.5,
+    confidence_threshold: float = 0.15,
 ) -> dict | None:
     """
     Segment all instances of a text concept in a JPEG frame via SAM 3.
@@ -228,7 +228,7 @@ async def segment_box(
 async def segment_multi_concept(
     frame_bytes: bytes,
     prompts: list[dict],
-    confidence_threshold: float = 0.35,
+    confidence_threshold: float = 0.15,
 ) -> dict:
     """
     Segment multiple distinct objects in one frame by calling segment_concept()
@@ -401,7 +401,7 @@ async def segment_with_context(
     title: str = "",
     description: str = "",
     transcript: str = "",
-    confidence_threshold: float = 0.35,
+    confidence_threshold: float = 0.15,
 ) -> dict | None:
     """
     Auto-segment a key frame using step context as the text prompt.
