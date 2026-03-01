@@ -3,6 +3,7 @@ import { create } from "zustand";
 import type { Workflow, Step, Annotation, Sam3Segment, ApparatusObject } from "@/types";
 import {
   updateStep,
+  deleteStep,
   updateAnnotation,
   deleteAnnotation,
   segmentPoint,
@@ -31,6 +32,9 @@ interface WorkflowStore {
   // Regeneration state
   regeneratingStepId: string | null;
 
+  // Step deletion state
+  deletingStepId: string | null;
+
   // Pipeline rerun state
   rerunningStepId: string | null;
 
@@ -54,6 +58,7 @@ interface WorkflowStore {
 
   // Async actions
   saveStep: (stepId: string, fields: Partial<Step>) => Promise<void>;
+  deleteStepById: (stepId: string) => Promise<void>;
   saveAnnotation: (ann: Annotation) => Promise<void>;
   deleteAnnotationById: (annId: string) => Promise<void>;
 
@@ -100,6 +105,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   segmentsByStep: {},
   segmentPromptByStep: {},
   segmentingStepId: null,
+  deletingStepId: null,
   regeneratingStepId: null,
   rerunningStepId: null,
   rebuildingMemories: false,
@@ -190,6 +196,33 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       await updateStep(stepId, fields);
     } catch (e) {
       showErrorToast(e);
+    }
+  },
+
+  deleteStepById: async (stepId) => {
+    const { workflow, selectedStepId } = get();
+    if (!workflow) return;
+    set({ deletingStepId: stepId });
+    try {
+      await deleteStep(stepId);
+      const remaining = workflow.steps
+        .filter((s) => s.id !== stepId)
+        .map((s, i) => ({ ...s, step_number: i + 1 }));
+      const newSelectedId =
+        selectedStepId === stepId
+          ? (remaining.length > 0 ? remaining[Math.min(
+              workflow.steps.findIndex((s) => s.id === stepId),
+              remaining.length - 1
+            )].id : null)
+          : selectedStepId;
+      set({
+        workflow: { ...workflow, steps: remaining },
+        selectedStepId: newSelectedId,
+        deletingStepId: null,
+      });
+    } catch (e) {
+      showErrorToast(e);
+      set({ deletingStepId: null });
     }
   },
 

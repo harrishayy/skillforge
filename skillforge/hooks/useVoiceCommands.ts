@@ -3,6 +3,7 @@ import { useRef, useCallback, useEffect, useState } from "react";
 import {
   matchVoiceIntent,
   shouldUseLLMFallback,
+  extractCopilotMessage,
 } from "@/lib/voice-intent-matcher";
 import { classifyVoiceIntent, transcribeAudio } from "@/lib/api-client";
 import { showErrorToast } from "@/store/toast-store";
@@ -15,6 +16,9 @@ interface UseVoiceCommandsOptions {
   onFinish: () => void;
   onPreviousStep?: () => void;
   onElaborate?: () => void;
+  onConfirm?: () => void;
+  /** Called when user says "hey claude <message>" — delivers the message after a silence pause. */
+  onCopilot?: (message: string) => void;
   enabled?: boolean;
   useLLMFallback?: boolean;
   useFuzzy?: boolean;
@@ -48,6 +52,8 @@ export interface UseVoiceCommandsReturn {
   fallbackActive: boolean;
   startListening: () => void;
   displayTranscript: string;
+  /** True while recording a message for the copilot after "hey claude" wake word. */
+  isCopilotListening: boolean;
 }
 
 export function useVoiceCommands({
@@ -55,6 +61,8 @@ export function useVoiceCommands({
   onFinish,
   onPreviousStep,
   onElaborate,
+  onConfirm,
+  onCopilot,
   enabled = true,
   useLLMFallback = false,
   useFuzzy = true,
@@ -72,10 +80,18 @@ export function useVoiceCommands({
   const asrFailCountRef = useRef(0);
   const displayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const copilotModeRef = useRef(false);
+  const copilotBufferRef = useRef("");
+  const copilotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isCopilotListening, setIsCopilotListening] = useState(false);
+  const COPILOT_SILENCE_MS = 3000;
+
   const onNextStepRef = useRef(onNextStep);
   const onFinishRef = useRef(onFinish);
   const onPreviousStepRef = useRef(onPreviousStep);
   const onElaborateRef = useRef(onElaborate);
+  const onConfirmRef = useRef(onConfirm);
+  const onCopilotRef = useRef(onCopilot);
   const lastLLMCallRef = useRef(0);
   const lastCommandRef = useRef<number>(0);
   const COMMAND_COOLDOWN_MS = 2000;
@@ -92,6 +108,8 @@ export function useVoiceCommands({
   useEffect(() => { onFinishRef.current = onFinish; }, [onFinish]);
   useEffect(() => { onPreviousStepRef.current = onPreviousStep; }, [onPreviousStep]);
   useEffect(() => { onElaborateRef.current = onElaborate; }, [onElaborate]);
+  useEffect(() => { onConfirmRef.current = onConfirm; }, [onConfirm]);
+  useEffect(() => { onCopilotRef.current = onCopilot; }, [onCopilot]);
 
   const effectiveSource = fallbackActive ? "browser" : transcriptionSource;
 
@@ -99,17 +117,51 @@ export function useVoiceCommands({
     if (!enabled) {
       setIsListening(false);
       setDisplayTranscript("");
+      if (copilotTimerRef.current) clearTimeout(copilotTimerRef.current);
+      copilotModeRef.current = false;
+      copilotBufferRef.current = "";
+      setIsCopilotListening(false);
       return;
     }
 
     let active = true;
     stepTranscriptRef.current = "";
 
+    const flushCopilotBuffer = () => {
+      const msg = copilotBufferRef.current.trim();
+      copilotModeRef.current = false;
+      copilotBufferRef.current = "";
+      setIsCopilotListening(false);
+      if (msg) onCopilotRef.current?.(msg);
+    };
+
+    const resetCopilotTimer = () => {
+      if (copilotTimerRef.current) clearTimeout(copilotTimerRef.current);
+      copilotTimerRef.current = setTimeout(flushCopilotBuffer, COPILOT_SILENCE_MS);
+    };
+
     // ── Shared intent matcher (used by both modes) ─────────────────────────
     const runMatcher = (check: string, hasFinal: boolean) => {
       const words = check.trim().split(/\s+/).filter(Boolean);
       if (words.length < 1) return;
       if (!hasFinal && words.length < 2) return;
+
+      if (copilotModeRef.current) {
+        copilotBufferRef.current += " " + check;
+        resetCopilotTimer();
+        return;
+      }
+
+      const copilotTrailing = extractCopilotMessage(check);
+      if (copilotTrailing !== null) {
+        copilotModeRef.current = true;
+        copilotBufferRef.current = copilotTrailing;
+        setIsCopilotListening(true);
+        resetCopilotTimer();
+        stepTranscriptRef.current = "";
+        transcriptRef.current = "";
+        return;
+      }
 
       const intent = matchVoiceIntent(check, { useFuzzy });
 
@@ -140,6 +192,7 @@ export function useVoiceCommands({
       else if (intent === "prev") onPreviousStepRef.current?.();
       else if (intent === "finish") onFinishRef.current();
       else if (intent === "elaborate") onElaborateRef.current?.();
+      else if (intent === "confirm") onConfirmRef.current?.();
 
       stepTranscriptRef.current = "";
       transcriptRef.current = "";
@@ -216,6 +269,10 @@ export function useVoiceCommands({
         active = false;
         clearInterval(timer);
         if (displayTimerRef.current) clearTimeout(displayTimerRef.current);
+        if (copilotTimerRef.current) clearTimeout(copilotTimerRef.current);
+        copilotModeRef.current = false;
+        copilotBufferRef.current = "";
+        setIsCopilotListening(false);
         if (currentRecorder?.state === "recording") {
           try { currentRecorder.stop(); } catch (err) { console.warn("[ASR] Cleanup: MediaRecorder.stop() failed:", err); }
         }
@@ -297,6 +354,10 @@ export function useVoiceCommands({
       recognitionRef.current = null;
       clearTimeout(timer);
       if (displayTimerRef.current) clearTimeout(displayTimerRef.current);
+      if (copilotTimerRef.current) clearTimeout(copilotTimerRef.current);
+      copilotModeRef.current = false;
+      copilotBufferRef.current = "";
+      setIsCopilotListening(false);
       try { recognition.stop(); } catch (err) { console.warn("[VoiceCommands] SpeechRecognition cleanup stop failed:", err); }
       setIsListening(false);
     };
@@ -329,5 +390,5 @@ export function useVoiceCommands({
     }
   }, []);
 
-  return { isListening, snapshotTranscript, status, unavailableReason, fallbackActive, startListening, displayTranscript };
+  return { isListening, snapshotTranscript, status, unavailableReason, fallbackActive, startListening, displayTranscript, isCopilotListening };
 }

@@ -21,7 +21,7 @@ import anthropic
 
 from services.video_processor import extract_frames
 from services.nemotron_client import detect_objects_in_frames_parallel
-from services.sam3_service import segment_concept, generate_segmented_image
+from services.sam3_service import segment_concept, segment_point, generate_segmented_image
 from services.memory_layer import save_apparatus_object, clear_apparatus_catalog
 from services.key_object_pipeline import _clean_nemotron_for_sam3
 
@@ -285,7 +285,11 @@ async def _segment_one_apparatus_frame(
     path_to_rel: dict[str, str],
     frame_descriptions: dict[str, str] | None = None,
 ) -> dict | None:
-    """Segment a single (object, frame) pair under the shared semaphore."""
+    """Segment a single (object, frame) pair under the shared semaphore.
+
+    Tries text-prompted segmentation first, then falls back to point-prompted
+    segmentation using Nemotron coordinates if the text prompt yields nothing.
+    """
     async with sem:
         try:
             frame_bytes = Path(frame_path).read_bytes()
@@ -303,6 +307,14 @@ async def _segment_one_apparatus_frame(
                 prompt,
                 confidence_threshold=0.20,
             )
+
+            if (not result or not result.get("segments")) and frame_coords:
+                coords = frame_coords.get(frame_path)
+                if coords and coords[0] is not None and coords[1] is not None:
+                    cx, cy = coords
+                    result = await segment_point(
+                        frame_bytes, cx, cy, box_radius=0.12,
+                    )
 
             if not result or not result.get("segments"):
                 return None

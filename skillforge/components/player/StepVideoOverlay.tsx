@@ -94,8 +94,7 @@ export function StepVideoOverlay({ videoRef, step, segmentationProcessing }: Ste
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    const video = videoRef.current;
-    if (!canvas || !video) return;
+    if (!canvas) return;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -103,6 +102,9 @@ export function StepVideoOverlay({ videoRef, step, segmentationProcessing }: Ste
     let lastVisibleCount = -1;
 
     const render = (time: number) => {
+      const video = videoRef.current;
+      if (!video) { rafRef.current = requestAnimationFrame(render); return; }
+
       const rect = video.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0 && (canvas.width !== rect.width || canvas.height !== rect.height)) {
         canvas.width = rect.width;

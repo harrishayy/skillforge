@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { SectionModal } from "@/components/ui/SectionModal";
 
-type ModalSection = "notes" | "transcript" | "description" | "regenerate" | "segments" | "rerun" | null;
+type ModalSection = "notes" | "transcript" | "description" | "regenerate" | "segments" | "rerun" | "delete" | null;
 
 export function StepDetailPanel() {
   const store = useWorkflowStore();
@@ -17,7 +17,9 @@ export function StepDetailPanel() {
     segmentingStepId,
     regeneratingStepId,
     rerunningStepId,
+    deletingStepId,
     saveStep,
+    deleteStepById,
     removeSegment,
     clearSegments,
     regenerate,
@@ -42,6 +44,7 @@ export function StepDetailPanel() {
   const isSegmenting = segmentingStepId === step.id;
   const isRegenerating = regeneratingStepId === step.id;
   const isRerunning = rerunningStepId === step.id;
+  const isDeleting = deletingStepId === step.id;
 
   const handleRegenerate = () => {
     regenerate(step.id, additionalContext);
@@ -158,6 +161,19 @@ export function StepDetailPanel() {
           hasContent={!!additionalContext.trim()}
           onClick={() => setOpenModal("regenerate")}
           badge={isRegenerating ? "Regenerating..." : undefined}
+        />
+      </div>
+
+      {/* Delete step card */}
+      <div className="mt-auto pt-4">
+        <SectionCard
+          label="DELETE STEP"
+          accentColor="var(--sf-orange)"
+          icon={<TrashSmallIcon />}
+          preview={isDeleting ? "Deleting..." : "Permanently remove this step and all its data"}
+          hasContent={false}
+          onClick={() => setOpenModal("delete")}
+          badge={isDeleting ? "Deleting..." : undefined}
         />
       </div>
 
@@ -304,6 +320,44 @@ export function StepDetailPanel() {
               <p className="text-xs" style={{ color: "#444" }}>Click on the frame in the center panel to add SAM3 segmentations</p>
             </div>
           )}
+        </div>
+      </SectionModal>
+
+      {/* Delete Step modal */}
+      <SectionModal
+        open={openModal === "delete"}
+        onClose={closeModal}
+        title={`Step ${step.step_number} — Delete Step`}
+        accentColor="var(--sf-orange)"
+        icon={<TrashSmallIcon />}
+      >
+        <div className="space-y-4">
+          <div className="rounded-lg p-4" style={{ backgroundColor: "rgba(255,100,50,0.06)", border: "1px solid rgba(255,100,50,0.2)" }}>
+            <p className="text-sm font-medium mb-1" style={{ color: "var(--sf-orange)" }}>
+              This action cannot be undone
+            </p>
+            <p className="text-xs leading-relaxed" style={{ color: "#888" }}>
+              Deleting &ldquo;{step.title}&rdquo; will permanently remove the step along with all
+              its annotations, click targets, and frame data. Remaining steps will be renumbered.
+            </p>
+          </div>
+          <div className="flex gap-3">
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={async () => {
+                await deleteStepById(step.id);
+                closeModal();
+              }}
+              disabled={isDeleting}
+            >
+              {isDeleting && <Spinner className="w-3.5 h-3.5" />}
+              {isDeleting ? "Deleting..." : "Delete Step"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={closeModal} style={{ color: "#888", border: "1px solid #333" }}>
+              Cancel
+            </Button>
+          </div>
         </div>
       </SectionModal>
 
@@ -590,6 +644,18 @@ function RefreshIcon() {
       <path d="M3 3v5h5" />
       <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
       <path d="M16 16h5v5" />
+    </svg>
+  );
+}
+
+function TrashSmallIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
     </svg>
   );
 }

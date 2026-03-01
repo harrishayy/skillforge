@@ -3,10 +3,12 @@
  * Covers phrases like "next step", "skip", "go to the next phase", "previous step", "go back".
  */
 
-export type VoiceIntent = "next" | "prev" | "finish" | "elaborate" | null;
+export type VoiceIntent = "next" | "prev" | "finish" | "elaborate" | "confirm" | null;
 
 const NEXT_PATTERN =
-  /(?:^|\s)(?:go\s+to\s+(?:the\s+)?)?next\s+step(?:\s|$)|(?:^|\s)next(?:\s|$)|(?:^|\s)(?:next\s+step|object\s+done|next\s+object)(?:\s|$)/i;
+  /(?:^|\s)(?:go\s+to\s+(?:the\s+)?)?next\s+step(?:\s|$)|(?:^|\s)next(?:\s|$)|(?:^|\s)(?:next\s+step|object\s+done|next\s+object|continue)(?:\s|$)/i;
+const CONFIRM_PATTERN =
+  /(?:^|\s)(?:yes|confirm|go\s+ahead|do\s+it|yep|yeah)(?:\s|$)/i;
 const PREV_PATTERN =
   /(?:^|\s)(?:previous|back|go\s*back|last|prior)\s*(?:step|phase|part|stage)?(?:\s|$)|(?:^|\s)(?:go\s*back|previous)\s*(?:\s|$)/i;
 const FINISH_PATTERN =
@@ -14,10 +16,11 @@ const FINISH_PATTERN =
 const ELABORATE_PATTERN =
   /(?:^|\s)(?:elaborate|break\s+it\s+down|more\s+detail|break\s+down\s+this\s+step)(?:\s|$)/i;
 
-const NEXT_SEEDS = ["next step", "object done", "next object"];
+const NEXT_SEEDS = ["next step", "object done", "next object", "continue"];
 const PREV_SEEDS = ["previous step", "previous", "back", "go back"];
 const FINISH_SEEDS = ["finish", "done", "complete", "end recording", "stop recording", "move to step", "move to steps"];
 const ELABORATE_SEEDS = ["elaborate", "break it down", "more detail"];
+const CONFIRM_SEEDS = ["yes", "confirm", "go ahead", "do it", "yep", "yeah"];
 
 const LLM_FALLBACK_MIN_LENGTH = 50;
 
@@ -80,6 +83,13 @@ function fuzzyMatchIntent(text: string): VoiceIntent {
       bestIntent = "elaborate";
     }
   }
+  for (const seed of CONFIRM_SEEDS) {
+    const d = levenshtein(normalized, seed);
+    if (d <= FUZZY_THRESHOLD && d < bestDist) {
+      bestDist = d;
+      bestIntent = "confirm";
+    }
+  }
 
   return bestIntent;
 }
@@ -100,6 +110,7 @@ export function matchVoiceIntent(
   if (PREV_PATTERN.test(lower)) return "prev";
   if (FINISH_PATTERN.test(lower)) return "finish";
   if (ELABORATE_PATTERN.test(lower)) return "elaborate";
+  if (CONFIRM_PATTERN.test(lower)) return "confirm";
 
   if (options?.useFuzzy) {
     return fuzzyMatchIntent(text);
@@ -114,4 +125,17 @@ export function matchVoiceIntent(
  */
 export function shouldUseLLMFallback(transcript: string): boolean {
   return transcript.trim().length >= LLM_FALLBACK_MIN_LENGTH;
+}
+
+const COPILOT_WAKE_PATTERN = /hey\s+(?:claude?|cloud|clod)\b/i;
+
+/**
+ * If transcript contains the "hey claude" wake word, returns the text after it
+ * (may be empty string if user only said the wake word so far).
+ * Returns null if no wake word found.
+ */
+export function extractCopilotMessage(transcript: string): string | null {
+  const match = transcript.match(COPILOT_WAKE_PATTERN);
+  if (!match) return null;
+  return transcript.slice(match.index! + match[0].length).trim();
 }
