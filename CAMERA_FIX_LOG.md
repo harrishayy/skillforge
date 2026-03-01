@@ -3,205 +3,150 @@
 
 ---
 
-## Current Architecture
+## ✅ CAMERA STREAMING IS WORKING
+
+Phone camera successfully streams to laptop. Hand detection overlay renders. All core issues resolved.
+
+### How to start (every session — 3 terminals)
+```bash
+# Terminal 1 — AR backend  (MEDIAPIPE_DELEGATE=cpu REQUIRED — GPU crashes on M4 Pro at runtime)
+cd skillforge/skillforge/backend
+MEDIAPIPE_DELEGATE=cpu skillforge-api/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001
+
+# Terminal 2 — Next.js
+cd skillforge/skillforge
+npm run dev    # runs: node server.mjs
+
+# Terminal 3 — ngrok (tunnels port 3000 for phone access via HTTPS)
+ngrok http 3000
+# → update skillforge/.env.local: NEXT_PUBLIC_APP_URL + NEXT_PUBLIC_WS_HOST with new URL
+# → restart npm run dev after updating .env.local
+```
+
+### On laptop: open http://localhost:3000/live
+### On phone: scan QR code → grant camera → tap "Start camera"
+
+---
+
+## Architecture
 
 ```
-Phone  ──wss──►  ngrok (port 3000 tunnel)  ──http/1.1──►  server.mjs :3000
-                                                                │
-                                              wss.handleUpgrade() [ws library]
-                                                                │
+Phone  ──wss──►  ngrok (port 3000)  ──ws──►  server.mjs :3000
+                                                    │ ws library proxy
                                               ws://localhost:8001/ws/camera/UUID
-                                                                │
-                                                         AR backend :8001
-                                                   (uvicorn + FastAPI + MediaPipe)
+                                                    │
+                                               AR backend :8001
+                                          (uvicorn + FastAPI + MediaPipe CPU)
 
-Laptop  ──ws://localhost:8001/ws/camera/UUID──────────────────►  AR backend :8001
-         (direct, bypasses proxy and ngrok)
+Laptop viewer  ──ws://localhost:8001/ws/camera/UUID──►  AR backend (direct, no ngrok)
 ```
 
 ### Key files
 | File | Role |
 |---|---|
-| `skillforge/server.mjs` | Custom Next.js server + `ws` library WebSocket proxy |
-| `skillforge/app/live/page.tsx` | Main live page: QR modal, producer, viewer hooks |
-| `skillforge/hooks/useCameraRoomProducer.ts` | Phone WS hook: connects, sends role, streams frames |
-| `skillforge/hooks/useCameraRoomViewer.ts` | Laptop WS hook: `ws://localhost:8001` direct |
-| `skillforge/backend/main.py` | AR backend: camera room relay + hand detection |
-| `skillforge/.env.local` | `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_WS_HOST` (ngrok URLs) |
-| `skillforge/lib/constants.ts` | `CAMERA_ROOM_WS()` — builds wss:// URL using NEXT_PUBLIC_WS_HOST |
-| `skillforge/next.config.ts` | `allowedDevOrigins`, `reactStrictMode: false` |
-
-### How to start (3 terminals)
-```bash
-# Terminal 1 — AR backend  (MEDIAPIPE_DELEGATE=cpu required — GPU crashes on M4 Pro)
-cd /path/to/skillforge/skillforge/backend
-MEDIAPIPE_DELEGATE=cpu /path/to/skillforge/skillforge-api/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001
-
-# Terminal 2 — Next.js
-cd /path/to/skillforge/skillforge
-npm run dev    # runs: node server.mjs
-
-# Terminal 3 — ngrok (tunnels port 3000 for phone)
-ngrok http 3000
-# → update .env.local: NEXT_PUBLIC_APP_URL + NEXT_PUBLIC_WS_HOST with new URL
-# → restart npm run dev after updating .env.local
-```
+| `skillforge/server.mjs` | Custom Next.js server + ws library WebSocket proxy (**DO NOT DELETE**) |
+| `skillforge/package.json` | `"dev": "node server.mjs"` (**DO NOT change to `next dev`**) |
+| `skillforge/next.config.ts` | No `/ws/*` rewrite, `reactStrictMode: false` (**CRITICAL — DO NOT REVERT**) |
+| `skillforge/app/live/page.tsx` | `qrUrl` hydration fix + `enabled: isCameraOnlyMode && isActive` |
+| `skillforge/hooks/useCameraRoomProducer.ts` | Frame capture + reconnect logic |
+| `skillforge/hooks/useCameraRoomViewer.ts` | Direct `ws://localhost:8001` (bypasses proxy) |
+| `skillforge/backend/main.py` | AR backend: camera room relay + MediaPipe CPU hand detection |
+| `skillforge/.env.local` | `NEXT_PUBLIC_APP_URL` + `NEXT_PUBLIC_WS_HOST` = current ngrok URL |
 
 ---
 
-## ✅ ROOT CAUSE FOUND AND FIXED (Fix 14)
-
-**The `/ws/:path*` rewrite in `next.config.ts` was also proxying WebSocket upgrades to localhost:8001.**
-
-Next.js 15/16 applies `rewrites()` to WebSocket upgrade requests in addition to HTTP requests. This caused TWO simultaneous connections to the AR backend for every phone/browser connection:
-1. Our `server.mjs` proxy → localhost:8001 (perMessageDeflate: false — correct)
-2. Next.js rewrite proxy → localhost:8001 (perMessageDeflate default-enabled — wrong)
-
-The second connection negotiated WebSocket compression with the AR backend. The AR backend then sent RSV1=1 (compressed) frames. Our server.mjs proxy forwarded these raw frames to the phone/browser, but the phone/browser had never negotiated compression → **"RSV1 must be clear" / "Invalid frame header" / code 1006**.
-
-**Fix:** Removed the `/ws/:path*` rewrite entirely. `server.mjs` handles all WebSocket upgrades at the HTTP server level before Next.js sees them. The rewrite was never needed.
-
-**Verification:** Direct ws://localhost:3000 test showed:
-- Before fix: two AR backend connections, `ERROR: Invalid WebSocket frame: RSV1 must be clear`, closed 1006
-- After fix: ONE AR backend connection, `OPENED`, `CLOSED: 1000` — clean
-
----
-
-## Previous Unresolved Issue (now resolved): Code 1002 (Protocol Error)
-
-### Observed log — repeats in a loop
-```
-[WS proxy] Phone connected → opening AR backend: ws://localhost:8001/ws/camera/UUID
-[WS proxy] AR backend open. Flushing 0 buffered frame(s)
-[WS proxy] Phone closed (1002) reason: "(unknown — reason string not previously logged)"
-[WS proxy] AR backend closed (1006), closing phone WS
-```
-
-### What code 1002 means
-Code 1002 = **Protocol Error** — the phone's browser (iOS Safari) received a WebSocket frame or handshake response it could not process. This is different from 1006 (TCP drop): 1002 is an active close by Safari saying "something you sent me was invalid."
-
-### What is NOT the cause (ruled out)
-| Hypothesis | Status | Reason |
-|---|---|---|
-| Data format mismatch | ✗ Ruled out | JSON text frames correct end-to-end |
-| Security / CORS | ✗ Ruled out | `allow_origins=["*"]`, TLS via ngrok |
-| Proxy handshake (101) | ✗ Ruled out | "Phone connected" = 101 sent successfully |
-| AR backend rejecting | ✗ Ruled out | "AR backend open" = AR backend accepted |
-| Raw TCP race condition | ✗ Fixed | Replaced with `ws` library in server.mjs |
-| Camera permission suspension | ✗ Fixed | `enabled: isCameraOnlyMode && isActive` |
-| React Strict Mode double-mount | ✗ Fixed | `reactStrictMode: false` |
-| perMessageDeflate negotiation | ✗ Applied | `perMessageDeflate: false` on both sides — but 1002 **persists** |
-| Invalid close code forwarding | ✗ Fixed | arWs.on("close") sanitizes 1004/1005/1006 → 1000 |
-| Infinite reconnect loop | ✗ Fixed | Removed counter reset in onopen + exponential backoff |
-
-### Active Hypotheses for 1002
-1. **iOS Safari rejects a specific WS handshake header** that the ws library includes in the 101 response. Safari is more strict than Chrome/Firefox about what the server may include. Candidate: the server including unexpected extension/subprotocol headers.
-2. **AR backend sends something immediately** that gets forwarded to the phone, and Safari can't handle it. (Unlikely — AR backend only sends after receiving a frame.)
-3. **ngrok modifies WebSocket frames** in a way that corrupts the framing for iOS Safari. (Possible — ngrok runs HTTP/2 internally and transcodes to HTTP/1.1.)
-4. **The ws library version** has a known Safari incompatibility at the protocol level beyond perMessageDeflate.
-
-### Diagnostic Next Steps (not yet tried)
-1. **Read close reason string** — server.mjs now logs `reason` alongside code. Run another test and check for a reason string beyond "(none)". May reveal the exact protocol rule Safari is enforcing.
-2. **Test from laptop browser** — open Chrome DevTools console, run:
-   ```js
-   const ws = new WebSocket("wss://YOUR-NGROK.ngrok-free.app/ws/camera/test123");
-   ws.onopen = () => { ws.send(JSON.stringify({role:"producer"})); console.log("open") };
-   ws.onclose = e => console.log("close", e.code, e.reason);
-   ```
-   If laptop Chrome works but iPhone Safari doesn't → iOS Safari-specific issue.
-3. **Test over LAN (bypass ngrok)** — connect iPhone to same WiFi, use `http://192.168.x.x:3000/live`. If LAN works but ngrok doesn't → ngrok is the problem.
-4. **Capture the actual 101 response** — log `req.headers` in the upgrade handler to see what Safari sends in the Upgrade request, and inspect the ws library's 101 response headers.
-
----
-
-## All Fixes Applied
+## All Fixes Applied (in order)
 
 ### Fix 1 — `next.config.ts`: Wildcard `allowedDevOrigins`
-- Status: ✅ Done
-- `"*.ngrok-free.app"` wildcard
+`"*.ngrok-free.app"` wildcard so any ngrok URL works without editing the file.
 
 ### Fix 2 — AR backend startup path confirmed
-- Status: ✅ Documented
-- Must run from `skillforge/backend/` with venv from `skillforge-api/.venv`
+Must run uvicorn from `skillforge/backend/` using venv from `skillforge-api/.venv`.
 
 ### Fix 3 — `live/page.tsx`: voice commands gated on `isActive`
-- Status: ✅ Done
-- `enabled: !isCameraOnlyMode && isActive && micEnabled`
+`enabled: !isCameraOnlyMode && isActive && micEnabled`
 
-### Fix 4 — `server.mjs`: WebSocket proxy v2 (`ws` library)
-- Status: ✅ Done
-- `WebSocketServer({ noServer: true })` + `new WebSocket(arUrl)` client
-- Message buffering: phone frames queued until arWs opens
-- Full close/error handling
+### Fix 4 — `server.mjs`: WebSocket proxy (ws library, v2)
+Replaced raw TCP pipe with `ws` library `WebSocketServer({ noServer: true })` + `new WebSocket(arUrl)` client.
+Message buffering: phone frames queued until arWs opens, flushed on `arWs.on('open')`.
 
 ### Fix 5 — `useCameraRoomViewer`: direct `ws://localhost:8001`
-- Status: ✅ Done
-- Laptop viewer bypasses proxy and ngrok entirely
+Laptop viewer bypasses proxy and ngrok entirely — avoids double round-trip latency.
 
 ### Fix 6 — `live/page.tsx`: QR code hydration mismatch
-- Status: ✅ Done
-- `useState("")` + `useEffect` instead of `typeof window` IIFE in JSX
+`useState("")` + `useEffect(() => setQrUrl(...), [remoteSessionId])` — SSR returns empty string, client fills it in. Prevents React hydration warning.
 
 ### Fix 7 — `live/page.tsx`: producer gated on `isActive`
-- Status: ✅ Done
-- `enabled: isCameraOnlyMode && isActive`
+`enabled: isCameraOnlyMode && isActive` — WebSocket only opens after camera stream is live, not during the OS permission prompt (which suspends the page and drops TCP).
 
 ### Fix 8 — `next.config.ts`: disable React Strict Mode
-- Status: ✅ Done
-- `reactStrictMode: false`
+`reactStrictMode: false` — Strict Mode double-mounts effects in dev, causing `ws.close(1000)` during camera startup → phone sees code 1006 disconnect.
 
-### Fix 9 — `useCameraRoomProducer.ts`: auto-reconnect on abnormal close
-- Status: ✅ Done (exponential backoff, 5 max attempts)
+### Fix 9 — `useCameraRoomProducer.ts`: auto-reconnect + exponential backoff
+On abnormal close (code ≠ 1000/1001), retries after 2s→4s→8s→16s→32s (up to 5 attempts). Uses `activeRef` to prevent reconnect after unmount.
 
 ### Fix 10 — `server.mjs`: disable perMessageDeflate
-- Status: ✅ Done
-- `perMessageDeflate: false` on both WebSocketServer and arWs client
-- Prevents iOS Safari 1002 from ws library compression extension negotiation
-- **Result: 1002 STILL occurring. perMessageDeflate was not the root cause.**
+`perMessageDeflate: false` on both `WebSocketServer` and `arWs` client — iOS Safari rejects ws library's default compression extension negotiation parameters.
 
 ### Fix 11 — `server.mjs`: sanitize unsendable close codes
-- Status: ✅ Done
-- arWs.on("close") maps 1004/1005/1006 → 1000 before forwarding to phoneWs
-- Prevents RangeError in ws library
+`arWs.on("close")` maps codes 1004/1005/1006 → 1000 before `phoneWs.close(code)` — RFC 6455 forbids sending reserved codes; ws library throws RangeError otherwise.
 
 ### Fix 12 — `useCameraRoomProducer.ts`: fix infinite reconnect loop
-- Status: ✅ Done
-- Removed `reconnectCountRef.current = 0` from `ws.onopen`
-- Added exponential backoff: 2s → 4s → 8s → 16s → 32s
+Removed `reconnectCountRef.current = 0` from `ws.onopen`. Previously every brief open→close cycle reset the counter, making the 5-attempt cap unreachable.
 
 ### Fix 13 — `server.mjs`: log close reason string
-- Status: ✅ Done
-- phoneWs and arWs close handlers now log `reason` string in addition to code
+`phoneWs.on("close")` and `arWs.on("close")` now log `reason?.toString()` alongside the code — helps diagnose protocol errors.
+
+### Fix 14 — `next.config.ts`: remove `/ws/:path*` rewrite ← **ROOT CAUSE FIX**
+**This was the primary bug causing "Invalid frame header" / "RSV1 must be clear".**
+
+Next.js 15/16 applies `rewrites()` to WebSocket upgrade requests as well as HTTP. The `/ws/:path*` rewrite was creating a **second simultaneous connection** to the AR backend (alongside our proxy), and that second connection negotiated perMessageDeflate compression by default. The AR backend sent RSV1=1 (compressed) frames back; our proxy forwarded them to the phone which had never negotiated compression → immediate disconnect.
+
+Removing the rewrite leaves all `/ws/*` WebSocket handling exclusively to `server.mjs`.
+
+**Verified:** Direct `ws://localhost:3000` test showed single connection + CLOSED:1000 clean. Chrome and iPhone both connected successfully after this fix.
 
 ### Fix 15 — AR backend: force CPU mode (`MEDIAPIPE_DELEGATE=cpu`)
-- Status: ✅ Done (runtime fix — start command updated)
-- **Crash:** MediaPipe GPU delegate (`[Hand Landmarker VIDEO] Using GPU delegate`) crashes on Apple M4 Pro with fatal error: `Check failed: status_or_buffer is OK (UNKNOWN: unsupported ImageFrame format: 1)` in `gpu_buffer_storage_cv_pixel_buffer.cc:154`
-- The `try/except` around `create_from_options` does NOT catch this — it only catches initialization errors. The crash happens during the FIRST inference call (`detect_for_video`)
-- **Fix:** Start uvicorn with `MEDIAPIPE_DELEGATE=cpu` → skips GPU path entirely, uses stable CPU inference
-- **Start command:** `MEDIAPIPE_DELEGATE=cpu uvicorn main:app --host 0.0.0.0 --port 8001`
+**Root cause of AR backend crash:** MediaPipe GPU delegate initialises on M4 Pro without error, but crashes during the FIRST frame inference with:
+`Check failed: status_or_buffer is OK (UNKNOWN: unsupported ImageFrame format: 1)`
+in `gpu_buffer_storage_cv_pixel_buffer.cc`. The try/except around `create_from_options` does NOT catch this — it happens inside `detect_for_video()` at runtime.
+
+**Fix:** Always start uvicorn with `MEDIAPIPE_DELEGATE=cpu`. This skips GPU entirely and uses stable CPU inference.
+
+**Still pending (low priority):** Add try/except inside `process_and_broadcast()` around `run_hand_detection_video()` so a GPU crash gracefully falls back to CPU without killing the server process (safety net in case the env var is forgotten).
 
 ### Fix 16 — `server.mjs`: improve AR backend error logging
-- Status: ✅ Done
-- `err.message` is empty string for ECONNREFUSED on some Node.js versions — now falls back to `err.code || String(err)` so the error is never silently blank
+`err.message || err.code || String(err)` — `err.message` is empty string for ECONNREFUSED on Node.js v22, so the error was silently blank.
 
-### Fix 14 — `next.config.ts`: remove `/ws/:path*` rewrite ← ROOT CAUSE FIX
-- Status: ✅ Done
-- Next.js 15/16 applies `rewrites()` to WebSocket upgrades, not just HTTP
-- The `/ws/:path*` rewrite was creating a second connection to AR backend with compression enabled
-- This caused RSV1-set (compressed) frames to leak to clients that never negotiated compression
-- Removing the rewrite leaves all /ws/* handling exclusively to `server.mjs`
-- **Verified:** ws://localhost:3000 test now shows one connection, CLOSED:1000, no RSV1 error
+### Fix 17 — Merge `main` into `fix/camera-feed`
+Merged origin/main (teammates' work) into the branch. Conflict resolutions:
+- **Kept ours:** `server.mjs` (main deleted it), `package.json` dev script, `next.config.ts` core (no `/ws/` rewrite, `reactStrictMode: false`, wildcard origins), `useCameraRoomProducer.ts` reconnect logic, `live/page.tsx` hydration + isActive fixes
+- **Took from main:** All `skillforge-api/**` updates, new components, improved logging in hooks, teammates' ngrok origins in `allowedDevOrigins`
+
+### Fix 18 — Camera lag: reduce frame size and quality
+Reduced from 1920×1080 JPEG 0.7 → **640×360 JPEG 0.5**:
+- 1080p ≈ 250–400 KB/frame × 24fps ≈ 6–10 MB/s through ngrok (extremely laggy)
+- 360p ≈ 15–35 KB/frame × 15fps ≈ 0.2–0.5 MB/s — ~20× less data
+- CPU hand detection also much faster on smaller frames: ~150ms → ~30ms
+- User confirmed streaming speed is noticeably improved.
+
+### Fix 19 — Camera rotation: +90° clockwise
+Phone portrait video arrives rotated 90° anti-clockwise on the laptop screen.
+Changed canvas transform from `-Math.PI/2` (counter-clockwise) to `+Math.PI/2` (clockwise):
+```ts
+ctx.translate(CAPTURE_WIDTH, 0);  // was: translate(0, CAPTURE_HEIGHT)
+ctx.rotate(Math.PI / 2);          // was: rotate(-Math.PI / 2)
+```
 
 ---
 
-## Test Checklist
-- [ ] `node server.mjs` starts, logs `WebSocket /ws/* proxied → ws://localhost:8001`
-- [ ] AR backend running on port 8001
-- [ ] Phone scans QR → grants camera → taps "Start camera"
-- [ ] Server logs "Phone connected" AFTER camera starts
-- [ ] Server logs "AR backend open. Flushing N buffered frame(s)"
-- [ ] Server logs close **with reason string** (not just code)
-- [ ] Phone shows "Connected" (not "Disconnected")
-- [ ] Laptop QR modal shows "Phone connected"
-- [ ] Phone camera feed visible on laptop canvas
-- [ ] Hand landmarks render over feed
+## Known Remaining Issues
+
+### M4 Pro GPU crash safety net (low priority)
+The `MEDIAPIPE_DELEGATE=cpu` env var is the fix. A code-level safety net (try/except around `detect_for_video` in `process_and_broadcast`) would prevent the server dying if the env var is ever forgotten. Not urgent since the start command is documented above.
+
+### NVIDIA GPU server (optional performance improvement)
+If MediaPipe CPU inference (~30–60ms/frame at 360p) is still too slow for real-time hand detection, the AR backend can be moved to an NVIDIA GPU server:
+- Set `AR_BACKEND_HOST` + `AR_BACKEND_PORT` in `server.mjs` to point at the remote server
+- GPU inference: ~5–10ms vs CPU ~30–60ms — significant improvement
+- Worth doing only if CPU mode lag is unacceptable after the frame size reduction

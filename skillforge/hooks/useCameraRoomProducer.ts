@@ -3,9 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CAMERA_ROOM_WS } from "@/lib/constants";
 
-const CAPTURE_WIDTH = 1920;
-const CAPTURE_HEIGHT = 1080;
-const JPEG_QUALITY = 0.7;
+// Reduced from 1920×1080 → 640×360 and quality 0.7 → 0.5.
+// 1080p JPEG ≈ 250–400 KB/frame × 24fps ≈ 6–10 MB/s through ngrok (very laggy).
+// 360p JPEG  ≈  15– 35 KB/frame × 15fps ≈ 0.2–0.5 MB/s — ~20× less data,
+// dramatically lower latency. The AR backend hand-detection also runs much
+// faster on smaller frames (CPU mode: ~150ms → ~30ms at 360p).
+const CAPTURE_WIDTH = 640;
+const CAPTURE_HEIGHT = 360;
+const JPEG_QUALITY = 0.5;
 const RECONNECT_DELAY_MS = 2000;
 const MAX_RECONNECT_ATTEMPTS = 5;
 
@@ -66,10 +71,12 @@ export function useCameraRoomProducer({
     canvas.height = CAPTURE_HEIGHT;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    // Phone camera feed is often 90° rotated; rotate -90° so it displays correctly on the laptop.
+    // Phone portrait video needs +90° clockwise rotation to display landscape on the laptop.
+    // translate to top-right corner, then rotate clockwise so the portrait frame fills the
+    // landscape canvas correctly.
     ctx.save();
-    ctx.translate(0, CAPTURE_HEIGHT);
-    ctx.rotate(-Math.PI / 2);
+    ctx.translate(CAPTURE_WIDTH, 0);
+    ctx.rotate(Math.PI / 2);
     ctx.drawImage(
       video,
       0,
