@@ -14,10 +14,10 @@ const RING_PIP = 15;
 const PINKY_TIP = 20;
 const PINKY_PIP = 19;
 
-/** Tip–pip ratio above this (relative to hand scale) = finger extended. Hand-scale relative so it works when pointed up or down. */
-const EXTENDED_RATIO = 0.22;
-/** Tip–pip ratio below this = finger closed. */
-const CLOSED_RATIO = 0.35;
+/** Tip–pip ratio above this (relative to hand scale) = finger extended. Slightly relaxed for vertical/oriented hands. */
+const EXTENDED_RATIO = 0.17;
+/** Tip–pip ratio below this = finger closed. Slightly relaxed for vertical/oriented hands. */
+const CLOSED_RATIO = 0.42;
 /** Minimum hand scale (wrist–middle MCP) to avoid division by tiny values; fallback absolute thresholds if scale too small. */
 const MIN_HAND_SCALE = 0.02;
 
@@ -79,8 +79,8 @@ export function isHandInPhoneGesture(landmarks: Array<{ x: number; y: number; z?
   const ringVal = useRatio ? ringDist / scale : ringDist;
   const pinkyVal = useRatio ? pinkyDist / scale : pinkyDist;
 
-  const extThr = useRatio ? EXTENDED_RATIO : 0.032;
-  const closeThr = useRatio ? CLOSED_RATIO : 0.052;
+  const extThr = useRatio ? EXTENDED_RATIO : 0.026;
+  const closeThr = useRatio ? CLOSED_RATIO : 0.058;
 
   const thumbExtended = thumbVal > extThr;
   const indexExtended = indexVal > extThr;
