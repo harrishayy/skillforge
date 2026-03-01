@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { Workflow } from "@/types";
 import { getWorkflow, getStepInstruction, elaborateStep, checkStepSuggest } from "@/lib/api-client";
 import { showErrorToast } from "@/store/toast-store";
@@ -31,6 +32,8 @@ interface LearnViewProps {
   badge?: React.ReactNode;
 }
 
+const COMPLETE_REDIRECT_MS = 5000;
+
 export function LearnView({
   workflowId,
   backHref,
@@ -38,6 +41,7 @@ export function LearnView({
   accentColor = "var(--sf-lime)",
   badge,
 }: LearnViewProps) {
+  const router = useRouter();
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +62,7 @@ export function LearnView({
     sam3_segments: Array<{ mask_base64?: string; bbox: number[]; score: number }>;
   } | null>(null);
   const [pendingStepAction, setPendingStepAction] = useState<"forward" | "back" | null>(null);
+  const preloadVideoRefs = useRef<(HTMLVideoElement | null)[]>([]);
 
   const {
     currentStepIndex,
@@ -138,6 +143,40 @@ export function LearnView({
       .catch((e) => { showErrorToast(e); setError(e.message); })
       .finally(() => setIsLoading(false));
   }, [workflowId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Preload step videos in priority order: current step first, then next, then rest. Keeps them cached in memory.
+  useEffect(() => {
+    if (!workflow?.steps?.length) return;
+    const n = workflow.steps.length;
+    const cur = currentStepIndex;
+    const priorityOrder: number[] = [];
+    for (let i = 0; i < n; i++) priorityOrder.push((cur + i) % n);
+    for (const idx of priorityOrder) {
+      const step = workflow.steps[idx];
+      if (!step?.video_path) continue;
+      const el = preloadVideoRefs.current[idx];
+      if (!el) continue;
+      const src = videoUrl(step.video_path);
+      if (el.src !== src) {
+        el.src = src;
+        el.load();
+      }
+    }
+  }, [workflow, currentStepIndex]);
+
+  // When "All steps complete!" end screen is showing, redirect to workflow library after 5 seconds
+  const isEndScreen = Boolean(
+    workflow?.steps?.length &&
+    currentStepIndex >= workflow.steps.length - 1 &&
+    isPausedAtStepEnd
+  );
+  useEffect(() => {
+    if (!isEndScreen) return;
+    const t = setTimeout(() => {
+      router.push(backHref);
+    }, COMPLETE_REDIRECT_MS);
+    return () => clearTimeout(t);
+  }, [isEndScreen, backHref, router]);
 
   const handleStepChange = useCallback(
     async (stepIndex: number) => {
@@ -576,6 +615,32 @@ export function LearnView({
 
   return (
     <div className="h-full flex flex-col overflow-hidden" style={{ backgroundColor: "var(--sf-black)" }}>
+      {/* Hidden preload videos: load all step videos in priority order (current, next, …) for instant step switches */}
+      {workflow?.steps?.length ? (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            width: 0,
+            height: 0,
+            overflow: "hidden",
+            pointerEvents: "none",
+            opacity: 0,
+          }}
+        >
+          {workflow.steps.map((step, i) => (
+            <video
+              key={step.id}
+              ref={el => {
+                preloadVideoRefs.current[i] = el;
+              }}
+              preload="auto"
+              muted
+              playsInline
+            />
+          ))}
+        </div>
+      ) : null}
       <StepProgressBar
         steps={workflow.steps}
         onStepClick={handleStepClick}
