@@ -88,12 +88,12 @@ app.prepare().then(() => {
 
     // Close propagation
     phoneWs.on("close", (code, reason) => {
-      console.log(`[WS proxy] Phone closed (${code}), terminating AR backend`);
+      console.log(`[WS proxy] Phone closed (${code}) reason: "${reason?.toString() || "(none)"}"`);
       if (arWs.readyState !== WebSocket.CLOSED) arWs.terminate();
     });
 
     arWs.on("close", (code, reason) => {
-      console.log(`[WS proxy] AR backend closed (${code}), closing phone WS`);
+      console.log(`[WS proxy] AR backend closed (${code}) reason: "${reason?.toString() || "(none)"}"`);
       const safeCode = UNSENDABLE_CLOSE_CODES.has(code) ? 1000 : code;
       if (phoneWs.readyState === WebSocket.OPEN) phoneWs.close(safeCode);
     });

@@ -1,5 +1,5 @@
 # Camera Feed Fix — Progress Log
-**Branch:** `fix/phone-camera-feed`
+**Branch:** `fix/camera-feed`
 
 ---
 
@@ -28,13 +28,14 @@ Laptop  ──ws://localhost:8001/ws/camera/UUID──────────�
 | `skillforge/hooks/useCameraRoomViewer.ts` | Laptop WS hook: `ws://localhost:8001` direct |
 | `skillforge/backend/main.py` | AR backend: camera room relay + hand detection |
 | `skillforge/.env.local` | `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_WS_HOST` (ngrok URLs) |
+| `skillforge/lib/constants.ts` | `CAMERA_ROOM_WS()` — builds wss:// URL using NEXT_PUBLIC_WS_HOST |
 | `skillforge/next.config.ts` | `allowedDevOrigins`, `reactStrictMode: false` |
 
 ### How to start (3 terminals)
 ```bash
 # Terminal 1 — AR backend
 cd /path/to/skillforge/skillforge/backend
-/path/to/skillforge-api/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001
+/path/to/skillforge/skillforge-api/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001
 
 # Terminal 2 — Next.js
 cd /path/to/skillforge/skillforge
@@ -48,42 +49,50 @@ ngrok http 3000
 
 ---
 
-## Root Cause of 1006 Disconnect (Current Unresolved Issue)
+## Current Unresolved Issue: Code 1002 (Protocol Error)
 
-### Observed log every test attempt
+### Observed log — repeats in a loop
 ```
 [WS proxy] Phone connected → opening AR backend: ws://localhost:8001/ws/camera/UUID
 [WS proxy] AR backend open. Flushing 0 buffered frame(s)
-[WS proxy] Phone closed (1006), terminating AR backend
+[WS proxy] Phone closed (1002) reason: "(unknown — reason string not previously logged)"
 [WS proxy] AR backend closed (1006), closing phone WS
 ```
 
-### What code 1006 means
-Code 1006 = **abnormal closure** — the TCP connection was dropped without a WebSocket close frame. The phone's browser did NOT call `ws.close(code)` cleanly. The TCP connection was abruptly terminated.
+### What code 1002 means
+Code 1002 = **Protocol Error** — the phone's browser (iOS Safari) received a WebSocket frame or handshake response it could not process. This is different from 1006 (TCP drop): 1002 is an active close by Safari saying "something you sent me was invalid."
 
 ### What is NOT the cause (ruled out)
 | Hypothesis | Status | Reason |
 |---|---|---|
-| Data format mismatch | ✗ Ruled out | JSON text frames correct end-to-end; AR backend protocol matches |
-| Security / CORS | ✗ Ruled out | `allow_origins=["*"]`, TLS handled by ngrok, no mixed content |
-| Proxy handshake | ✗ Ruled out | "Phone connected" = 101 sent successfully |
-| AR backend rejecting | ✗ Ruled out | "AR backend open" = AR backend accepted connection |
-| Raw TCP race condition | ✗ Fixed | Replaced with `ws` library in server.mjs v2 |
-| Camera permission suspension | ✗ Addressed | Added `enabled: isCameraOnlyMode && isActive` (Fix 7) |
+| Data format mismatch | ✗ Ruled out | JSON text frames correct end-to-end |
+| Security / CORS | ✗ Ruled out | `allow_origins=["*"]`, TLS via ngrok |
+| Proxy handshake (101) | ✗ Ruled out | "Phone connected" = 101 sent successfully |
+| AR backend rejecting | ✗ Ruled out | "AR backend open" = AR backend accepted |
+| Raw TCP race condition | ✗ Fixed | Replaced with `ws` library in server.mjs |
+| Camera permission suspension | ✗ Fixed | `enabled: isCameraOnlyMode && isActive` |
+| React Strict Mode double-mount | ✗ Fixed | `reactStrictMode: false` |
+| perMessageDeflate negotiation | ✗ Applied | `perMessageDeflate: false` on both sides — but 1002 **persists** |
+| Invalid close code forwarding | ✗ Fixed | arWs.on("close") sanitizes 1004/1005/1006 → 1000 |
+| Infinite reconnect loop | ✗ Fixed | Removed counter reset in onopen + exponential backoff |
 
-### Most likely cause: React Strict Mode double-mount
-Next.js 15/16 defaults to `reactStrictMode: true`. In development, React runs every `useEffect` **twice**:
-1. Setup → opens WebSocket (ws1)
-2. Cleanup → `ws1.close(1000)` called
-3. Setup again → opens WebSocket (ws2)
+### Active Hypotheses for 1002
+1. **iOS Safari rejects a specific WS handshake header** that the ws library includes in the 101 response. Safari is more strict than Chrome/Firefox about what the server may include. Candidate: the server including unexpected extension/subprotocol headers.
+2. **AR backend sends something immediately** that gets forwarded to the phone, and Safari can't handle it. (Unlikely — AR backend only sends after receiving a frame.)
+3. **ngrok modifies WebSocket frames** in a way that corrupts the framing for iOS Safari. (Possible — ngrok runs HTTP/2 internally and transcodes to HTTP/1.1.)
+4. **The ws library version** has a known Safari incompatibility at the protocol level beyond perMessageDeflate.
 
-During step 2, on mobile browsers, `ws.close(1000)` can result in the **server seeing code 1006** because:
-- The browser sends a close frame (code 1000) but immediately drops the TCP connection
-- The server's `ws` library sees an incomplete close handshake → reports 1006 instead of 1000
-
-The second connection (ws2) may not reach the proxy if the Strict Mode remount is too fast, OR if ws2 also closes abnormally.
-
-### Fix: disable React Strict Mode + add auto-reconnect (Fix 8 + Fix 9 below)
+### Diagnostic Next Steps (not yet tried)
+1. **Read close reason string** — server.mjs now logs `reason` alongside code. Run another test and check for a reason string beyond "(none)". May reveal the exact protocol rule Safari is enforcing.
+2. **Test from laptop browser** — open Chrome DevTools console, run:
+   ```js
+   const ws = new WebSocket("wss://YOUR-NGROK.ngrok-free.app/ws/camera/test123");
+   ws.onopen = () => { ws.send(JSON.stringify({role:"producer"})); console.log("open") };
+   ws.onclose = e => console.log("close", e.code, e.reason);
+   ```
+   If laptop Chrome works but iPhone Safari doesn't → iOS Safari-specific issue.
+3. **Test over LAN (bypass ngrok)** — connect iPhone to same WiFi, use `http://192.168.x.x:3000/live`. If LAN works but ngrok doesn't → ngrok is the problem.
+4. **Capture the actual 101 response** — log `req.headers` in the upgrade handler to see what Safari sends in the Upgrade request, and inspect the ws library's 101 response headers.
 
 ---
 
@@ -91,7 +100,7 @@ The second connection (ws2) may not reach the proxy if the Strict Mode remount i
 
 ### Fix 1 — `next.config.ts`: Wildcard `allowedDevOrigins`
 - Status: ✅ Done
-- `"*.ngrok-free.app"` wildcard instead of hardcoded URLs
+- `"*.ngrok-free.app"` wildcard
 
 ### Fix 2 — AR backend startup path confirmed
 - Status: ✅ Documented
@@ -99,13 +108,13 @@ The second connection (ws2) may not reach the proxy if the Strict Mode remount i
 
 ### Fix 3 — `live/page.tsx`: voice commands gated on `isActive`
 - Status: ✅ Done
-- `enabled: !isCameraOnlyMode && isActive && micEnabled` (was `displayActive`)
+- `enabled: !isCameraOnlyMode && isActive && micEnabled`
 
 ### Fix 4 — `server.mjs`: WebSocket proxy v2 (`ws` library)
 - Status: ✅ Done
 - `WebSocketServer({ noServer: true })` + `new WebSocket(arUrl)` client
-- Message buffering: phone frames queued until arWs opens, flushed on `arWs.on('open')`
-- Full console logging: Phone connected / AR backend open / Phone closed / AR backend closed
+- Message buffering: phone frames queued until arWs opens
+- Full close/error handling
 
 ### Fix 5 — `useCameraRoomViewer`: direct `ws://localhost:8001`
 - Status: ✅ Done
@@ -118,16 +127,34 @@ The second connection (ws2) may not reach the proxy if the Strict Mode remount i
 ### Fix 7 — `live/page.tsx`: producer gated on `isActive`
 - Status: ✅ Done
 - `enabled: isCameraOnlyMode && isActive`
-- WebSocket only opens after camera is live (not during permission prompt)
 
 ### Fix 8 — `next.config.ts`: disable React Strict Mode
 - Status: ✅ Done
-- `reactStrictMode: false` — eliminates double-mount that causes 1006 in dev
+- `reactStrictMode: false`
 
 ### Fix 9 — `useCameraRoomProducer.ts`: auto-reconnect on abnormal close
+- Status: ✅ Done (exponential backoff, 5 max attempts)
+
+### Fix 10 — `server.mjs`: disable perMessageDeflate
 - Status: ✅ Done
-- If close code ≠ 1000/1001, retries connection after 2s (up to 5 attempts)
-- Handles residual transient closes from network/ngrok
+- `perMessageDeflate: false` on both WebSocketServer and arWs client
+- Prevents iOS Safari 1002 from ws library compression extension negotiation
+- **Result: 1002 STILL occurring. perMessageDeflate was not the root cause.**
+
+### Fix 11 — `server.mjs`: sanitize unsendable close codes
+- Status: ✅ Done
+- arWs.on("close") maps 1004/1005/1006 → 1000 before forwarding to phoneWs
+- Prevents RangeError in ws library
+
+### Fix 12 — `useCameraRoomProducer.ts`: fix infinite reconnect loop
+- Status: ✅ Done
+- Removed `reconnectCountRef.current = 0` from `ws.onopen`
+- Added exponential backoff: 2s → 4s → 8s → 16s → 32s
+
+### Fix 13 — `server.mjs`: log close reason string
+- Status: ✅ Done
+- phoneWs and arWs close handlers now log `reason` string in addition to code
+- Needed to diagnose the 1002 root cause in next test
 
 ---
 
@@ -137,6 +164,7 @@ The second connection (ws2) may not reach the proxy if the Strict Mode remount i
 - [ ] Phone scans QR → grants camera → taps "Start camera"
 - [ ] Server logs "Phone connected" AFTER camera starts
 - [ ] Server logs "AR backend open. Flushing N buffered frame(s)"
+- [ ] Server logs close **with reason string** (not just code)
 - [ ] Phone shows "Connected" (not "Disconnected")
 - [ ] Laptop QR modal shows "Phone connected"
 - [ ] Phone camera feed visible on laptop canvas
