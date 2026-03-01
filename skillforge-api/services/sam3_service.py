@@ -34,7 +34,7 @@ def _get_client() -> httpx.AsyncClient:
     if _client is None or _client.is_closed:
         _client = httpx.AsyncClient(
             timeout=30.0,
-            limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+            limits=httpx.Limits(max_connections=12, max_keepalive_connections=6),
         )
     return _client
 
@@ -249,7 +249,8 @@ async def segment_multi_concept(
 ) -> dict:
     """
     Segment multiple distinct objects in one frame by calling segment_concept()
-    once per prompt and merging the results with per-object labels and roles.
+    once per prompt IN PARALLEL and merging the results with per-object labels
+    and roles.
 
     Args:
         prompts: List of dicts, each with:
@@ -266,19 +267,33 @@ async def segment_multi_concept(
             ]
         }
     """
-    all_segments = []
+    import asyncio
 
-    for prompt_info in prompts:
+    async def _segment_one(prompt_info: dict) -> list[dict]:
         label = prompt_info.get("label", "")
         sam3_prompt = prompt_info.get("sam3_prompt", label)
         role = prompt_info.get("role", "primary")
 
         result = await segment_concept(frame_bytes, sam3_prompt, confidence_threshold)
+        segments = []
         if result and result.get("segments"):
             for seg in result["segments"]:
                 seg["label"] = label
                 seg["role"] = role
-                all_segments.append(seg)
+                segments.append(seg)
+        return segments
+
+    results = await asyncio.gather(
+        *[_segment_one(p) for p in prompts],
+        return_exceptions=True,
+    )
+
+    all_segments = []
+    for r in results:
+        if isinstance(r, Exception):
+            print(f"[SAM3] Multi-concept parallel error: {r}", flush=True)
+            continue
+        all_segments.extend(r)
 
     if all_segments:
         labels_str = ", ".join(

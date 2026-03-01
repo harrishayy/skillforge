@@ -23,6 +23,7 @@ from services.video_processor import extract_frames
 from services.nemotron_client import detect_objects_in_frames_parallel
 from services.sam3_service import segment_concept, generate_segmented_image
 from services.memory_layer import save_apparatus_object, clear_apparatus_catalog
+from services.key_object_pipeline import _clean_nemotron_for_sam3
 
 
 UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
@@ -210,17 +211,21 @@ async def _claude_identify_apparatus(
         return []
 
 
+NEMOTRON_VERIFY_MAX_FRAMES = 10
+
+
 async def _nemotron_verify_objects(
     frames: list[dict],
     objects: list[dict],
 ) -> list[dict]:
     """
-    For each identified object, run Nemotron across frames to confirm
-    which frames actually contain it (multi-angle verification).
+    For each identified object, run Nemotron across a subsampled set of frames
+    to confirm which frames actually contain it (multi-angle verification).
     All objects are verified in parallel with a shared concurrency semaphore.
     Updates reference_frames and angle_count.
     """
-    all_frame_paths = [f["path"] for f in frames]
+    sampled_frames = _subsample_list(frames, NEMOTRON_VERIFY_MAX_FRAMES)
+    all_frame_paths = [f["path"] for f in sampled_frames]
     path_to_rel = {f["path"]: f["relative_path"] for f in frames}
 
     objects_with_frames: list[tuple[str, str, list[str]]] = []
@@ -248,6 +253,11 @@ async def _nemotron_verify_objects(
             for d in positive
             if d.get("center_x") is not None and d.get("center_y") is not None
         }
+        obj["_frame_descriptions"] = {
+            d["frame_path"]: d.get("description", "")
+            for d in positive
+            if d.get("description")
+        }
 
         print(
             f"[ApparatusPipeline] Nemotron: \"{obj['object_name']}\" found in "
@@ -273,16 +283,25 @@ async def _segment_one_apparatus_frame(
     apparatus_dir: Path,
     workflow_id: str,
     path_to_rel: dict[str, str],
+    frame_descriptions: dict[str, str] | None = None,
 ) -> dict | None:
     """Segment a single (object, frame) pair under the shared semaphore."""
     async with sem:
         try:
             frame_bytes = Path(frame_path).read_bytes()
 
+            prompt = sam3_prompt
+            if frame_descriptions:
+                nemotron_desc = _clean_nemotron_for_sam3(
+                    frame_descriptions.get(frame_path, "")
+                )
+                if nemotron_desc:
+                    prompt = nemotron_desc
+
             result = await segment_concept(
                 frame_bytes,
-                sam3_prompt,
-                confidence_threshold=0.3,
+                prompt,
+                confidence_threshold=0.20,
             )
 
             if not result or not result.get("segments"):
@@ -341,13 +360,14 @@ async def _sam3_reference_segmentation(
         sampled = _subsample_list(fpaths, MAX_SEGMENTED_FRAMES_PER_OBJECT)
         safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", obj["object_name"])
         frame_coords = obj.get("_frame_coords", {})
+        frame_descriptions = obj.get("_frame_descriptions", {})
 
         for i, frame_path in enumerate(sampled):
             coros.append(
                 _segment_one_apparatus_frame(
                     sem, frame_path, obj["sam3_prompt"], obj["object_name"],
                     frame_coords, safe_name, i, apparatus_dir, workflow_id,
-                    path_to_rel,
+                    path_to_rel, frame_descriptions,
                 )
             )
             coro_obj_names.append(obj["object_name"])
@@ -382,10 +402,19 @@ async def _sam3_reference_segmentation(
                 f"{len(seg_map)} frames segmented (best {best_score:.0%})",
                 flush=True,
             )
+        else:
+            n_tried = sum(1 for n in coro_obj_names if n == name)
+            if n_tried > 0:
+                print(
+                    f"[ApparatusPipeline] SAM3: \"{name}\" — "
+                    f"0/{n_tried} frames passed threshold (no segmentation)",
+                    flush=True,
+                )
 
     for obj in objects:
         obj.pop("_frame_paths", None)
         obj.pop("_frame_coords", None)
+        obj.pop("_frame_descriptions", None)
 
     return objects
 

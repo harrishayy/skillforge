@@ -26,7 +26,7 @@ def _get_client() -> httpx.AsyncClient:
     if _client is None or _client.is_closed:
         _client = httpx.AsyncClient(
             timeout=60.0,
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+            limits=httpx.Limits(max_connections=6, max_keepalive_connections=4),
         )
     return _client
 
@@ -225,7 +225,7 @@ async def detect_object_in_frames_batch(
     return results
 
 
-NEMOTRON_MAX_CONCURRENT = 4
+NEMOTRON_MAX_CONCURRENT = 6
 
 
 async def detect_objects_in_frames_parallel(
