@@ -241,6 +241,31 @@ CPU inference at 640×360 is ~30–60ms/frame. If real-time hand detection needs
 3. GPU inference: ~5–10ms/frame vs CPU ~30–60ms — significant improvement
 4. Net win only if SSH tunnel latency < ~50ms
 
+### Fix 25 — Phone-as-primary-recorder in `session/page.tsx`
+**New hook:** `skillforge/hooks/usePhoneVideoRecorder.ts`
+- Mirrors `useWebcamRecorder` exactly (same `start/stop/snapshot/pause/resume/getDurationMs` API)
+- Internal: 640×360 canvas + `captureStream(24)` fed by phone JPEG frames → `MediaRecorder`
+- `snapshot()`: stop recorder → resolve blob → immediately restart on same canvas stream
+- Gets laptop mic via `getUserMedia({audio, video:false})` for the audio track
+
+**Changes to `session/page.tsx`:**
+- `recordingSource: "laptop" | "phone"` state (default "laptop")
+- `sourceLocked = useRef(false)` — set true on first apparatus done/skip or step snapshot
+- `phoneRecorder = usePhoneVideoRecorder(phone.remoteFrame, recordingSource === "phone")`
+- `activeRecorder = recordingSource === "phone" ? phoneRecorder : webcamRecorder` — all snapshot/stop/duration route through it
+- `activeHands` now after `activeRecorder`, uses `recordingSource === "phone"` for phone detection
+- `pinchState = computePinchState(activeHands)` — pinch uses merged hands (phone or local)
+- `handleSwitchToPhone` / `handleSwitchToLaptop` callbacks (guarded by `sourceLocked.current`)
+- `useMediaPipeDetect` gated on `recordingSource === "laptop"` — skips local detection in phone mode
+- `recordingSourceRef` + `phoneDetectionRef` stable refs for use inside RAF render loop
+- Canvas render loop draws phone hands in phone mode, MediaPipe hands in laptop mode
+- Smart PiP: shows laptop `<video>` PiP (click=switch to laptop) in phone mode; shows phone `<img>` PiP (click=switch to phone) in laptop mode; both amber border when unlocked, dim when locked
+- **Source-switch banner** during apparatus showcase: shows current source + switch button; "Locked after showcase" warning
+- REC badge: uses `activeRecorder.isPaused`; shows 📱 when recording from phone
+- SessionControlBar: `activeRecorder.isPaused/durationMs/pause/resume`
+- `handleConfirmFinish` dep array: `[activeRecorder, webcamRecorder, recordingSource, phoneRecorder, currentStepNumber, pushUploadLog]`
+- `handleExit`: stops both recorders + `phone.stopRemoteSession()`
+
 ### `ws` package not in `package.json` dependencies
 `server.mjs` imports from `ws` library but it's not listed in `skillforge/package.json`. It currently works as a transitive dependency (pulled in by Next.js). Should be added explicitly:
 ```bash

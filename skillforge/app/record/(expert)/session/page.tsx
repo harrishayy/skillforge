@@ -88,6 +88,7 @@ export default function RecordingSessionPage() {
 
   // Video + canvas refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const laptopPipVideoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animFrameRef = useRef<number>(0);
   const mpResultRef = useRef<MPResult | null>(null);
@@ -103,13 +104,6 @@ export default function RecordingSessionPage() {
   useEffect(() => {
     if (phone.isPhoneConnected) setShowPhoneModal(false);
   }, [phone.isPhoneConnected]);
-
-  // Prefer phone hands for gesture detection when phone is connected
-  const activeHands = phone.isPhoneConnected && phone.remoteDetection?.hands
-    ? phone.remoteDetection.hands
-    : handData;
-
-  const pinchState = computePinchState(activeHands);
 
   const handleSaveNote = useCallback((stepNumber: number, text: string) => {
     setStepNotes((prev) => ({ ...prev, [stepNumber]: text }));
@@ -134,6 +128,14 @@ export default function RecordingSessionPage() {
   // All snapshot/stop/duration/pause/resume calls route through activeRecorder
   const activeRecorder = recordingSource === "phone" ? phoneRecorder : webcamRecorder;
 
+  // Phone mode: always use AR-backend hands; laptop mode: use local MediaPipe hands
+  const activeHands =
+    (recordingSource === "phone" || phone.isPhoneConnected) && phone.remoteDetection?.hands
+      ? phone.remoteDetection.hands
+      : handData;
+
+  const pinchState = computePinchState(activeHands);
+
   const snapshotTranscriptRef = useRef<() => string>(() => "");
 
   // Reactively attach whichever source stream is active to the video element
@@ -146,6 +148,16 @@ export default function RecordingSessionPage() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRecorder.stream, recordingSource]);
+
+  // Attach webcam stream to the laptop PiP video element once (stable ref, no flickering)
+  useEffect(() => {
+    const pip = laptopPipVideoRef.current;
+    const stream = webcamRecorder.stream;
+    if (pip && stream) {
+      pip.srcObject = stream;
+      pip.play().catch(() => {});
+    }
+  }, [webcamRecorder.stream]);
 
   // ---------------------------------------------------------------------------
   // Read config from sessionStorage, or check IndexedDB for crash recovery
@@ -344,7 +356,7 @@ export default function RecordingSessionPage() {
       showErrorToast(err);
       setUploadError(msg);
     }
-  }, [webcamRecorder, currentStepNumber, pushUploadLog]);
+  }, [activeRecorder, webcamRecorder, recordingSource, phoneRecorder, currentStepNumber, pushUploadLog]);
 
   const retryUpload = useCallback(async () => {
     console.log("[RetryUpload] Retrying upload...");
@@ -567,11 +579,12 @@ export default function RecordingSessionPage() {
   // ---------------------------------------------------------------------------
   // MediaPipe hand detection
   // ---------------------------------------------------------------------------
+  // In phone mode the AR backend handles detection; skip local MediaPipe entirely
   useMediaPipeDetect({
     videoRef,
     handsEnabled: true,
     objectsEnabled: false,
-    enabled: sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase",
+    enabled: recordingSource === "laptop" && (sessionState === "recording" || sessionState === "confirming_finish" || sessionState === "apparatus_showcase"),
     onResult: (r) => {
       mpResultRef.current = r;
       setHandData(r.hands);
@@ -582,6 +595,12 @@ export default function RecordingSessionPage() {
     onSkipForward: voiceNext,
     onSkipBackward: () => {},
   });
+
+  // Refs so the RAF callback can read the latest values without deps on them
+  const recordingSourceRef = useRef(recordingSource);
+  useEffect(() => { recordingSourceRef.current = recordingSource; }, [recordingSource]);
+  const phoneDetectionRef = useRef(phone.remoteDetection);
+  useEffect(() => { phoneDetectionRef.current = phone.remoteDetection; }, [phone.remoteDetection]);
 
   // ---------------------------------------------------------------------------
   // Canvas render loop (hand landmarks overlay)
@@ -599,9 +618,12 @@ export default function RecordingSessionPage() {
     if (!ctx) { animFrameRef.current = requestAnimationFrame(renderLoop); return; }
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const t = performance.now();
-    const r = mpResultRef.current;
-    if (r?.hands?.hands?.length) {
-      renderHandLandmarks(ctx, r.hands.hands, canvas.width, canvas.height, t);
+    // Phone mode: draw AR-backend landmarks; laptop mode: draw local MediaPipe landmarks
+    const handsToRender = recordingSourceRef.current === "phone"
+      ? phoneDetectionRef.current?.hands?.hands
+      : mpResultRef.current?.hands?.hands;
+    if (handsToRender?.length) {
+      renderHandLandmarks(ctx, handsToRender, canvas.width, canvas.height, t);
     }
     animFrameRef.current = requestAnimationFrame(renderLoop);
   }, []);
@@ -612,6 +634,26 @@ export default function RecordingSessionPage() {
     }
     return () => cancelAnimationFrame(animFrameRef.current);
   }, [sessionState, renderLoop]);
+
+  // ---------------------------------------------------------------------------
+  // Recording source switching — only allowed during apparatus showcase
+  // ---------------------------------------------------------------------------
+  const handleSwitchToPhone = useCallback(async () => {
+    if (sourceLocked.current) return;
+    if (!phone.isPhoneConnected) {
+      phone.startRemoteSession();
+      setShowPhoneModal(true);
+      return;
+    }
+    const stream = await phoneRecorder.start();
+    if (!stream) return; // error surfaced by the hook
+    setRecordingSource("phone");
+  }, [phone, phoneRecorder]);
+
+  const handleSwitchToLaptop = useCallback(() => {
+    if (sourceLocked.current) return;
+    setRecordingSource("laptop");
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Start recording once config is loaded
@@ -794,8 +836,11 @@ export default function RecordingSessionPage() {
               border: "1px solid rgba(255,255,255,0.1)",
             }}
           >
-            <span className={`w-1.5 h-1.5 rounded-full bg-red-500 ${webcamRecorder.isPaused ? "" : "animate-pulse"}`} />
-            {webcamRecorder.isPaused ? "PAUSED" : "REC"}
+            <span className={`w-1.5 h-1.5 rounded-full bg-red-500 ${activeRecorder.isPaused ? "" : "animate-pulse"}`} />
+            {activeRecorder.isPaused ? "PAUSED" : "REC"}
+            {recordingSource === "phone" && (
+              <span style={{ color: "var(--sf-lime)", marginLeft: 4 }}>📱</span>
+            )}
           </div>
           <span
             className="text-xs font-bold px-2.5 py-1 rounded-full"
@@ -985,18 +1030,48 @@ export default function RecordingSessionPage() {
             </div>
           )}
 
-          {/* Phone camera PiP — inline after pinch indicator, auto-sizes to 16:9 at 224px wide */}
-          {phone.isPhoneConnected && phone.remoteFrame && (
+          {/* --- PHONE MODE: main view = phone canvas; PiP = laptop webcam --- */}
+          {recordingSource === "phone" && webcamRecorder.stream && (
             <div
               className="relative rounded-xl overflow-hidden flex-shrink-0"
               style={{
                 width: 224,
-                border: "2px solid rgba(190,242,100,0.45)",
-                cursor: "pointer",
-                boxShadow: "0 0 12px rgba(190,242,100,0.15)",
+                border: `2px solid ${sourceLocked.current ? "rgba(255,255,255,0.15)" : "rgba(245,158,11,0.6)"}`,
+                cursor: sourceLocked.current ? "default" : "pointer",
+                boxShadow: sourceLocked.current ? "none" : "0 0 12px rgba(245,158,11,0.2)",
               }}
-              onClick={() => setShowPhoneModal(true)}
-              title="Phone camera — click to view QR"
+              onClick={sourceLocked.current ? undefined : handleSwitchToLaptop}
+              title={sourceLocked.current ? "Laptop camera (source locked after first step)" : "Laptop camera — click to switch back"}
+            >
+              <video
+                ref={laptopPipVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full block"
+                style={{ aspectRatio: "16/9", objectFit: "cover" }}
+              />
+              <div
+                className="absolute top-1 left-1 text-[9px] font-bold px-1.5 py-0.5 rounded"
+                style={{ backgroundColor: "rgba(0,0,0,0.65)", color: "var(--sf-yellow)" }}
+              >
+                {sourceLocked.current ? "LAPTOP" : "LAPTOP ↩"}
+              </div>
+            </div>
+          )}
+
+          {/* --- LAPTOP MODE: main view = laptop webcam; PiP = phone feed (if connected) --- */}
+          {recordingSource === "laptop" && phone.isPhoneConnected && phone.remoteFrame && (
+            <div
+              className="relative rounded-xl overflow-hidden flex-shrink-0"
+              style={{
+                width: 224,
+                border: `2px solid ${sourceLocked.current ? "rgba(190,242,100,0.25)" : "rgba(190,242,100,0.55)"}`,
+                cursor: sourceLocked.current ? "default" : "pointer",
+                boxShadow: sourceLocked.current ? "none" : "0 0 12px rgba(190,242,100,0.2)",
+              }}
+              onClick={sourceLocked.current ? undefined : handleSwitchToPhone}
+              title={sourceLocked.current ? "Phone camera (source locked after first step)" : "Phone camera — click to record from phone"}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -1008,7 +1083,7 @@ export default function RecordingSessionPage() {
                 className="absolute top-1 left-1 text-[9px] font-bold px-1.5 py-0.5 rounded"
                 style={{ backgroundColor: "rgba(0,0,0,0.65)", color: "var(--sf-lime)" }}
               >
-                PHONE
+                {sourceLocked.current ? "PHONE" : "PHONE ⇄"}
               </div>
             </div>
           )}
@@ -1060,6 +1135,44 @@ export default function RecordingSessionPage() {
         />
       )}
 
+      {/* Source switch banner — visible during apparatus showcase before source is locked */}
+      {sessionState === "apparatus_showcase" && (
+        <div className="fixed bottom-28 left-1/2 z-30 flex -translate-x-1/2 items-center gap-3 rounded-xl bg-black/75 px-4 py-2 text-sm text-white backdrop-blur-sm">
+          <span className="text-gray-400 text-xs">Recording from:</span>
+          {recordingSource === "laptop" ? (
+            <>
+              <span className="font-semibold">💻 Laptop</span>
+              {phone.isPhoneConnected ? (
+                <button
+                  onClick={handleSwitchToPhone}
+                  className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium hover:bg-blue-500 active:bg-blue-700"
+                >
+                  Switch to 📱 Phone
+                </button>
+              ) : (
+                <button
+                  onClick={handleSwitchToPhone}
+                  className="rounded-lg bg-gray-600 px-3 py-1 text-xs font-medium hover:bg-gray-500 active:bg-gray-700"
+                >
+                  📱 Connect Phone
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <span className="font-semibold">📱 Phone</span>
+              <button
+                onClick={handleSwitchToLaptop}
+                className="rounded-lg bg-gray-600 px-3 py-1 text-xs font-medium hover:bg-gray-500 active:bg-gray-700"
+              >
+                Switch to 💻 Laptop
+              </button>
+            </>
+          )}
+          <span className="text-xs text-yellow-400/80">Locked after showcase</span>
+        </div>
+      )}
+
       {/* Bottom control bar */}
       <AnimatePresence>
         {(sessionState === "recording" || sessionState === "apparatus_showcase") && (
@@ -1069,8 +1182,8 @@ export default function RecordingSessionPage() {
             exit={{ opacity: 0, y: 20 }}
           >
             <SessionControlBar
-              isPaused={webcamRecorder.isPaused}
-              durationMs={webcamRecorder.durationMs}
+              isPaused={activeRecorder.isPaused}
+              durationMs={activeRecorder.durationMs}
               currentStepNumber={currentStepNumber}
               stepPrompt={stepPrompt}
               isLoadingPrompt={isLoadingPrompt}
@@ -1078,8 +1191,8 @@ export default function RecordingSessionPage() {
               isListening={voice.isListening}
               voiceStatus={voice.status}
               voiceUnavailableReason={voice.unavailableReason}
-              onPause={webcamRecorder.pause}
-              onResume={webcamRecorder.resume}
+              onPause={activeRecorder.pause}
+              onResume={activeRecorder.resume}
               onToggleMic={() => setMicEnabled((v) => !v)}
               {...(sessionState === "apparatus_showcase"
                 ? {
