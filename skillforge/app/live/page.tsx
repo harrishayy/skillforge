@@ -284,7 +284,7 @@ export default function LiveDetectPage() {
     onNextStep: skipForward,
     onPreviousStep: skipBackward,
     onFinish: () => {},
-    enabled: !isCameraOnlyMode && isActive && micEnabled,
+    enabled: !isCameraOnlyMode && displayActive && micEnabled,
   });
 
   useEffect(() => {
