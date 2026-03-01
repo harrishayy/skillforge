@@ -20,7 +20,7 @@ import anthropic
 
 from services.video_processor import extract_frames
 from services.nemotron_client import detect_object_in_frames_batch
-from services.sam3_service import segment_concept, generate_segmented_image
+from services.sam3_service import segment_concept, segment_small_object, generate_segmented_image
 from services.memory_layer import save_apparatus_object, clear_apparatus_catalog
 
 
@@ -232,10 +232,16 @@ async def _nemotron_verify_objects(
                 object_description=desc,
                 batch_size=4,
             )
-            positive_paths = [d["frame_path"] for d in detections if d["present"]]
+            positive = [d for d in detections if d["present"]]
+            positive_paths = [d["frame_path"] for d in positive]
             obj["reference_frames"] = [path_to_rel[p] for p in positive_paths if p in path_to_rel]
             obj["angle_count"] = len(positive_paths)
             obj["_frame_paths"] = positive_paths
+            obj["_frame_coords"] = {
+                d["frame_path"]: (d.get("center_x"), d.get("center_y"))
+                for d in positive
+                if d.get("center_x") is not None and d.get("center_y") is not None
+            }
 
             print(
                 f"[ApparatusPipeline] Nemotron: \"{obj['object_name']}\" found in "
@@ -277,14 +283,33 @@ async def _sam3_reference_segmentation(
         best_score = 0.0
         best_seg_path = ""
 
+        frame_coords = obj.get("_frame_coords", {})
+
         for i, frame_path in enumerate(sampled):
             try:
                 frame_bytes = Path(frame_path).read_bytes()
+
+                # Phase 1: full-frame text-prompt
                 result = await segment_concept(
                     frame_bytes,
                     obj["sam3_prompt"],
                     confidence_threshold=0.3,
                 )
+
+                # Phase 2: crop-zoom fallback if text-prompt missed
+                if (not result or not result.get("segments")) and frame_path in frame_coords:
+                    cx, cy = frame_coords[frame_path]
+                    print(
+                        f"[ApparatusPipeline] Text miss for \"{obj['object_name']}\" "
+                        f"— trying crop-zoom at ({cx:.2f}, {cy:.2f})",
+                        flush=True,
+                    )
+                    result = await segment_small_object(
+                        frame_bytes, cx, cy,
+                        text_prompt=obj["sam3_prompt"],
+                        confidence_threshold=0.15,
+                    )
+
                 if not result or not result.get("segments"):
                     continue
 
@@ -323,6 +348,7 @@ async def _sam3_reference_segmentation(
 
     for obj in objects:
         obj.pop("_frame_paths", None)
+        obj.pop("_frame_coords", None)
 
     return objects
 

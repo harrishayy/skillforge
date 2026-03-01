@@ -7,6 +7,7 @@ import { getWorkflow, getStepInstruction, elaborateStep, checkStepSuggest } from
 import { showErrorToast } from "@/store/toast-store";
 import { videoUrl, frameUrl } from "@/lib/constants";
 import { renderHandLandmarks } from "@/lib/annotation-renderer";
+import { getContainedVideoRect } from "@/lib/video-utils";
 import { StepVideoOverlay } from "@/components/player/StepVideoOverlay";
 import { StepProgressBar } from "@/components/player/StepProgressBar";
 import { StepTimelineVertical } from "@/components/player/StepTimelineVertical";
@@ -62,6 +63,9 @@ export function LearnView({
     sam3_segments: Array<{ mask_base64?: string; bbox: number[]; score: number }>;
   } | null>(null);
   const [pendingStepAction, setPendingStepAction] = useState<"forward" | "back" | null>(null);
+  const [showFramesOverview, setShowFramesOverview] = useState(true);
+  const [lightboxFrameIndex, setLightboxFrameIndex] = useState<number | null>(null);
+  const [lightboxShowOriginal, setLightboxShowOriginal] = useState(false);
   const preloadVideoRefs = useRef<(HTMLVideoElement | null)[]>([]);
 
   const {
@@ -144,7 +148,8 @@ export function LearnView({
       .finally(() => setIsLoading(false));
   }, [workflowId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Preload step videos in priority order: current step first, then next, then rest. Keeps them cached in memory.
+  // Preload step videos in priority order: current step first, then next, then rest.
+  // Every step's video is buffered so transitions are instant.
   useEffect(() => {
     if (!workflow?.steps?.length) return;
     const n = workflow.steps.length;
@@ -159,6 +164,7 @@ export function LearnView({
       const src = videoUrl(step.video_path);
       if (el.src !== src) {
         el.src = src;
+        el.preload = "auto";
         el.load();
       }
     }
@@ -177,6 +183,27 @@ export function LearnView({
     }, COMPLETE_REDIRECT_MS);
     return () => clearTimeout(t);
   }, [isEndScreen, backHref, router]);
+
+  const FRAMES_OVERVIEW_MS = 2000;
+  const stepHasFrames = Boolean(
+    currentStep?.frames?.some((f) => f.frame_path)
+  );
+  useEffect(() => {
+    if (!showFramesOverview || !stepHasFrames) {
+      if (showFramesOverview) setShowFramesOverview(false);
+      return;
+    }
+    const t = setTimeout(() => setShowFramesOverview(false), FRAMES_OVERVIEW_MS);
+    return () => clearTimeout(t);
+  }, [showFramesOverview, stepHasFrames, currentStepIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Programmatic autoplay: when frames overview dismisses, ensure the video plays
+  useEffect(() => {
+    if (showFramesOverview) return;
+    const v = videoRef.current;
+    if (!v) return;
+    v.play().catch(() => {});
+  }, [currentStepIndex, showFramesOverview]);
 
   const handleStepChange = useCallback(
     async (stepIndex: number) => {
@@ -217,6 +244,7 @@ export function LearnView({
       setStepProgress(0);
       setCurrentStepIndex(index);
       setIsPausedAtStepEnd(false);
+      setShowFramesOverview(true);
       handleStepChange(index);
     },
     [setSuggestComplete, setStepProgress, setCurrentStepIndex, setIsPausedAtStepEnd, handleStepChange]
@@ -280,6 +308,7 @@ export function LearnView({
     const nextIdx = currentStepIndex + 1;
     setStepProgress(0);
     setIsPausedAtStepEnd(false);
+    setShowFramesOverview(true);
     setCurrentStepIndex(nextIdx);
     handleStepChange(nextIdx);
   }, [workflow, currentStep, currentStepIndex, subtasksByStep, currentSubtaskIndexByStep, setSuggestComplete, setCurrentSubtaskIndex, setStepProgress, setIsPausedAtStepEnd, setCurrentStepIndex, handleStepChange, setIsPlaying]);
@@ -307,6 +336,7 @@ export function LearnView({
       return;
     }
     setStepProgress(0);
+    setShowFramesOverview(true);
     setCurrentStepIndex(idx + 1);
     setIsPausedAtStepEnd(false);
     handleStepChange(idx + 1);
@@ -336,15 +366,23 @@ export function LearnView({
     const idx = usePlayerStore.getState().currentStepIndex;
     if (idx >= workflow.steps.length) return;
     setSuggestComplete(null, null);
-    setPendingStepAction("forward");
-  }, [workflow, setSuggestComplete]);
+    if (isTrainingMode) {
+      setPendingStepAction("forward");
+    } else {
+      handleAdvanceStep();
+    }
+  }, [workflow, setSuggestComplete, isTrainingMode, handleAdvanceStep]);
 
   const handleVoicePrevStep = useCallback(() => {
     if (!workflow) return;
     const idx = usePlayerStore.getState().currentStepIndex;
     if (idx <= 0) return;
-    setPendingStepAction("back");
-  }, [workflow]);
+    if (isTrainingMode) {
+      setPendingStepAction("back");
+    } else {
+      doConfirmBack();
+    }
+  }, [workflow, isTrainingMode, doConfirmBack]);
 
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(false);
 
@@ -533,9 +571,12 @@ export function LearnView({
         return;
       }
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const vr = getContainedVideoRect(video.videoWidth, video.videoHeight, canvas.width, canvas.height);
+
       const realTimeHands = cameraHandsRef.current?.hands;
       if (realTimeHands?.length) {
-        renderHandLandmarks(ctx, realTimeHands, canvas.width, canvas.height, t);
+        renderHandLandmarks(ctx, realTimeHands, vr.width, vr.height, t, vr.x, vr.y);
       }
       const result = lastDetectionResult;
       if (result?.sam3_segments?.length) {
@@ -558,15 +599,15 @@ export function LearnView({
               offCtx.globalCompositeOperation = "source-in";
               offCtx.fillStyle = maskColor;
               offCtx.fillRect(0, 0, canvas.width, canvas.height);
-              ctx.drawImage(offscreen, 0, 0);
+              ctx.drawImage(offscreen, vr.x, vr.y, vr.width, vr.height);
             }
             ctx.restore();
           }
           const [bx1, by1, bx2, by2] = seg.bbox ?? [0, 0, 0, 0];
-          const sx = bx1 * canvas.width;
-          const sy = by1 * canvas.height;
-          const sw = (bx2 - bx1) * canvas.width;
-          const sh = (by2 - by1) * canvas.height;
+          const sx = vr.x + bx1 * vr.width;
+          const sy = vr.y + by1 * vr.height;
+          const sw = (bx2 - bx1) * vr.width;
+          const sh = (by2 - by1) * vr.height;
           ctx.save();
           ctx.strokeStyle = strokeColor;
           ctx.lineWidth = 3;
@@ -765,6 +806,50 @@ export function LearnView({
                     transcript={displayTranscript}
                     visible={subtitlesEnabled}
                   />
+                  {showFramesOverview && stepHasFrames && currentStep && !isPausedAtStepEnd && (
+                    <div
+                      className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 p-6"
+                      style={{
+                        backgroundColor: "rgba(0, 0, 0, 0.88)",
+                        backdropFilter: "blur(8px)",
+                        WebkitBackdropFilter: "blur(8px)",
+                        animation: "fadeIn 300ms ease-out",
+                      }}
+                      onClick={() => setShowFramesOverview(false)}
+                    >
+                      <p className="text-xs font-medium tracking-wider uppercase" style={{ color: "var(--sf-lime)" }}>
+                        Step {currentStepIndex + 1} — Key Objects
+                      </p>
+                      <p className="text-sm font-bold" style={{ color: "var(--sf-white)" }}>
+                        {currentStep.title}
+                      </p>
+                      <div className="flex flex-wrap gap-2 justify-center max-w-lg">
+                        {currentStep.frames
+                          .filter((f) => f.frame_path)
+                          .slice(0, 8)
+                          .map((f) => (
+                            <div
+                              key={f.id}
+                              className="rounded-lg overflow-hidden border"
+                              style={{ borderColor: "var(--sf-lime)", width: 120, height: 68 }}
+                            >
+                              <img
+                                src={frameUrl(f.segmented_frame_path ?? f.frame_path)}
+                                alt=""
+                                className="w-full h-full object-cover"
+                              />
+                            </div>
+                          ))}
+                      </div>
+                      <button
+                        className="mt-2 px-5 py-2 rounded-lg text-sm font-bold transition-opacity hover:opacity-80"
+                        style={{ backgroundColor: "var(--sf-purple)", color: "var(--sf-white)" }}
+                        onClick={(e) => { e.stopPropagation(); setShowFramesOverview(false); }}
+                      >
+                        Start watching
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div
@@ -775,29 +860,28 @@ export function LearnView({
                 </div>
               )}
               {/* Keyframe strip for current step */}
-              {currentStep?.frames && currentStep.frames.length > 0 && (
-                <div className="flex gap-1 overflow-x-auto py-1 shrink-0" style={{ maxHeight: 56 }}>
-                  {currentStep.frames
-                    .filter((f) => f.frame_path)
-                    .slice(0, 12)
-                    .map((f) => (
-                      <a
+              {currentStep?.frames && currentStep.frames.length > 0 && (() => {
+                const visibleFrames = currentStep.frames.filter((f) => f.frame_path).slice(0, 12);
+                return (
+                  <div className="flex gap-1 overflow-x-auto py-1 shrink-0" style={{ maxHeight: 56 }}>
+                    {visibleFrames.map((f, i) => (
+                      <button
                         key={f.id}
-                        href={frameUrl(f.frame_path)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="shrink-0 rounded overflow-hidden border border-[#333] hover:border-[var(--sf-lime)]"
+                        type="button"
+                        onClick={() => { setLightboxFrameIndex(i); setLightboxShowOriginal(false); }}
+                        className="shrink-0 rounded overflow-hidden border border-[#333] hover:border-[var(--sf-lime)] cursor-pointer"
                         style={{ width: 64, height: 36 }}
                       >
                         <img
-                          src={frameUrl(f.frame_path)}
+                          src={frameUrl(f.segmented_frame_path ?? f.frame_path)}
                           alt=""
                           className="w-full h-full object-cover"
                         />
-                      </a>
+                      </button>
                     ))}
-                </div>
-              )}
+                  </div>
+                );
+              })()}
             </div>
             {/* Camera feed (training mode only) */}
             {isTrainingMode && (
@@ -889,6 +973,105 @@ export function LearnView({
           <CopilotPanel currentStep={currentStep} onSendMessage={handleSendMessage} />
         </div>
       </div>
+
+      {/* Frame lightbox modal */}
+      {lightboxFrameIndex !== null && currentStep?.frames && (() => {
+        const visibleFrames = currentStep.frames.filter((f) => f.frame_path).slice(0, 12);
+        const frame = visibleFrames[lightboxFrameIndex];
+        if (!frame) return null;
+        const hasSegmented = Boolean(frame.segmented_frame_path);
+        const displaySrc = lightboxShowOriginal || !hasSegmented
+          ? frameUrl(frame.frame_path)
+          : frameUrl(frame.segmented_frame_path!);
+        const canPrev = lightboxFrameIndex > 0;
+        const canNext = lightboxFrameIndex < visibleFrames.length - 1;
+        return (
+          <div
+            className="fixed inset-0 z-200 flex items-center justify-center"
+            style={{ backgroundColor: "rgba(0,0,0,0.85)", backdropFilter: "blur(8px)" }}
+            onClick={() => setLightboxFrameIndex(null)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setLightboxFrameIndex(null);
+              if (e.key === "ArrowLeft" && canPrev) setLightboxFrameIndex(lightboxFrameIndex - 1);
+              if (e.key === "ArrowRight" && canNext) setLightboxFrameIndex(lightboxFrameIndex + 1);
+            }}
+            tabIndex={0}
+            ref={(el) => el?.focus()}
+          >
+            <div
+              className="relative flex flex-col items-center gap-3 max-w-4xl w-full px-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 self-end">
+                {hasSegmented && (
+                  <button
+                    type="button"
+                    onClick={() => setLightboxShowOriginal((v) => !v)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                    style={{
+                      backgroundColor: lightboxShowOriginal ? "rgba(255,255,255,0.08)" : "rgba(190,242,100,0.15)",
+                      color: lightboxShowOriginal ? "#888" : "var(--sf-lime)",
+                      border: `1px solid ${lightboxShowOriginal ? "#333" : "rgba(190,242,100,0.3)"}`,
+                    }}
+                  >
+                    {lightboxShowOriginal ? "Show segmented" : "Show original"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setLightboxFrameIndex(null)}
+                  className="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors"
+                  style={{ backgroundColor: "rgba(255,255,255,0.06)", color: "#888" }}
+                >
+                  Esc
+                </button>
+              </div>
+
+              <div className="relative flex items-center gap-4 w-full">
+                <button
+                  type="button"
+                  onClick={() => canPrev && setLightboxFrameIndex(lightboxFrameIndex - 1)}
+                  disabled={!canPrev}
+                  className="shrink-0 w-10 h-10 flex items-center justify-center rounded-full transition-colors"
+                  style={{
+                    backgroundColor: canPrev ? "rgba(255,255,255,0.1)" : "transparent",
+                    color: canPrev ? "#fff" : "#333",
+                  }}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 18 9 12 15 6" />
+                  </svg>
+                </button>
+                <img
+                  src={displaySrc}
+                  alt={`Frame ${lightboxFrameIndex + 1}`}
+                  className="flex-1 min-w-0 rounded-xl object-contain"
+                  style={{ maxHeight: "75vh" }}
+                />
+                <button
+                  type="button"
+                  onClick={() => canNext && setLightboxFrameIndex(lightboxFrameIndex + 1)}
+                  disabled={!canNext}
+                  className="shrink-0 w-10 h-10 flex items-center justify-center rounded-full transition-colors"
+                  style={{
+                    backgroundColor: canNext ? "rgba(255,255,255,0.1)" : "transparent",
+                    color: canNext ? "#fff" : "#333",
+                  }}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </button>
+              </div>
+
+              <p className="text-xs" style={{ color: "#666" }}>
+                {lightboxFrameIndex + 1} / {visibleFrames.length}
+                {frame.object_description ? ` — ${frame.object_description}` : ""}
+              </p>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

@@ -238,7 +238,9 @@ export function renderHandLandmarks(
   hands: Array<{ landmarks: Array<{ x: number; y: number }> }>,
   canvasWidth: number,
   canvasHeight: number,
-  time: number
+  time: number,
+  offsetX = 0,
+  offsetY = 0,
 ) {
   const pulse = 0.5 + 0.5 * Math.sin(time * 0.005);
   const lineColor = "#3B82F6";
@@ -248,8 +250,8 @@ export function renderHandLandmarks(
     const landmarks = hand.landmarks;
     if (landmarks.length < 21) continue;
 
-    const toX = (lm: { x: number; y: number }) => (lm.x / 100) * canvasWidth;
-    const toY = (lm: { x: number; y: number }) => (lm.y / 100) * canvasHeight;
+    const toX = (lm: { x: number; y: number }) => offsetX + (lm.x / 100) * canvasWidth;
+    const toY = (lm: { x: number; y: number }) => offsetY + (lm.y / 100) * canvasHeight;
 
     ctx.save();
     ctx.strokeStyle = lineColor;

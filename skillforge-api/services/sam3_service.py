@@ -235,6 +235,181 @@ async def segment_box(
         return None
 
 
+# ── Crop-and-zoom segmentation for small objects ──────────────────────────────
+
+_SMALL_OBJ_CROP_RADIUS = 0.10  # 10% of image → 20% window (tighter zoom)
+
+
+async def segment_small_object(
+    frame_bytes: bytes,
+    center_x: float,
+    center_y: float,
+    text_prompt: str,
+    crop_radius: float = _SMALL_OBJ_CROP_RADIUS,
+    confidence_threshold: float = 0.10,
+) -> dict | None:
+    """
+    Segment a small object by cropping around its approximate center,
+    running SAM3 on the zoomed crop, then remapping results back to
+    full-frame coordinates.
+
+    Two-phase approach on the crop:
+      1. Text-prompt (the object is now prominent in the zoomed view)
+      2. Box-prompt at the center of the crop (if text fails)
+
+    Args:
+        center_x, center_y: Normalized (0-1) center of the object (from Nemotron).
+        text_prompt: SAM3 text prompt for the object.
+        crop_radius: Half-size of crop window in normalized coords.
+
+    Returns same shape as segment_concept with coordinates in full-frame space,
+    plus a full-frame-sized mask, or None.
+    """
+    if not SAM3_URL:
+        return None
+
+    try:
+        img = Image.open(io.BytesIO(frame_bytes))
+        w, h = img.size
+
+        cx_px, cy_px = center_x * w, center_y * h
+        r_px_w, r_px_h = crop_radius * w, crop_radius * h
+        crop_x1 = max(0, int(cx_px - r_px_w))
+        crop_y1 = max(0, int(cy_px - r_px_h))
+        crop_x2 = min(w, int(cx_px + r_px_w))
+        crop_y2 = min(h, int(cy_px + r_px_h))
+
+        if crop_x2 - crop_x1 < 32 or crop_y2 - crop_y1 < 32:
+            print(f"[SAM3] ✗ Crop too small ({crop_x2-crop_x1}x{crop_y2-crop_y1}px) — skipping", flush=True)
+            return None
+
+        crop = img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
+        crop_buf = io.BytesIO()
+        crop.save(crop_buf, format="JPEG", quality=95)
+        crop_bytes = crop_buf.getvalue()
+        crop_w, crop_h = crop.size
+
+        print(
+            f"[SAM3] Crop-zoom: {crop_w}x{crop_h}px from ({crop_x1},{crop_y1}) "
+            f"to ({crop_x2},{crop_y2}) of {w}x{h} frame",
+            flush=True,
+        )
+
+        client = _get_client()
+
+        # ── Phase 1: text-prompt on the crop ──
+        t0 = time.perf_counter()
+        resp = await client.post(
+            f"{SAM3_URL}/segment",
+            files={"image": ("crop.jpg", crop_bytes, "image/jpeg")},
+            data={"text": text_prompt},
+        )
+        resp.raise_for_status()
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+        data = resp.json()
+        results = _remap_crop_results(
+            data, crop_x1, crop_y1, crop_w, crop_h, w, h, confidence_threshold,
+        )
+
+        if results:
+            scores_str = ", ".join(f"{r['score']:.0%}" for r in results)
+            print(
+                f"[SAM3] ✓ Crop text \"{text_prompt}\" — "
+                f"{len(results)} mask(s) [{scores_str}] in {elapsed_ms}ms",
+                flush=True,
+            )
+            return {"segments": results}
+
+        # ── Phase 2: box-prompt at center of crop (object should be right there) ──
+        print(
+            f"[SAM3] Crop text miss for \"{text_prompt}\" — trying box-prompt on crop center",
+            flush=True,
+        )
+        box_margin = 0.15
+        box_str = f"{box_margin},{box_margin},{1.0-box_margin},{1.0-box_margin}"
+
+        t0 = time.perf_counter()
+        resp = await client.post(
+            f"{SAM3_URL}/segment",
+            files={"image": ("crop.jpg", crop_bytes, "image/jpeg")},
+            data={"box": box_str},
+        )
+        resp.raise_for_status()
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+        data = resp.json()
+        results = _remap_crop_results(
+            data, crop_x1, crop_y1, crop_w, crop_h, w, h, confidence_threshold,
+        )
+
+        if results:
+            scores_str = ", ".join(f"{r['score']:.0%}" for r in results)
+            print(
+                f"[SAM3] ✓ Crop box-prompt — "
+                f"{len(results)} mask(s) [{scores_str}] in {elapsed_ms}ms",
+                flush=True,
+            )
+            return {"segments": results}
+
+        print(f"[SAM3] ✗ Crop-zoom: both text and box failed for \"{text_prompt}\"", flush=True)
+        return None
+
+    except httpx.ConnectError:
+        print(f"[SAM3] ✗ Connection refused — is the server running at {SAM3_URL}?", flush=True)
+        return None
+    except httpx.TimeoutException:
+        print(f"[SAM3] ✗ Small-object crop timed out (30s limit)", flush=True)
+        return None
+    except Exception as e:
+        print(f"[SAM3] ✗ Small-object crop failed: {e}", flush=True)
+        return None
+
+
+def _remap_crop_results(
+    data: dict,
+    crop_x1: int, crop_y1: int,
+    crop_w: int, crop_h: int,
+    full_w: int, full_h: int,
+    confidence_threshold: float,
+) -> list[dict]:
+    """Remap SAM3 results from crop coordinates to full-frame coordinates."""
+    if "error" in data:
+        return []
+
+    results = []
+    for mask_b64, box, score in zip(
+        data.get("masks", []),
+        data.get("boxes", []),
+        data.get("scores", []),
+    ):
+        if score < confidence_threshold:
+            continue
+
+        box_full = [
+            (crop_x1 + box[0] * crop_w) / full_w,
+            (crop_y1 + box[1] * crop_h) / full_h,
+            (crop_x1 + box[2] * crop_w) / full_w,
+            (crop_y1 + box[3] * crop_h) / full_h,
+        ]
+
+        mask_bytes_raw = base64.b64decode(mask_b64)
+        crop_mask = Image.open(io.BytesIO(mask_bytes_raw)).convert("L").resize((crop_w, crop_h))
+        full_mask = Image.new("L", (full_w, full_h), 0)
+        full_mask.paste(crop_mask, (crop_x1, crop_y1))
+        mask_buf = io.BytesIO()
+        full_mask.save(mask_buf, format="PNG")
+        full_mask_b64 = base64.b64encode(mask_buf.getvalue()).decode()
+
+        results.append({
+            "mask_base64": full_mask_b64,
+            "bbox": box_full,
+            "score": score,
+        })
+
+    return results
+
+
 # ── Multi-concept segmentation ────────────────────────────────────────────────
 
 async def segment_multi_concept(
